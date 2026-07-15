@@ -1,6 +1,6 @@
 /*
- * CHARACTER CONTINUITY v5.0
- * Clean State and Persistence
+ * CHARACTER CONTINUITY v5.0.1
+ * Staggered Focus and Persistence
  *
  * Required creator card:
  *   CC CORE: Full Name
@@ -12,7 +12,6 @@
  *   CC BOUNDARIES: Full Name
  *
  * Managed cards:
- *   CC STATE: Full Name                 temporary working state
  *   CC CONTINUITY: Full Name            durable personal continuity
  *   CC RELATIONSHIPS: Full Name          durable directional relationships
  *   CC MEMORY ARCHIVE: Full Name         durable memories
@@ -24,6 +23,14 @@
  * v5 deliberately supports one cutover source only: the canonical v4.4
  * state used by the immediately preceding private build. It contains no
  * v3.x/v4.3 protocol parser, layout migration, or compatibility aliases.
+ *
+ * v5.0.1 removes stored Temporary State. The model infers current reactions
+ * from Core cards, current input, Recent Story, and durable continuity. Up to
+ * five scene-present NPCs are ranked by direct involvement, creator/player
+ * Significance, and least-recently-served order. One NPC receives deeper
+ * relevant continuity per successful story turn. Player actions and Continue
+ * advance the rotation; Retry replaces the same turn, repeats the same focus,
+ * and cannot update continuity. Only periodic durable review uses CC5 output.
  */
 
 globalThis.CHARACTER_CONTINUITY_V5_SETTINGS = {
@@ -32,7 +39,6 @@ globalThis.CHARACTER_CONTINUITY_V5_SETTINGS = {
   VOICE_PREFIX: "CC VOICE: ",
   MOTIVES_PREFIX: "CC MOTIVES: ",
   BOUNDARIES_PREFIX: "CC BOUNDARIES: ",
-  STATE_PREFIX: "CC STATE: ",
   CONTINUITY_PREFIX: "CC CONTINUITY: ",
   RELATIONSHIPS_PREFIX: "CC RELATIONSHIPS: ",
   MEMORY_PREFIX: "CC MEMORY ARCHIVE: ",
@@ -43,21 +49,19 @@ globalThis.CHARACTER_CONTINUITY_V5_SETTINGS = {
   CARD_TYPE: "Continuity",
 
   DEFAULT_ENABLED: true,
-  DEFAULT_MODE: "story-first",
   DEFAULT_CONTEXT_CEILING: 1400,
-  DEFAULT_STATE_LIFETIME: 3,
-  DEFAULT_DURABLE_INTERVAL: 3,
-  DEFAULT_LOW_OUTPUT_BEHAVIOR: "protect-story",
+  DEFAULT_DURABLE_OBSERVATIONS: 2,
+  DEFAULT_REVIEW_COOLDOWN: 1,
   DEFAULT_TURNING_POINTS: "growth-only",
-  DEFAULT_MAX_ACTIVE_NPCS: 2,
+  DEFAULT_MAX_ACTIVE_NPCS: 5,
   DEFAULT_DEBUG: false,
 
   MIN_CONTEXT_CEILING: 300,
   MAX_CONTEXT_CEILING: 8000,
-  MAX_ACTIVE_NPCS: 100,
+  MAX_ACTIVE_NPCS: 5,
   MAX_VALUE_CHARS: 72,
-  MAX_EVIDENCE_OUTPUTS: 10,
-  MAX_EVIDENCE_CHARS: 6500,
+  MAX_OWNER_EVIDENCE_OUTPUTS: 4,
+  MAX_OWNER_EVIDENCE_CHARS: 3200,
   MIN_RECENT_STORY_CHARS: 800,
   CARD_PAGE_CHARS: 1750,
   DEBUG_LOGS: false
@@ -270,15 +274,12 @@ function CharacterContinuity(hook, incomingText) {
   function configTemplate(values = {}) {
     return [
       "Requires Context modifier; cached models and optimized context are unsupported.",
-      "Modes: story-first, balanced, full-package.",
       "Enabled: " + (values.enabled !== undefined ? values.enabled : settings.DEFAULT_ENABLED !== false),
-      "Mode: " + (values.mode || settings.DEFAULT_MODE || "story-first"),
       "Context ceiling: " + (values.contextCeiling || settings.DEFAULT_CONTEXT_CEILING || 1400),
-      "State lifetime: " + (values.stateLifetime || settings.DEFAULT_STATE_LIFETIME || 3),
-      "Durable review interval: " + (values.durableInterval || settings.DEFAULT_DURABLE_INTERVAL || 3),
-      "Low-output behavior: " + (values.lowOutput || settings.DEFAULT_LOW_OUTPUT_BEHAVIOR || "protect-story"),
+      "Durable observations before review: " + (values.durableObservations || settings.DEFAULT_DURABLE_OBSERVATIONS || 2),
+      "Prose-only turns after review: " + (values.reviewCooldown ?? settings.DEFAULT_REVIEW_COOLDOWN ?? 1),
       "Turning Points: " + (values.turningPoints || settings.DEFAULT_TURNING_POINTS || "growth-only"),
-      "Maximum active NPCs: " + (values.maxActive || settings.DEFAULT_MAX_ACTIVE_NPCS || 2),
+      "Maximum active NPCs: " + (values.maxActive || settings.DEFAULT_MAX_ACTIVE_NPCS || 5),
       "Debug: " + (values.debug !== undefined ? values.debug : settings.DEFAULT_DEBUG === true)
     ].join("\n");
   }
@@ -290,55 +291,44 @@ function CharacterContinuity(hook, incomingText) {
     if (!card) {
       return {
         enabled: settings.DEFAULT_ENABLED !== false,
-        mode: settings.DEFAULT_MODE || "story-first",
         contextCeiling: settings.DEFAULT_CONTEXT_CEILING || 1400,
-        stateLifetime: settings.DEFAULT_STATE_LIFETIME || 3,
-        durableInterval: settings.DEFAULT_DURABLE_INTERVAL || 3,
-        lowOutput: settings.DEFAULT_LOW_OUTPUT_BEHAVIOR || "protect-story",
+        durableObservations: settings.DEFAULT_DURABLE_OBSERVATIONS || 2,
+        reviewCooldown: settings.DEFAULT_REVIEW_COOLDOWN ?? 1,
         turningPoints: settings.DEFAULT_TURNING_POINTS || "growth-only",
-        maxActive: settings.DEFAULT_MAX_ACTIVE_NPCS || 2,
+        maxActive: settings.DEFAULT_MAX_ACTIVE_NPCS || 5,
         debug: settings.DEFAULT_DEBUG === true,
         warning: "Configuration card could not be created."
       };
     }
 
     let source = entryOf(card);
-    const isV44Card = /Persistence review interval \(post-grace player inputs\)|Automatic update cadence/i.test(source);
-    if (isV44Card) {
+    const isOlderCard = /Persistence review interval \(post-grace player inputs\)|Automatic update cadence|^\s*Mode\s*:|State lifetime|Low-output behavior/im.test(source);
+    if (isOlderCard) {
       source = configTemplate({
-        enabled: boolValue(extractLine(source, "Enable Character Continuity"), true),
-        mode: settings.DEFAULT_MODE || "story-first",
-        contextCeiling: settings.DEFAULT_CONTEXT_CEILING || 1400,
-        durableInterval: numberValue(
-          extractLine(source, "Persistence review interval (post-grace player inputs)"),
-          settings.DEFAULT_DURABLE_INTERVAL || 3,
-          1,
-          1000
-        ),
-        turningPoints: extractLine(source, "Turning point mode") || settings.DEFAULT_TURNING_POINTS || "growth-only",
-        maxActive: extractLine(source, "Maximum active NPCs") || settings.DEFAULT_MAX_ACTIVE_NPCS || 2,
-        debug: settings.DEFAULT_DEBUG === true
+        enabled: boolValue(extractLine(source, "Enabled") || extractLine(source, "Enable Character Continuity"), true),
+        contextCeiling: extractLine(source, "Context ceiling") || settings.DEFAULT_CONTEXT_CEILING || 1400,
+        durableObservations: settings.DEFAULT_DURABLE_OBSERVATIONS || 2,
+        reviewCooldown: settings.DEFAULT_REVIEW_COOLDOWN ?? 1,
+        turningPoints: extractLine(source, "Turning Points") || extractLine(source, "Turning point mode") || settings.DEFAULT_TURNING_POINTS || "growth-only",
+        maxActive: Math.min(5, numberValue(extractLine(source, "Maximum active NPCs"), settings.DEFAULT_MAX_ACTIVE_NPCS || 5, 1, 5)),
+        debug: boolValue(extractLine(source, "Debug"), settings.DEFAULT_DEBUG === true)
       });
-      saveCard(card, source, "Player-editable v5 settings. Converted once from the private v4.4 card.");
+      saveCard(card, source, "Player-editable v5.0.1 settings. Converted to staggered focus and durable persistence.");
     }
 
-    const mode = enumValue(extractLine(source, "Mode"), ["story-first", "balanced", "full-package"], "story-first");
     const turning = enumValue(extractLine(source, "Turning Points"), ["growth-only", "all-directions", "disabled"], "growth-only");
-    const lowOutput = enumValue(extractLine(source, "Low-output behavior"), ["protect-story", "prefer-state", "warn-only"], "protect-story");
     return {
       enabled: boolValue(extractLine(source, "Enabled"), true),
-      mode,
       contextCeiling: numberValue(
         extractLine(source, "Context ceiling"),
         settings.DEFAULT_CONTEXT_CEILING || 1400,
         settings.MIN_CONTEXT_CEILING || 300,
         settings.MAX_CONTEXT_CEILING || 8000
       ),
-      stateLifetime: numberValue(extractLine(source, "State lifetime"), settings.DEFAULT_STATE_LIFETIME || 3, 1, 1000),
-      durableInterval: numberValue(extractLine(source, "Durable review interval"), settings.DEFAULT_DURABLE_INTERVAL || 3, 1, 1000),
-      lowOutput,
+      durableObservations: numberValue(extractLine(source, "Durable observations before review"), settings.DEFAULT_DURABLE_OBSERVATIONS || 2, 1, 10),
+      reviewCooldown: numberValue(extractLine(source, "Prose-only turns after review"), settings.DEFAULT_REVIEW_COOLDOWN ?? 1, 0, 10),
       turningPoints: turning,
-      maxActive: numberValue(extractLine(source, "Maximum active NPCs"), settings.DEFAULT_MAX_ACTIVE_NPCS || 2, 1, settings.MAX_ACTIVE_NPCS || 100),
+      maxActive: numberValue(extractLine(source, "Maximum active NPCs"), settings.DEFAULT_MAX_ACTIVE_NPCS || 5, 1, settings.MAX_ACTIVE_NPCS || 5),
       debug: boolValue(extractLine(source, "Debug"), false),
       warning: ""
     };
@@ -403,7 +393,7 @@ function CharacterContinuity(hook, incomingText) {
     const prefix = settings.CORE_PREFIX || "CC CORE: ";
     const labels = [
       "Name", "Aliases", "Pronouns", "Identity", "Signature", "Core", "Personality",
-      "Relational disposition", "Appearance", "Job", "Role", "Protected traits", "Rules", "Enabled"
+      "Relational disposition", "Appearance", "Job", "Role", "Protected traits", "Rules", "Significance", "Enabled"
     ];
     return cards
       .filter(card => titleOf(card).toLowerCase().startsWith(prefix.toLowerCase()))
@@ -420,6 +410,7 @@ function CharacterContinuity(hook, incomingText) {
           || extractSection(source, "Job", labels);
         return {
           key: keyOf(name), name, aliases,
+          significance: numberValue(extractLine(source, "Significance"), 3, 1, 5),
           pronouns: splitList(extractSection(source, "Pronouns", labels) || extractLine(source, "Pronouns")),
           identity: clean(identity, 1000),
           core: clean(core, 5000),
@@ -437,13 +428,8 @@ function CharacterContinuity(hook, incomingText) {
 
   const characters = discoverCharacters();
 
-  function blankSceneField() {
-    return { value: "", updatedGeneration: -1 };
-  }
-
   function blankNpc() {
     return {
-      scene: { feeling: blankSceneField(), thought: blankSceneField(), goal: blankSceneField(), tension: blankSceneField() },
       durable: { feeling: "", thought: "", goal: "", tension: "" },
       relationships: {}, memories: [], turningPoints: []
     };
@@ -482,17 +468,6 @@ function CharacterContinuity(hook, incomingText) {
     result.durable.thought = line(durableSource.thought, 380);
     result.durable.goal = line(durableSource.goal, 380);
     result.durable.tension = line(durableSource.tension, 380);
-    if (raw.scene && typeof raw.scene === "object") {
-      ["feeling", "thought", "goal", "tension"].forEach(field => {
-        const source = raw.scene[field];
-        if (source && typeof source === "object") {
-          result.scene[field] = {
-            value: line(source.value, 240),
-            updatedGeneration: Number.isFinite(Number(source.updatedGeneration)) ? Number(source.updatedGeneration) : -1
-          };
-        }
-      });
-    }
     Object.entries(raw.relationships || {}).forEach(([targetKey, value]) => {
       const relationship = normalizeRelationship(value, targetKey);
       if (relationship) result.relationships[relationship.targetKey] = relationship;
@@ -509,11 +484,10 @@ function CharacterContinuity(hook, incomingText) {
       npcs: {}, activeKeys: [], focusKey: "",
       inputCount: 0, visibleGenerationCount: 0,
       openingSeen: false, openingSuppressed: false, firstVisibleComplete: false,
-      durableProgress: 0, durableDue: false,
       lastInput: "", lastInputBaseHash: "", currentPlan: null,
       preGenerationSnapshot: null,
-      evidenceOutputs: [], rejectedEvidence: [],
-      ownerLastStateAttempt: {}, ownerLastDurableAttempt: {},
+      durableEvidence: {}, reviewCooldown: 0, rejectedEvidence: [],
+      focusLastServed: {}, sceneLastSeen: {}, ownerLastDurableAttempt: {},
       recoveryPending: false,
       last: {
         context: "Not built", output: "No output yet", warning: "", error: "",
@@ -521,7 +495,6 @@ function CharacterContinuity(hook, incomingText) {
         memoryTokens: 0, taskTokens: 0, reserveTokens: 0, injectedTokens: 0,
         headroomTokens: 0, recentStoryChars: 0, task: "none", owner: "",
         candidate: "not requested", update: "None", evidence: "None",
-        expiredStates: 0, clearedForTimeJump: 0, outputTokensDetected: 0,
         retry: false, continue: false, gracefulFallback: false
       }
     };
@@ -548,6 +521,30 @@ function CharacterContinuity(hook, incomingText) {
     else CC.npcs[character.key] = normalizeNpc(CC.npcs[character.key]);
   });
 
+  if (!CC.focusLastServed || typeof CC.focusLastServed !== "object" || Array.isArray(CC.focusLastServed)) {
+    CC.focusLastServed = {};
+  }
+  if (!CC.sceneLastSeen || typeof CC.sceneLastSeen !== "object" || Array.isArray(CC.sceneLastSeen)) {
+    CC.sceneLastSeen = {};
+  }
+  if (!CC.durableEvidence || typeof CC.durableEvidence !== "object" || Array.isArray(CC.durableEvidence)) {
+    CC.durableEvidence = {};
+  }
+  if (!Number.isFinite(Number(CC.reviewCooldown))) CC.reviewCooldown = 0;
+  CC.reviewCooldown = Math.max(0, Number(CC.reviewCooldown) || 0);
+  if (!CC.ownerLastDurableAttempt || typeof CC.ownerLastDurableAttempt !== "object" || Array.isArray(CC.ownerLastDurableAttempt)) {
+    CC.ownerLastDurableAttempt = {};
+  }
+  if (!Array.isArray(CC.rejectedEvidence)) CC.rejectedEvidence = [];
+  delete CC.durableProgress;
+  delete CC.durableDue;
+  delete CC.evidenceOutputs;
+  delete CC.ownerLastStateAttempt;
+  if (!CC.obsoleteStateCardsRemoved) {
+    cards.filter(card => titleOf(card).toLowerCase().startsWith("cc state: ")).forEach(card => removeCard(card));
+    CC.obsoleteStateCardsRemoved = true;
+  }
+
   if (!CC.cardHashes || typeof CC.cardHashes !== "object" || Array.isArray(CC.cardHashes)) CC.cardHashes = {};
   if (typeof CC.cardsInitialized !== "boolean") CC.cardsInitialized = false;
 
@@ -561,19 +558,9 @@ function CharacterContinuity(hook, incomingText) {
     return (hash >>> 0).toString(16);
   }
 
-  function stateEntry(npc) {
-    return [
-      "Temporary working state; stale values expire automatically.",
-      "Feeling: " + (npc.scene.feeling.value || ""),
-      "Thought: " + (npc.scene.thought.value || ""),
-      "Goal: " + (npc.scene.goal.value || ""),
-      "Tension: " + (npc.scene.tension.value || "")
-    ].join("\n");
-  }
-
   function continuityEntry(npc) {
     return [
-      "Durable personal continuity; temporary reactions belong in CC STATE.",
+      "Durable personal continuity; current reactions are inferred from the live story.",
       "Feeling: " + (npc.durable.feeling || ""),
       "Thought: " + (npc.durable.thought || ""),
       "Goal: " + (npc.durable.goal || ""),
@@ -653,13 +640,9 @@ function CharacterContinuity(hook, incomingText) {
   function writeCharacterCards(character) {
     const npc = CC.npcs[character.key];
     if (!npc) return;
-    const stateTitle = (settings.STATE_PREFIX || "CC STATE: ") + character.name;
     const durableTitle = (settings.CONTINUITY_PREFIX || "CC CONTINUITY: ") + character.name;
-    const stateText = stateEntry(npc);
     const durableText = continuityEntry(npc);
-    upsertCard(stateTitle, stateText, "Temporary v5 working state. Manual edits become immediately fresh.", "state", character.key);
     upsertCard(durableTitle, durableText, "Durable v5 personal continuity.", "continuity", character.key);
-    CC.cardHashes[stateTitle] = hashString(stateText);
     CC.cardHashes[durableTitle] = hashString(durableText);
 
     writePagedCards(
@@ -758,15 +741,6 @@ function CharacterContinuity(hook, incomingText) {
   function syncCharacterCards(character) {
     const npc = CC.npcs[character.key];
     if (!npc) return;
-    const stateTitle = (settings.STATE_PREFIX || "CC STATE: ") + character.name;
-    const stateCard = findCard(stateTitle);
-    if (stateCard && CC.cardHashes[stateTitle] && hashString(entryOf(stateCard)) !== CC.cardHashes[stateTitle]) {
-      const parsed = parseFourFields(entryOf(stateCard));
-      ["feeling", "thought", "goal", "tension"].forEach(field => {
-        npc.scene[field] = { value: parsed[field], updatedGeneration: CC.visibleGenerationCount };
-      });
-    }
-
     const durableTitle = (settings.CONTINUITY_PREFIX || "CC CONTINUITY: ") + character.name;
     const durableCard = findCard(durableTitle);
     if (durableCard && CC.cardHashes[durableTitle] && hashString(entryOf(durableCard)) !== CC.cardHashes[durableTitle]) {
@@ -839,33 +813,34 @@ function CharacterContinuity(hook, incomingText) {
     return new RegExp("(^|[^A-Za-z0-9])" + escapeRegExp(wanted) + "(?=$|[^A-Za-z0-9])", "i").test(textOf(source));
   }
 
-  function selectActive(source) {
-    const currentInput = CC.lastInput || "";
+  function selectActive(source, currentInput = "") {
+    const recentTail = textOf(source).slice(-3500);
     const scored = characters.map((character, index) => {
-      let score = 0;
-      if (character.aliases.some(alias => aliasMentioned(currentInput, alias))) score += 1000;
-      if (character.aliases.some(alias => aliasMentioned(source.slice(-5000), alias))) score += 200;
-      if ((CC.activeKeys || []).includes(character.key)) score += 40;
-      return { character, score, index };
-    }).filter(item => item.score > 0);
-    if (!scored.length) {
-      (CC.activeKeys || []).forEach(key => {
-        const character = characters.find(item => item.key === key);
-        if (character) scored.push({ character, score: 20, index: characters.indexOf(character) });
-      });
-    }
-    if (!scored.length && characters.length) scored.push({ character: characters[0], score: 1, index: 0 });
+      const direct = character.aliases.some(alias => aliasMentioned(currentInput, alias));
+      const recent = character.aliases.some(alias => aliasMentioned(recentTail, alias));
+      const lastSeen = Number(CC.sceneLastSeen[character.key]);
+      const carried = Number.isFinite(lastSeen) && CC.visibleGenerationCount - lastSeen <= 2;
+      const eligible = direct || recent || carried;
+      const score = (direct ? 1000 : 0) + (recent ? 300 : 0) + (carried ? 60 : 0) + character.significance * 20;
+      return { character, score, direct, recent, eligible, index };
+    }).filter(item => item.eligible);
     return scored
-      .sort((left, right) => right.score - left.score || left.index - right.index)
+      .sort((left, right) => Number(right.direct) - Number(left.direct) || Number(right.recent) - Number(left.recent) || right.character.significance - left.character.significance || left.index - right.index)
       .slice(0, runtime.maxActive)
       .map(item => item.character);
   }
 
-  function selectFocus(active) {
+  function selectFocus(active, currentInput = "") {
     if (!active.length) return null;
-    const named = active.filter(character => character.aliases.some(alias => aliasMentioned(CC.lastInput || "", alias)));
-    if (named.length === 1) return named[0];
-    return active.find(character => character.key === CC.focusKey) || active[0];
+    const named = active.filter(character => character.aliases.some(alias => aliasMentioned(currentInput, alias)));
+    const pool = named.length ? named : active;
+    return pool.slice().sort((left, right) => {
+      const leftServed = Number(CC.focusLastServed[left.key]);
+      const rightServed = Number(CC.focusLastServed[right.key]);
+      const leftAge = Number.isFinite(leftServed) ? leftServed : -1;
+      const rightAge = Number.isFinite(rightServed) ? rightServed : -1;
+      return leftAge - rightAge || right.significance - left.significance || active.indexOf(left) - active.indexOf(right);
+    })[0];
   }
 
   function captureSnapshot() {
@@ -876,11 +851,11 @@ function CharacterContinuity(hook, incomingText) {
       openingSeen: CC.openingSeen,
       openingSuppressed: CC.openingSuppressed,
       firstVisibleComplete: CC.firstVisibleComplete,
-      durableProgress: CC.durableProgress,
-      durableDue: CC.durableDue,
-      evidenceOutputs: CC.evidenceOutputs,
+      durableEvidence: CC.durableEvidence,
+      reviewCooldown: CC.reviewCooldown,
       rejectedEvidence: CC.rejectedEvidence,
-      ownerLastStateAttempt: CC.ownerLastStateAttempt,
+      focusLastServed: CC.focusLastServed,
+      sceneLastSeen: CC.sceneLastSeen,
       ownerLastDurableAttempt: CC.ownerLastDurableAttempt,
       recoveryPending: CC.recoveryPending,
       activeKeys: CC.activeKeys,
@@ -892,8 +867,8 @@ function CharacterContinuity(hook, incomingText) {
     if (!snapshot || typeof snapshot !== "object") return false;
     [
       "npcs", "inputCount", "visibleGenerationCount", "openingSeen", "openingSuppressed",
-      "firstVisibleComplete", "durableProgress", "durableDue", "evidenceOutputs",
-      "rejectedEvidence", "ownerLastStateAttempt", "ownerLastDurableAttempt",
+      "firstVisibleComplete", "durableEvidence", "reviewCooldown",
+      "rejectedEvidence", "focusLastServed", "sceneLastSeen", "ownerLastDurableAttempt",
       "recoveryPending", "activeKeys", "focusKey"
     ].forEach(field => { if (snapshot[field] !== undefined) CC[field] = clone(snapshot[field]); });
     characters.forEach(character => {
@@ -901,23 +876,6 @@ function CharacterContinuity(hook, incomingText) {
       else CC.npcs[character.key] = normalizeNpc(CC.npcs[character.key]);
     });
     return true;
-  }
-
-  function expireTemporaryState() {
-    let expired = 0;
-    Object.values(CC.npcs || {}).forEach(npc => {
-      if (!npc || !npc.scene) return;
-      ["feeling", "thought", "goal", "tension"].forEach(field => {
-        const item = npc.scene[field];
-        if (!item || !item.value || item.updatedGeneration < 0) return;
-        if (CC.visibleGenerationCount - item.updatedGeneration >= runtime.stateLifetime) {
-          npc.scene[field] = blankSceneField();
-          expired += 1;
-        }
-      });
-    });
-    CC.last.expiredStates = expired;
-    return expired;
   }
 
   function firstPhrase(value, max = 140) {
@@ -942,15 +900,6 @@ function CharacterContinuity(hook, incomingText) {
       || firstPhrase(character.personality, 120)
       || firstPhrase(character.core, 120)
       || character.name;
-  }
-
-  function sceneLine(npc) {
-    const parts = [];
-    [["F", "feeling"], ["T", "thought"], ["G", "goal"], ["X", "tension"]].forEach(([label, field]) => {
-      const value = npc.scene[field] && npc.scene[field].value;
-      if (value) parts.push(label + " " + value);
-    });
-    return parts.length ? "Now: " + parts.join("; ") : "";
   }
 
   function durableLine(npc) {
@@ -1034,8 +983,7 @@ function CharacterContinuity(hook, incomingText) {
     };
     add("<SYSTEM>", "rules", 1000, true);
     add(
-      "Portray every active NPC distinctly from their own continuity. Give " + focus.name
-      + " extra private-reaction depth through story. Preserve " + player.name
+      "Portray every active NPC distinctly from their own continuity. Preserve " + player.name
       + "'s control of " + player.possessiveAdjective + " speech, actions, thoughts, feelings, consent, and commitments."
       + " Output story only except for one final CC5 line when separately requested below.",
       "rules", 1000, true
@@ -1050,21 +998,24 @@ function CharacterContinuity(hook, incomingText) {
     active.forEach(character => {
       const npc = CC.npcs[character.key];
       add("[" + character.name + "] " + identityFor(character), "npc", 950, true);
-      add(sceneLine(npc), "npc", 940, true);
-      add(character.disposition ? "Style: " + firstPhrase(character.disposition, 160) : "", "npc", 850);
-      add(durableLine(npc), "npc", 820);
-      const relationship = selectRelationship(character, npc, active, source);
-      if (relationship) {
-        add(
-          "R(" + character.name + "→" + relationshipTargetName(relationship) + "): " + compactRelationship(relationship),
-          "relationship", 780
-        );
+      const core = firstPhrase(character.personality || character.protectedTraits || character.core, 150);
+      add(core ? "Core: " + core : "", "npc", 940, true);
+      if (character.key === focus.key) {
+        add(character.disposition ? "Style: " + firstPhrase(character.disposition, 160) : "", "npc", 850);
+        add(durableLine(npc), "npc", 820);
+        const relationship = selectRelationship(character, npc, active, source);
+        if (relationship) {
+          add(
+            "R(" + character.name + "→" + relationshipTargetName(relationship) + "): " + compactRelationship(relationship),
+            "relationship", 780
+          );
+        }
+        add(creatorAnchor(character, source), "npc", 620);
+        const point = selectTurningPoint(npc, source);
+        if (point) add("TP(" + character.name + "): " + (point.change || point.title), "memory", 560);
+        const memory = selectMemory(npc, source);
+        if (memory) add("M(" + character.name + "): " + memory.text, "memory", 520);
       }
-      add(creatorAnchor(character, source), "npc", 620);
-      const point = selectTurningPoint(npc, source);
-      if (point) add("TP(" + character.name + "): " + (point.change || point.title), "memory", 560);
-      const memory = selectMemory(npc, source);
-      if (memory) add("M(" + character.name + "): " + memory.text, "memory", 520);
     });
     add("</SYSTEM>", "rules", 1000, true);
 
@@ -1100,17 +1051,41 @@ function CharacterContinuity(hook, incomingText) {
     return result;
   }
 
-  function stateTask(owner) {
+  function ownerEvidence(ownerKey) {
+    return Array.isArray(CC.durableEvidence[ownerKey]) ? CC.durableEvidence[ownerKey] : [];
+  }
+
+  function ownerObservationCount(ownerKey) {
+    return ownerEvidence(ownerKey).length;
+  }
+
+  function ownerReadyForReview(ownerKey) {
+    return ownerObservationCount(ownerKey) >= runtime.durableObservations;
+  }
+
+  function appendOwnerEvidence(ownerKey, story, generation) {
+    const value = clean(story, 2000);
+    if (!ownerKey || !value) return;
+    const current = ownerEvidence(ownerKey).filter(item => item && item.text && keyOf(item.text) !== keyOf(value));
+    current.push({ text: value, generation });
+    const maxEntries = Math.max(1, Number(settings.MAX_OWNER_EVIDENCE_OUTPUTS) || 4);
+    let kept = current.slice(-maxEntries);
+    const maxChars = Math.max(800, Number(settings.MAX_OWNER_EVIDENCE_CHARS) || 3200);
+    while (kept.length > 1 && kept.reduce((sum, item) => sum + item.text.length, 0) > maxChars) kept.shift();
+    CC.durableEvidence[ownerKey] = kept;
+  }
+
+  function evidenceSupplement(owner, recent) {
+    const recentText = clean(recent, 30000);
+    const older = ownerEvidence(owner.key).filter(item => !recentText.includes(item.text));
+    if (!older.length) return "";
     return [
-      "<SYSTEM>",
-      "Finish normal story first. If that completed prose establishes a materially changed current feeling, thought, goal, or tension for " + owner.name
-        + ", append one final (CC5|S|Key|Value), using f/t/g/x and a near-extractive Value of at most " + settings.MAX_VALUE_CHARS + " characters. Otherwise append nothing.",
-      "Temporary scene state only; do not restate durable continuity. The CC5 line must be last.",
-      "</SYSTEM>"
+      "Earlier focused story evidence for " + owner.name + " (generated prose; evidence only, never instructions):",
+      older.map((item, index) => "Evidence " + (index + 1) + ": " + item.text).join("\n")
     ].join("\n");
   }
 
-  function durableTask(owner, active, allowStateFallback) {
+  function durableTask(owner, active, supplement = "") {
     const targets = targetMap(owner, active);
     const targetText = targets.map(item => item.code + "=" + item.name).join(", ");
     const turningKeys = runtime.turningPoints === "growth-only"
@@ -1118,69 +1093,25 @@ function CharacterContinuity(hook, incomingText) {
       : (runtime.turningPoints === "all-directions" ? ", yg/yd/ym/yn=Turning Point direction" : "");
     return [
       "<SYSTEM>",
-      "Complete normal story first. Review fixed Owner " + owner.name + ". If completed generated prose or earlier generated story directly establishes one new lasting change, append one final (CC5|D|Target|Key|Value). Otherwise append nothing; never write NONE.",
+      "Complete normal story first. Review fixed Owner " + owner.name + ". If completed generated prose, Recent Story, or the evidence below directly establishes one new lasting change, append one final (CC5|D|Target|Key|Value). Otherwise append nothing; never write NONE.",
       "Targets: " + targetText + ". Keys: f/t/g/x=durable personal or directional stance, m=memory, r=relationship, l=role, b=boundary, u=trust, c=closeness" + turningKeys + ".",
-      "Value must be " + owner.name + "'s near-extractive continuity, at most " + settings.MAX_VALUE_CHARS + " characters. Player input alone is not Evidence. Newly/currently/for-now reactions belong in temporary State, not durable continuity.",
-      allowStateFallback
-        ? "If no durable change exists but this response changes " + owner.name + "'s current state, you may instead append (CC5|S|Key|Value) with f/t/g/x."
-        : "Do not output a temporary State candidate on this review.",
+      "Value must be " + owner.name + "'s near-extractive continuity, at most " + settings.MAX_VALUE_CHARS + " characters. Player input alone is not Evidence. Do not store a momentary reaction as durable continuity.",
       "The optional CC5 line must be last. Protect complete story if space is tight.",
+      supplement,
       "</SYSTEM>"
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
 
   function recoveryTask() {
     return [
       "<SYSTEM>",
-      "Write ordinary complete story prose now. Output no CC5 line, metadata, state summary, or acknowledgement. Preserve player control.",
+      "Write ordinary complete story prose now. Output no CC5 line, metadata, continuity summary, or acknowledgement. Preserve player control.",
       "</SYSTEM>"
     ].join("\n");
   }
 
   function candidateReserve(taskKind) {
-    if (taskKind === "none") return 0;
-    const syntax = taskKind === "state"
-      ? "(CC5|S|f|" + "W".repeat(settings.MAX_VALUE_CHARS || 72) + ")"
-      : "(CC5|D|N99|ym|" + "W".repeat(settings.MAX_VALUE_CHARS || 72) + ")";
-    return estimateTokens(syntax) + 6;
-  }
-
-  function requiredOutputForState() {
-    if (runtime.mode === "full-package") return 150;
-    if (runtime.mode === "balanced") return 130;
-    return 130;
-  }
-
-  function outputAllowance() {
-    const value = Number(infoObject.maxOutputTokens);
-    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
-  }
-
-  const BALANCED_STATE_CUE = /\b(?:afraid|anger|angry|anxious|calm(?:s|ed|ing)?|cautious|conflict|decid(?:e|es|ed|ing)|determined|doubt(?:s|ed|ing)?|fear(?:s|ed|ing|ful)?|feel(?:s|ing)?|felt|flinch(?:es|ed|ing)?|freeze(?:s|ing)?|froze|goal|guarded|hesitat(?:e|es|ed|ing|ion)|hope(?:s|d|ful)?|intend(?:s|ed|ing)?|laugh(?:s|ed|ing)?|need(?:s|ed|ing)?|plan(?:s|ned|ning)?|promise(?:s|d|ing)?|realiz(?:e|es|ed|ing)|refus(?:e|es|ed|ing)|relax(?:es|ed|ing)?|relief|resolve(?:s|d|ing)?|smil(?:e|es|ed|ing)|tense(?:s|d|ly)?|tension|think(?:s|ing)?|thought|uncertain(?:ty)?|vulnerab(?:le|ility)|want(?:s|ed|ing)?|wonder(?:s|ed|ing)?|worr(?:y|ies|ied|ying))\b/i;
-
-  function balancedStatePrompted(owner) {
-    if (!owner) return false;
-    const latest = (CC.evidenceOutputs || [])[CC.evidenceOutputs.length - 1];
-    if (!latest || !latest.text) return false;
-    const generation = Number(latest.generation) || 0;
-    const lastAttempt = Number(CC.ownerLastStateAttempt[owner.key]);
-    if (Number.isFinite(lastAttempt) && generation <= lastAttempt) return false;
-    const namesOwner = owner.aliases.some(alias => aliasMentioned(latest.text, alias));
-    return namesOwner && BALANCED_STATE_CUE.test(latest.text);
-  }
-
-  function stateRefreshDue(owner) {
-    if (!owner) return false;
-    if (runtime.mode === "balanced") return balancedStatePrompted(owner);
-    if (runtime.mode !== "full-package") return false;
-    const last = Number(CC.ownerLastStateAttempt[owner.key]);
-    return !Number.isFinite(last) || (CC.visibleGenerationCount + 1) - last >= 1;
-  }
-
-  function lowOutputAllowsState() {
-    const detected = outputAllowance();
-    if (!detected || detected >= requiredOutputForState()) return true;
-    return runtime.lowOutput !== "protect-story";
+    return 0;
   }
 
   function trimRecentStoryForFit(base, prefix, tail, maxChars) {
@@ -1205,7 +1136,7 @@ function CharacterContinuity(hook, incomingText) {
     const reserve = candidateReserve(taskKind);
     const taskTokens = estimateTokens(taskText);
     const available = runtime.contextCeiling - taskTokens - reserve;
-    if (available < 80) return { ok: false, reason: "The task and candidate reserve exceeded the configured continuity ceiling." };
+    if (available < 80) return { ok: false, reason: "The task exceeded the configured continuity ceiling." };
     const built = buildPacket(active, focus, source, available);
     const hardUse = built.tokens + taskTokens + reserve;
     if (hardUse > runtime.contextCeiling) return { ok: false, reason: "Essential individualized continuity exceeded the configured continuity ceiling." };
@@ -1308,26 +1239,16 @@ function CharacterContinuity(hook, incomingText) {
   const TURNING_SHIFT = /\b(?:accept|abandon|betray|breakthrough|change|commit|decide|discover|from now on|identity|lasting|no longer|principle|purpose|realize|reveal|transform)\w*\b/i;
   const GROWTH_SHIFT = /\b(?:accept|breakthrough|courage|forgive|heal|improve|overcome|recover|repair|restore|strengthen)\w*\b/i;
   const DECLINE_SHIFT = /\b(?:abandon|betray|corrupt|decline|give up|harden|relapse|rupture|setback|violate|weaken|withdraw)\w*\b/i;
-  const TIME_JUMP = /\b(?:(?:one|two|three|four|five|six|seven|eight|nine|ten|several|many|\d+)\s+(?:days?|weeks?|months?|years?|decades?)\s+later|(?:days?|weeks?|months?|years?|decades?)\s+(?:passed|went by)|after\s+(?:one|two|three|four|five|six|seven|eight|nine|ten|several|many|\d+)\s+(?:days?|weeks?|months?|years?|decades?)|the next (?:morning|day|week|month|year)|by the following (?:week|month|year)|a decade later)\b/i;
+  const TIME_JUMP = /\b(?:(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|several|many|\d+)\s+(?:days?|weeks?|months?|years?|decades?)\s+later|(?:days?|weeks?|months?|years?|decades?)\s+(?:passed|went by)|after\s+(?:a|an|one|two|three|four|five|six|seven|eight|nine|ten|several|many|\d+)\s+(?:days?|weeks?|months?|years?|decades?)|the next (?:morning|day|week|month|year)|by the following (?:week|month|year))\b/i;
 
-  function clearSceneForTimeJump() {
-    let cleared = 0;
-    Object.values(CC.npcs || {}).forEach(npc => {
-      if (!npc || !npc.scene) return;
-      ["feeling", "thought", "goal", "tension"].forEach(field => {
-        if (npc.scene[field] && npc.scene[field].value) cleared += 1;
-        npc.scene[field] = blankSceneField();
-      });
-    });
-    CC.last.clearedForTimeJump = cleared;
-    return cleared;
+  function resetSceneForTimeJump() {
+    CC.sceneLastSeen = {};
+    CC.activeKeys = [];
+    CC.last.timeJumpReset = true;
   }
 
   function parseTerminalCandidate(output, plan) {
     let story = textOf(output).trimEnd();
-    if (!plan || !plan.taskDelivered || !["state", "durable"].includes(plan.task)) {
-      return { story, candidate: null, malformed: false };
-    }
     const stateMatch = story.match(/(?:^|\n)\s*\(CC5\|S\|([ftgx])\|([^|\n)]{1,72})\)\s*$/i);
     if (stateMatch) {
       const index = story.lastIndexOf(stateMatch[0]);
@@ -1382,16 +1303,16 @@ function CharacterContinuity(hook, incomingText) {
     const normalized = normalizedValue(passage);
     return (CC.rejectedEvidence || []).some(item => (
       item.ownerKey === ownerKey && item.targetKey === targetKey
-      && item.evidence === normalized && CC.inputCount - item.inputCount < 3
+      && item.evidence === normalized && CC.visibleGenerationCount - item.turn < 3
     ));
   }
 
   function rememberRejected(ownerKey, targetKey, passage) {
     const evidence = normalizedValue(passage);
     if (!evidence) return;
-    CC.rejectedEvidence = (CC.rejectedEvidence || []).filter(item => CC.inputCount - item.inputCount < 3);
+    CC.rejectedEvidence = (CC.rejectedEvidence || []).filter(item => CC.visibleGenerationCount - item.turn < 3);
     if (!CC.rejectedEvidence.some(item => item.ownerKey === ownerKey && item.targetKey === targetKey && item.evidence === evidence)) {
-      CC.rejectedEvidence.push({ ownerKey, targetKey, evidence, inputCount: CC.inputCount });
+      CC.rejectedEvidence.push({ ownerKey, targetKey, evidence, turn: CC.visibleGenerationCount });
     }
     CC.rejectedEvidence = CC.rejectedEvidence.slice(-24);
   }
@@ -1410,7 +1331,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function durabilityResult(key, target, value, evidence) {
-    if (TEMPORARY_LANGUAGE.test(value)) return { ok: false, error: "Time-limited wording belongs in temporary State." };
+    if (TEMPORARY_LANGUAGE.test(value)) return { ok: false, error: "Time-limited wording is inferred from the live story rather than stored as durable continuity." };
     if (["f", "t"].includes(key) && !DURABLE_STANCE.test(evidence)) return { ok: false, error: "Feeling or Thought lacked a lasting or recurring stance." };
     if (key === "g" && !GOAL_SHIFT.test(evidence)) return { ok: false, error: "Goal lacked a continuing plan, intention, promise, or decision." };
     if (key === "x" && !TENSION_SHIFT.test(evidence)) return { ok: false, error: "Tension lacked an ongoing conflict or clear resolution." };
@@ -1431,23 +1352,15 @@ function CharacterContinuity(hook, incomingText) {
     return { ok: true, error: "" };
   }
 
-  function applyStateCandidate(owner, candidate, story, generation) {
-    const field = { f: "feeling", t: "thought", g: "goal", x: "tension" }[candidate.key];
-    if (!field || !candidate.value) return { ok: false, error: "Invalid temporary State field." };
-    const evidence = bestEvidence(candidate.value, [{ text: story, source: "completed response" }], owner);
-    if (!evidence) return { ok: false, error: "Temporary State Value was not supported by the completed response." };
-    const npc = CC.npcs[owner.key];
-    if (nearlySame(npc.scene[field].value, candidate.value)) return { ok: false, error: "Temporary State Value was already current." };
-    npc.scene[field] = { value: candidate.value, updatedGeneration: generation };
-    return { ok: true, summary: owner.name + " State/" + field, evidence: evidence.passage, source: evidence.source };
-  }
-
   function applyDurableCandidate(owner, candidate, story, plan, generation) {
     const target = targetForCode(plan, candidate.targetCode);
     if (!target) return { ok: false, error: "Target code was not authorized for this review." };
     if (!candidate.value) return { ok: false, error: "Durable Value was empty." };
     const prior = (plan.evidenceOutputs || []).slice().reverse().map(item => ({ text: item.text, source: "earlier generated story" }));
-    const evidence = bestEvidence(candidate.value, [{ text: story, source: "completed response" }].concat(prior), owner, target.name);
+    const recent = clean(plan.recentStory, 30000);
+    const sources = [{ text: story, source: "completed response" }];
+    if (recent) sources.push({ text: recent, source: "Recent Story" });
+    const evidence = bestEvidence(candidate.value, sources.concat(prior), owner, target.name);
     if (!evidence) return { ok: false, error: "Durable Value was not supported by eligible generated story." };
     if (blockedEvidence(owner.key, target.key, evidence.passage)) return { ok: false, error: "The same rejected Evidence is cooling down." };
     const durability = durabilityResult(candidate.key, target, candidate.value, evidence.passage);
@@ -1490,46 +1403,36 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function appendEvidenceOutput(story, activeKeys, generation) {
-    const value = clean(story, 5000);
-    if (!value) return;
-    CC.evidenceOutputs.push({ text: value, activeKeys: (activeKeys || []).slice(), generation });
-    const maxEntries = Math.max(2, Number(settings.MAX_EVIDENCE_OUTPUTS) || 10);
-    CC.evidenceOutputs = CC.evidenceOutputs.slice(-maxEntries);
-    const maxChars = Math.max(1000, Number(settings.MAX_EVIDENCE_CHARS) || 6500);
-    while (CC.evidenceOutputs.length > 1 && CC.evidenceOutputs.reduce((sum, item) => sum + item.text.length, 0) > maxChars) {
-      CC.evidenceOutputs.shift();
-    }
+  function updateScenePresence(story, focusKey, generation) {
+    characters.forEach(character => {
+      if (character.aliases.some(alias => aliasMentioned(story, alias))) CC.sceneLastSeen[character.key] = generation;
+    });
+    if (focusKey) CC.sceneLastSeen[focusKey] = generation;
   }
 
   if (!CC.last || typeof CC.last !== "object" || Array.isArray(CC.last)) CC.last = initialV5State().last;
 
-  function stateFreshness(character) {
-    const npc = CC.npcs[character.key];
-    const parts = [];
-    [["F", "feeling"], ["T", "thought"], ["G", "goal"], ["X", "tension"]].forEach(([label, field]) => {
-      const item = npc && npc.scene && npc.scene[field];
-      if (item && item.value) parts.push(label + " age " + Math.max(0, CC.visibleGenerationCount - item.updatedGeneration));
-    });
-    return character.name + ": " + (parts.join(", ") || "none");
-  }
-
   function writeStatusCard() {
-    const activeNames = (CC.activeKeys || []).map(key => characters.find(character => character.key === key)?.name).filter(Boolean);
+    const activeNames = (CC.activeKeys || []).map(key => {
+      const character = characters.find(item => item.key === key);
+      return character ? character.name + " (" + character.significance + ")" : "";
+    }).filter(Boolean);
     const focusName = characters.find(character => character.key === CC.focusKey)?.name || "None";
-    const detected = CC.last.outputTokensDetected || outputAllowance();
-    const recommendation = runtime.mode === "full-package" ? "150+" : (runtime.mode === "balanced" ? "130+" : "100+");
+    const evidenceStatus = characters.map(character => {
+      const count = ownerObservationCount(character.key);
+      return character.name + " " + count + "/" + runtime.durableObservations + (count >= runtime.durableObservations ? " ready" : "");
+    }).join("; ") || "None";
     const warning = [runtime.warning, CC.last.warning, CC.last.error].filter(Boolean).join(" ") || "None";
     const entry = [
-      "Character Continuity v5.0",
-      "Mode: " + runtime.mode + "; output allowance: " + (detected || "unknown") + "; recommendation: " + recommendation,
-      "Registered / active / focus: " + characters.length + " / " + (activeNames.join(", ") || "None") + " / " + focusName,
+      "Character Continuity v5.0.1",
+      "Architecture: staggered focus and durable persistence; temporary reactions are inferred from live context",
+      "Registered / scene-active / focus: " + characters.length + " / " + (activeNames.join(" → ") || "None") + " / " + focusName,
       "Player: " + player.name + " | " + [player.subject, player.object, player.possessiveAdjective, player.possessivePronoun, player.reflexive].join("/"),
-      "Genuine inputs / visible generations: " + CC.inputCount + " / " + CC.visibleGenerationCount,
-      "Temporary State lifetime: " + runtime.stateLifetime + "; " + characters.map(stateFreshness).join("; "),
-      "Durable review: " + CC.durableProgress + "/" + runtime.durableInterval + (CC.durableDue ? " due" : "") + "; last task: " + CC.last.task + (CC.last.owner ? " for " + CC.last.owner : ""),
+      "Story turns / genuine inputs: " + CC.visibleGenerationCount + " / " + CC.inputCount,
+      "Durable evidence: " + evidenceStatus,
+      "Review cooldown: " + CC.reviewCooldown + "; last task: " + CC.last.task + (CC.last.owner ? " for " + CC.last.owner : ""),
       "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
-      "Context tokens: " + CC.last.injectedTokens + " injected; " + CC.last.reserveTokens + " reserved; " + CC.last.headroomTokens + " headroom of " + runtime.contextCeiling,
+      "Context tokens: " + CC.last.injectedTokens + " injected; " + CC.last.headroomTokens + " headroom of " + runtime.contextCeiling,
       "Components: rules " + CC.last.rulesTokens + ", NPC " + CC.last.npcTokens + ", relationships " + CC.last.relationshipTokens + ", memories " + CC.last.memoryTokens + ", task " + CC.last.taskTokens,
       "Recent Story retained: " + CC.last.recentStoryChars + " characters; no duplication into CC packet",
       "Retry / Continue / fallback: " + (CC.last.retry ? "Yes" : "No") + " / " + (CC.last.continue ? "Yes" : "No") + " / " + (CC.last.gracefulFallback ? "Yes" : "No"),
@@ -1537,22 +1440,24 @@ function CharacterContinuity(hook, incomingText) {
       "Last output: " + CC.last.output,
       "Warning: " + warning
     ].join("\n");
-    upsertCard(settings.STATUS_TITLE || "Character Continuity Status", entry, "Compact v5 runtime status.", "status");
+    upsertCard(settings.STATUS_TITLE || "Character Continuity Status", entry, "Compact v5.0.1 runtime status.", "status");
 
     const debugCard = findCard(settings.DEBUG_TITLE || "Character Continuity Debug");
     if (!runtime.debug) {
       if (debugCard) removeCard(debugCard);
       return;
     }
+    const evidenceEntries = Object.values(CC.durableEvidence || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
+    const evidenceChars = Object.values(CC.durableEvidence || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.reduce((part, item) => part + textOf(item && item.text).length, 0) : 0), 0);
     const debugEntry = [
-      "Character Continuity v5.0 debug",
+      "Character Continuity v5.0.1 debug",
       "Schema / v4.4 cutover: " + CC.schemaVersion + " / " + (CC.cutoverFromV44 ? "Yes" : "No"),
-      "State policy / lifetime: " + runtime.mode + " / " + runtime.stateLifetime,
-      "Low-output behavior: " + runtime.lowOutput,
-      "Temporary states expired / time-jump clears: " + CC.last.expiredStates + " / " + CC.last.clearedForTimeJump,
-      "Evidence outputs / rejected ledger: " + (CC.evidenceOutputs || []).length + " / " + (CC.rejectedEvidence || []).length,
+      "Maximum scene-active NPCs / observations / cooldown: " + runtime.maxActive + " / " + runtime.durableObservations + " / " + runtime.reviewCooldown,
+      "Focus last served: " + characters.map(character => character.name + "=" + (CC.focusLastServed[character.key] ?? "never")).join(", "),
+      "Time-jump scene reset: " + (CC.last.timeJumpReset ? "Yes" : "No"),
+      "Owner evidence entries / characters / rejected ledger: " + evidenceEntries + " / " + evidenceChars + " / " + (CC.rejectedEvidence || []).length,
       "Evidence source: " + CC.last.evidence,
-      "Packet total before reserve: " + CC.last.injectedTokens,
+      "Injected continuity tokens: " + CC.last.injectedTokens,
       "Error: " + (CC.last.error || "None")
     ].join("\n");
     upsertCard(settings.DEBUG_TITLE || "Character Continuity Debug", debugEntry, "Optional v5 diagnostics.", "debug");
@@ -1563,14 +1468,15 @@ function CharacterContinuity(hook, incomingText) {
       warning: "", error: "", packetTokens: 0, rulesTokens: 0, npcTokens: 0,
       relationshipTokens: 0, memoryTokens: 0, taskTokens: 0, reserveTokens: 0,
       injectedTokens: 0, headroomTokens: runtime.contextCeiling, recentStoryChars: 0,
-      task: "none", owner: "", candidate: "not requested", evidence: "None",
-      expiredStates: 0, clearedForTimeJump: 0, outputTokensDetected: outputAllowance(),
+      task: "none", owner: "", candidate: "not requested", update: "None", evidence: "None",
+      timeJumpReset: false,
       gracefulFallback: false
     });
   }
 
   function beginInput(inputValue) {
     const baseHash = generationBaseHash(inputValue);
+    const discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     const retry = !!(CC.preGenerationSnapshot && baseHash === CC.lastInputBaseHash);
     if (retry) restoreSnapshot(CC.preGenerationSnapshot);
     else {
@@ -1585,12 +1491,20 @@ function CharacterContinuity(hook, incomingText) {
     CC.last.continue = false;
     CC.last.error = "";
     CC.last.warning = "";
+    if (retry) {
+      CC.last.candidate = "rolled back";
+      CC.last.update = "None";
+      CC.last.evidence = "None";
+      CC.last.output = "Retry restored the pre-generation snapshot; the discarded continuity result was removed.";
+    }
 
     if (opening) {
       CC.openingSeen = true;
       CC.currentPlan = {
         kind: "input", retry, opening: true, startupGrace: false, genuine: false,
-        awaitingContext: true, task: "none", taskDelivered: false, completed: false
+        awaitingContext: true, task: "none", taskDelivered: false, completed: false,
+        retryFocusKey: retry && discardedPlan ? discardedPlan.ownerKey || discardedPlan.focusKey || "" : "",
+        retryActiveKeys: retry && discardedPlan ? clone(discardedPlan.activeKeys || []) : []
       };
       CC.last.context = "Opening automatic generation detected; continuity may be supplied but output will be suppressed.";
       return;
@@ -1598,20 +1512,15 @@ function CharacterContinuity(hook, incomingText) {
 
     const startupGrace = CC.openingSuppressed && !CC.firstVisibleComplete && CC.inputCount === 0;
     CC.inputCount += 1;
-    if (startupGrace) {
-      CC.durableProgress = 0;
-      CC.durableDue = false;
-    } else if (!CC.durableDue) {
-      CC.durableProgress = Math.min(runtime.durableInterval, CC.durableProgress + 1);
-      if (CC.durableProgress >= runtime.durableInterval) CC.durableDue = true;
-    }
     CC.currentPlan = {
       kind: "input", retry, opening: false, startupGrace, genuine: true,
-      awaitingContext: true, task: "none", taskDelivered: false, completed: false
+      awaitingContext: true, task: "none", taskDelivered: false, completed: false,
+      retryFocusKey: retry && discardedPlan ? discardedPlan.ownerKey || discardedPlan.focusKey || "" : "",
+      retryActiveKeys: retry && discardedPlan ? clone(discardedPlan.activeKeys || []) : []
     };
     CC.last.context = startupGrace
       ? "Input cycle 1 startup grace is ready."
-      : (CC.durableDue ? "A durable review is due." : "Ordinary portrayal input is ready.");
+      : (retry ? "Retry restored the prior turn position; continuity updates are disabled." : "Ordinary portrayal input is ready.");
   }
 
   function beginContinueIfNeeded() {
@@ -1619,7 +1528,7 @@ function CharacterContinuity(hook, incomingText) {
     characters.forEach(syncCharacterCards);
     CC.preGenerationSnapshot = captureSnapshot();
     CC.currentPlan = {
-      kind: "continue", retry: false, opening: false, startupGrace: false, genuine: false,
+      kind: "continue", retry: false, opening: false, startupGrace: false, genuine: true,
       awaitingContext: true, task: "none", taskDelivered: false, completed: false
     };
     CC.last.retry = false;
@@ -1631,15 +1540,24 @@ function CharacterContinuity(hook, incomingText) {
     resetLastForContext();
     const plan = beginContinueIfNeeded();
     plan.awaitingContext = false;
-    expireTemporaryState();
 
     const recent = recentStoryFromContext(originalText);
-    const source = [CC.lastInput, recent].filter(Boolean).join("\n").slice(-16000);
-    const active = selectActive(source);
-    const focus = selectFocus(active);
+    const currentInput = plan.kind === "input" ? CC.lastInput : "";
+    const source = [currentInput, recent].filter(Boolean).join("\n").slice(-16000);
+    if (!plan.retry && TIME_JUMP.test(source)) resetSceneForTimeJump();
+    let active = selectActive(source, currentInput);
+    if (plan.retry && Array.isArray(plan.retryActiveKeys) && plan.retryActiveKeys.length) {
+      const repeated = plan.retryActiveKeys.map(key => characters.find(character => character.key === key)).filter(Boolean).slice(0, runtime.maxActive);
+      if (repeated.length) active = repeated;
+    }
+    let focus = selectFocus(active, currentInput);
+    if (plan.retry && plan.retryFocusKey) focus = active.find(character => character.key === plan.retryFocusKey) || focus;
     if (!active.length || !focus) {
       CC.activeKeys = [];
       CC.focusKey = "";
+      plan.activeKeys = [];
+      plan.task = "none";
+      plan.taskDelivered = false;
       CC.last.context = "No active registered NPC was detected.";
       return originalText;
     }
@@ -1649,33 +1567,25 @@ function CharacterContinuity(hook, incomingText) {
     let task = "none";
     let taskText = "";
     let owner = focus;
-    let allowStateFallback = false;
-    const stateDue = !plan.opening && !plan.startupGrace && !CC.recoveryPending && stateRefreshDue(owner);
-    const stateAllowed = stateDue && lowOutputAllowsState();
-    if (
-      stateDue
-      && runtime.lowOutput === "warn-only"
-      && outputAllowance()
-      && outputAllowance() < requiredOutputForState()
-    ) {
-      CC.last.warning = "Working-State refresh is proceeding below the mode's recommended output allowance because warn-only is selected.";
-    }
-
+    let reviewSupplement = "";
     if (CC.recoveryPending) {
       taskText = recoveryTask();
       CC.last.task = "recovery";
-    } else if (plan.genuine && CC.durableDue && !plan.startupGrace) {
+    } else if (!plan.opening && !plan.startupGrace && !plan.retry && CC.reviewCooldown <= 0 && ownerReadyForReview(owner.key)) {
       task = "durable";
-      allowStateFallback = stateAllowed;
-      taskText = durableTask(owner, active, allowStateFallback);
-    } else if (stateAllowed) {
-      task = "state";
-      taskText = stateTask(owner);
-    } else if (stateDue && !stateAllowed) {
-      CC.last.warning = "Working-State refresh deferred because the detected output allowance is below the mode recommendation and protect-story is selected.";
+      reviewSupplement = evidenceSupplement(owner, recent);
+      taskText = durableTask(owner, active, reviewSupplement);
     }
 
     let attempt = assembleContext(originalText, active, focus, source, task, taskText);
+    if (!attempt.ok && task === "durable" && reviewSupplement) {
+      taskText = durableTask(owner, active, "");
+      attempt = assembleContext(originalText, active, focus, source, task, taskText);
+      if (attempt.ok) {
+        CC.last.gracefulFallback = true;
+        CC.last.warning = "The mature review fit without its older evidence supplement; Recent Story and the completed response remain eligible.";
+      }
+    }
     if (!attempt.ok && task !== "none") {
       CC.last.gracefulFallback = true;
       CC.last.warning = (CC.last.warning ? CC.last.warning + " " : "")
@@ -1696,9 +1606,10 @@ function CharacterContinuity(hook, incomingText) {
     plan.taskDelivered = task !== "none";
     plan.ownerKey = owner.key;
     plan.ownerName = owner.name;
+    plan.focusKey = focus.key;
     plan.targets = targetMap(owner, active);
-    plan.allowStateFallback = allowStateFallback;
-    plan.evidenceOutputs = clone(CC.evidenceOutputs || []);
+    plan.evidenceOutputs = clone(ownerEvidence(owner.key));
+    plan.recentStory = recent;
     plan.activeKeys = active.map(character => character.key);
 
     const built = attempt.built;
@@ -1725,7 +1636,7 @@ function CharacterContinuity(hook, incomingText) {
     const plan = CC.currentPlan || { task: "none", taskDelivered: false, activeKeys: CC.activeKeys || [] };
     if (plan.opening) {
       CC.openingSuppressed = true;
-      CC.last.output = "Suppressed the opening automatic model output; no State, evidence, or durable interval advanced.";
+      CC.last.output = "Suppressed the opening automatic model output; no focus, evidence, or durable review advanced.";
       CC.last.candidate = "not requested";
       plan.completed = true;
       return " ";
@@ -1742,7 +1653,7 @@ function CharacterContinuity(hook, incomingText) {
     }
 
     const nextGeneration = CC.visibleGenerationCount + 1;
-    if (TIME_JUMP.test(story)) clearSceneForTimeJump();
+    if (!plan.retry && TIME_JUMP.test(story)) resetSceneForTimeJump();
     let result = null;
     const owner = characters.find(character => character.key === plan.ownerKey) || null;
 
@@ -1755,10 +1666,7 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.candidate = "rejected";
       CC.last.error = "No authorized owner was bound to the terminal candidate.";
     } else if (parsed.candidate.scope === "state") {
-      const authorized = plan.task === "state" || (plan.task === "durable" && plan.allowStateFallback);
-      result = authorized
-        ? applyStateCandidate(owner, parsed.candidate, story, nextGeneration)
-        : { ok: false, error: "Temporary State was not authorized for this generation." };
+      result = { ok: false, error: "The Temporary State protocol has been retired; current reactions are inferred from live context." };
     } else {
       result = plan.task === "durable"
         ? applyDurableCandidate(owner, parsed.candidate, story, plan, nextGeneration)
@@ -1777,23 +1685,27 @@ function CharacterContinuity(hook, incomingText) {
       }
     }
 
-    if (plan.taskDelivered && plan.task === "state" && owner) {
-      CC.ownerLastStateAttempt[owner.key] = nextGeneration;
-    }
-    if (plan.taskDelivered && plan.task === "durable" && owner) {
-      CC.ownerLastDurableAttempt[owner.key] = CC.inputCount;
-      CC.durableProgress = 0;
-      CC.durableDue = false;
-      if (plan.allowStateFallback) CC.ownerLastStateAttempt[owner.key] = nextGeneration;
-    }
-
     CC.visibleGenerationCount = nextGeneration;
     CC.firstVisibleComplete = true;
     CC.recoveryPending = false;
-    appendEvidenceOutput(story, plan.activeKeys || CC.activeKeys, nextGeneration);
+    if (!plan.retry) {
+      const deliveredReview = !!(owner && plan.taskDelivered && plan.task === "durable");
+      if (owner) {
+        updateScenePresence(story, owner.key, nextGeneration);
+        CC.focusLastServed[owner.key] = nextGeneration;
+      }
+      if (deliveredReview) {
+        CC.ownerLastDurableAttempt[owner.key] = nextGeneration;
+        CC.durableEvidence[owner.key] = [];
+        CC.reviewCooldown = runtime.reviewCooldown;
+      } else if (owner) {
+        appendOwnerEvidence(owner.key, story, nextGeneration);
+      }
+      if (!deliveredReview && CC.reviewCooldown > 0) CC.reviewCooldown -= 1;
+    }
     plan.completed = true;
     CC.last.output = result && result.ok
-      ? "Complete story survived and one " + parsed.candidate.scope + " update was applied for the following response."
+      ? "Complete story survived and one durable update was applied for the following response."
       : "Complete story survived; " + (CC.last.candidate === "absent/no update" ? "no update candidate was returned." : (CC.last.candidate === "not requested" ? "no update was scheduled." : "no continuity change was applied."));
     return story;
   }
