@@ -1,5 +1,3 @@
-# AzuretheWitch
-
 # Character Continuity v5.0 Open Beta
 
 ## Simple Creator Guide
