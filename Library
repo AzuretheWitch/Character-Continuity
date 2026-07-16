@@ -1,6 +1,6 @@
 /*
- * CHARACTER CONTINUITY v5.1.0
- * Stateful Onboarding and Retry Rollback
+ * CHARACTER CONTINUITY v5.1.1
+ * Protocol Placement Guard
  *
  * Manually registered NPC:
  *   CC CORE: Full Name
@@ -26,7 +26,7 @@
  * state used by the immediately preceding private build. It contains no
  * v3.x/v4.3 protocol parser, layout migration, or compatibility aliases.
  *
- * v5.1 restores compact, expiring Temporary State snapshots for Feeling,
+ * v5.1.1 carries compact, expiring Temporary State snapshots for Feeling,
  * first-person in-character Thought, Goal, and Tension. It also supports an
  * opt-in CC NPC QUEUE: a queued name encountered in Recent Story can produce
  * one editable, review-pending Core profile and become active next generation.
@@ -327,7 +327,7 @@ function CharacterContinuity(hook, incomingText) {
         maxActive: Math.min(5, numberValue(extractLine(source, "Maximum active NPCs"), settings.DEFAULT_MAX_ACTIVE_NPCS || 5, 1, 5)),
         debug: boolValue(extractLine(source, "Debug"), settings.DEFAULT_DEBUG === true)
       });
-      saveCard(card, source, "Player-editable v5.1 settings. Converted to State, staggered focus, and durable persistence.");
+      saveCard(card, source, "Player-editable v5.1.1 settings. Converted to State, staggered focus, and durable persistence.");
     }
 
     if (!extractLine(source, "Temporary State lifetime")) {
@@ -341,7 +341,7 @@ function CharacterContinuity(hook, incomingText) {
         maxActive: extractLine(source, "Maximum active NPCs") || settings.DEFAULT_MAX_ACTIVE_NPCS || 5,
         debug: boolValue(extractLine(source, "Debug"), settings.DEFAULT_DEBUG === true)
       });
-      saveCard(card, source, "Player-editable v5.1 settings.");
+      saveCard(card, source, "Player-editable v5.1.1 settings.");
     }
 
     const turning = enumValue(extractLine(source, "Turning Points"), ["growth-only", "all-directions", "disabled"], "growth-only");
@@ -773,7 +773,7 @@ function CharacterContinuity(hook, incomingText) {
     if (!npc) return;
     const stateTitle = (settings.STATE_PREFIX || "CC STATE: ") + character.name;
     const stateText = stateEntry(npc);
-    upsertCard(stateTitle, stateText, "Expiring v5.1 temporary State. Thought is first person in the NPC's voice.", "state", character.key);
+    upsertCard(stateTitle, stateText, "Expiring v5.1.1 temporary State. Thought is first person in the NPC's voice.", "state", character.key);
     CC.cardHashes[stateTitle] = hashString(stateText);
 
     const durableTitle = (settings.CONTINUITY_PREFIX || "CC CONTINUITY: ") + character.name;
@@ -1193,17 +1193,20 @@ function CharacterContinuity(hook, incomingText) {
     return core ? "Core: " + core : "";
   }
 
-  function buildPacket(active, focus, source, tokenBudget) {
+  function buildPacket(active, focus, source, tokenBudget, taskKind = "none") {
     const components = [];
     const add = (text, type, priority, required = false) => {
       const value = wholeLine(text, 0);
       if (value) components.push({ text: value, type, priority, required });
     };
     add("<SYSTEM>", "rules", 1000, true);
+    const recordRule = ["state", "registration", "durable"].includes(taskKind)
+      ? "A separate CC5 task after this packet alone authorizes at most one record and defines its placement. Follow that task's placement exactly; never move a leading record to the end or a final record to the beginning."
+      : "No continuity operation is authorized for this generation. Output complete story only. Do not output any CC5 record, metadata, continuity summary, or acknowledgement.";
     add(
       "Portray every active NPC distinctly from their own continuity. Preserve " + player.name
-      + "'s control of " + player.possessiveAdjective + " speech, actions, thoughts, feelings, consent, and commitments."
-      + " Output story only except for one final CC5 line when separately requested below.",
+      + "'s control of " + player.possessiveAdjective + " speech, actions, thoughts, feelings, consent, and commitments. "
+      + recordRule,
       "rules", 1000, true
     );
     add(
@@ -1317,7 +1320,7 @@ function CharacterContinuity(hook, incomingText) {
       "Targets: " + targetText + ". Keys: f/t/g/x=durable personal or directional stance, m=memory, r=relationship, l=role, b=boundary, u=trust, c=closeness" + turningKeys + ".",
       "Value must be " + owner.name + "'s near-extractive continuity, at most " + settings.MAX_VALUE_CHARS + " characters. Player input alone is not Evidence. Do not store a momentary reaction as durable continuity.",
       "An explicit acceptance, refusal, or reassignment of ongoing responsibility is eligible Role evidence even when stated briefly; it does not require an emotional explanation.",
-      "The optional CC5 line must be last. Protect complete story if space is tight.",
+      "If authorized, the CC5 record must be exactly the last nonblank output line, after complete story; never place it before or inside story. Protect complete story if space is tight.",
       supplement,
       "</SYSTEM>"
     ].filter(Boolean).join("\n");
@@ -1326,9 +1329,9 @@ function CharacterContinuity(hook, incomingText) {
   function stateTask(owner) {
     return [
       "<SYSTEM>",
-      "Before story, reassess fixed Owner " + owner.name + "'s immediate inner state from Core, existing State, relationships, current input, and Recent Story. If one or more State fields meaningfully changed or are missing but now supported, write one compact first line beginning (CC5|S| and ending ). Between them use only changed code=value pairs separated by |. Codes: f=Feeling, t=private Thought, g=current Goal, x=Tension. Use ~ only to clear a field that no longer applies.",
+      "Before story, reassess fixed Owner " + owner.name + "'s immediate inner state from Core, existing State, relationships, current input, and Recent Story. If one or more State fields meaningfully changed or are missing but now supported, write exactly one compact record as the first nonblank output line. It must begin exactly (CC5|S|, end with ), and contain only changed code=value pairs separated by |. Codes: f=Feeling, t=private Thought, g=current Goal, x=Tension. Use ~ only to clear a field that no longer applies. Never place this record after or inside story.",
       "Thought must be a short first-person private thought in " + owner.name + "'s own voice. Feeling, Goal, and Tension are compact summaries. Ground subtext without inventing facts, contradicting story, or deciding the player's feelings, consent, commitments, or response.",
-      "Then write complete normal story consistent with the snapshot. If State remains accurate, omit the line. The story is mandatory and must survive even when space is tight.",
+      "Then write complete normal story consistent with the snapshot. If State remains accurate, output story only and omit every CC5 record. The story is mandatory and must survive even when space is tight.",
       "</SYSTEM>"
     ].join("\n");
   }
@@ -1340,8 +1343,8 @@ function CharacterContinuity(hook, incomingText) {
     ].filter(Boolean).join(" ");
     return [
       "<SYSTEM>",
-      "The player queued " + entry.name + " for opt-in NPC onboarding and that exact name appears in current story context. Before story, if the context supports a useful editable profile, write one compact first line beginning (CC5|N| and ending ). Use supported code=value pairs separated by |: p=pronouns, i=identity or story role, k=core personality, d=relational disposition, a=aliases, v=voice. Name is fixed by the script; do not include or change it. " + supplied,
-      "Infer only from current input and Recent Story. Do not invent biography, secrets, relationships, protected traits, or certainty beyond the encounter. Keep every field short. Then write complete normal story. If evidence is too thin, omit the line and leave the NPC queued. The story is mandatory.",
+      "The player queued " + entry.name + " for opt-in NPC onboarding and that exact name appears in current story context. Before story, if the context supports a useful editable profile, write exactly one compact record as the first nonblank output line. It must begin exactly (CC5|N|, end with ), and contain only supported code=value pairs separated by |: p=pronouns, i=identity or story role, k=core personality, d=relational disposition, a=aliases, v=voice. Name is fixed by the script; do not include or change it. Never place this record after or inside story. " + supplied,
+      "Infer only from current input and Recent Story. Do not invent biography, secrets, relationships, protected traits, or certainty beyond the encounter. Keep every field short. Then write complete normal story. If evidence is too thin, output story only, omit every CC5 record, and leave the NPC queued. The story is mandatory.",
       "</SYSTEM>"
     ].join("\n");
   }
@@ -1381,7 +1384,7 @@ function CharacterContinuity(hook, incomingText) {
     const taskTokens = estimateTokens(taskText);
     const available = runtime.contextCeiling - taskTokens - reserve;
     if (available < 80) return { ok: false, reason: "The task exceeded the configured continuity ceiling." };
-    const built = buildPacket(active, focus, source, available);
+    const built = buildPacket(active, focus, source, available, taskKind);
     const hardUse = built.tokens + taskTokens + reserve;
     if (hardUse > runtime.contextCeiling) return { ok: false, reason: "Essential individualized continuity exceeded the configured continuity ceiling." };
     const fitted = trimRecentStoryForFit(base, built.packet, taskText, Number(infoObject.maxChars) || 0);
@@ -1857,7 +1860,7 @@ function CharacterContinuity(hook, incomingText) {
     const queued = uncheckedQueueEntries().map(entry => entry.name).join(", ") || "None";
     const warning = [runtime.warning, CC.last.warning, CC.last.error].filter(Boolean).join(" ") || "None";
     const entry = [
-      "Character Continuity v5.1.0",
+      "Character Continuity v5.1.1",
       "Architecture: staggered focus, expiring State snapshots, durable persistence, and opt-in NPC onboarding",
       "Registered / scene-active / focus: " + characters.length + " / " + (activeNames.join(" → ") || "None") + " / " + focusName,
       "Queued NPCs: " + queued,
@@ -1875,7 +1878,7 @@ function CharacterContinuity(hook, incomingText) {
       "Last output: " + CC.last.output,
       "Warning: " + warning
     ].join("\n");
-    upsertCard(settings.STATUS_TITLE || "Character Continuity Status", entry, "Compact v5.1 runtime status.", "status");
+    upsertCard(settings.STATUS_TITLE || "Character Continuity Status", entry, "Compact v5.1.1 runtime status.", "status");
 
     const debugCard = findCard(settings.DEBUG_TITLE || "Character Continuity Debug");
     if (!runtime.debug) {
@@ -1885,7 +1888,7 @@ function CharacterContinuity(hook, incomingText) {
     const evidenceEntries = Object.values(CC.durableEvidence || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.length : 0), 0);
     const evidenceChars = Object.values(CC.durableEvidence || {}).reduce((sum, items) => sum + (Array.isArray(items) ? items.reduce((part, item) => part + textOf(item && item.text).length, 0) : 0), 0);
     const debugEntry = [
-      "Character Continuity v5.1.0 debug",
+      "Character Continuity v5.1.1 debug",
       "Schema / v4.4 cutover: " + CC.schemaVersion + " / " + (CC.cutoverFromV44 ? "Yes" : "No"),
       "Maximum scene-active NPCs / State lifetime / observations / cooldown: " + runtime.maxActive + " / " + runtime.stateLifetime + " / " + runtime.durableObservations + " / " + runtime.reviewCooldown,
       "Focus last served: " + characters.map(character => character.name + "=" + (CC.focusLastServed[character.key] ?? "never")).join(", "),
@@ -2024,7 +2027,7 @@ function CharacterContinuity(hook, incomingText) {
     const onboarding = !plan.opening && !plan.startupGrace && !plan.retry && !CC.recoveryPending
       ? selectOnboardingEntry(source, currentInput)
       : null;
-    if ((!active.length || !focus) && !onboarding && !CC.recoveryPending) {
+    if ((!active.length || !focus) && !onboarding && !CC.recoveryPending && !plan.retry) {
       CC.activeKeys = [];
       CC.focusKey = "";
       plan.activeKeys = [];
