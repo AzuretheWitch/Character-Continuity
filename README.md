@@ -1,6 +1,6 @@
-# Character Continuity Stable v1.0.53
+# Character Continuity
 
-Character Continuity Stable helps AI Dungeon keep registered NPCs recognizable and consistent while still allowing them to change naturally through the story.
+Character Continuity helps AI Dungeon keep registered NPCs recognizable and consistent while still allowing them to change naturally through the story.
 
 ## Features
 
@@ -45,7 +45,7 @@ For the easiest first setup, install it in a new or otherwise clean Scenario. Th
 
 You need:
 
-- The file `Character-Continuity-Stable-v1.0.53` library section, available in this repository.
+- The file `Character-Continuity-Stable` library section, available in this repository.
 - AI Dungeon open in a computer web browser
 - A Scenario that you can edit
 
@@ -71,7 +71,7 @@ The Library tab holds the main script. The other three tabs contain small connec
 
 ## Part 2: Install the main script
 
-1. Open `Character-Continuity-Stable-v1.0.53` library tab.
+1. Open `Character-Continuity-Stable` library tab.
 2. Select everything in the file and copy it.
 3. In AI Dungeon, open the **Library** tab.
 4. Remove any placeholder code from that tab.
@@ -298,13 +298,13 @@ Continue the Adventure once, then inspect the `CC — Debug` card. Turn Debug of
 
 ## Final checklist
 
-- The full v1.0.53 file is in **Library**.
+- The full file is in **Library**.
 - The Input, Context, and Output connectors are in the correct tabs.
 - Scripts are enabled for both the Scenario and the account.
 - `Player — Identity` exists.
 - Every starting NPC has one Outer card and one Inner card.
 - The Adventure was started fresh from the saved Scenario.
 - `CC — Settings` says `Enabled: true`.
-- `CC — Status` shows `Character Continuity Stable v1.0.53`.
+- `CC — Status` shows `Character Continuity Stable` plus the latest version(which is v1.0.59 right now).
 
 These steps follow AI Dungeon's official [script installation guide](https://help.aidungeon.com/what-are-scripts-and-how-do-you-install-them), [scripting reference](https://help.aidungeon.com/scripting), [Story Cards guide](https://help.aidungeon.com/faq/story-cards), and [Scenario guide](https://help.aidungeon.com/faq/what-are-scenarios).
