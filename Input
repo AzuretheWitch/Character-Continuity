@@ -1,0 +1,5 @@
+const modifier = (text) => ({
+  text: CharacterContinuity("input", text)
+});
+
+modifier(text);
