@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.59",
+  VERSION: "Character Continuity Stable v1.0.61",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -945,6 +945,80 @@ function CharacterContinuity(hook, incomingText) {
     return /^[ \\t]*Onboarding[ \\t]*:[ \\t]*Pending[ \\t]*$/im.test(textOf(source));
   }
 
+  const ONBOARDING_VIEW_CATEGORIES = ["Loves", "Likes", "Neutrals", "Dislikes", "Hates"];
+  const ONBOARDING_RELATIONSHIP_FIELDS = ["Role", "Trust", "Closeness", "Boundaries", "Conflict"];
+  const ONBOARDING_RELATIONSHIP_STAGES = {
+    Role: [
+      { label: "Emerging", minimum: 0, maximum: 9, midpoint: 5 },
+      { label: "Established", minimum: 10, maximum: 19, midpoint: 15 }
+    ],
+    Trust: [
+      { label: "Severe distrust", minimum: -20, maximum: -11, midpoint: -15 },
+      { label: "Distrust", minimum: -10, maximum: -1, midpoint: -5 },
+      { label: "Guarded", minimum: 0, maximum: 9, midpoint: 5 },
+      { label: "Unproven", minimum: 10, maximum: 19, midpoint: 15 },
+      { label: "Cautious trust", minimum: 20, maximum: 29, midpoint: 25 },
+      { label: "Trust", minimum: 30, maximum: 39, midpoint: 35 },
+      { label: "Deep trust", minimum: 40, maximum: 49, midpoint: 45 }
+    ],
+    Closeness: [
+      { label: "Disconnected", minimum: -20, maximum: -11, midpoint: -15 },
+      { label: "Distant", minimum: -10, maximum: -1, midpoint: -5 },
+      { label: "Acquainted", minimum: 0, maximum: 9, midpoint: 5 },
+      { label: "Familiar", minimum: 10, maximum: 19, midpoint: 15 },
+      { label: "Close", minimum: 20, maximum: 29, midpoint: 25 },
+      { label: "Deeply close", minimum: 30, maximum: 39, midpoint: 35 },
+      { label: "Intimate", minimum: 40, maximum: 49, midpoint: 45 }
+    ],
+    Boundaries: [
+      { label: "Implied", minimum: 0, maximum: 9, midpoint: 5 },
+      { label: "Explicit", minimum: 10, maximum: 19, midpoint: 15 },
+      { label: "Reinforced", minimum: 20, maximum: 29, midpoint: 25 }
+    ],
+    Conflict: [
+      { label: "Clear", minimum: 0, maximum: 9, midpoint: 5 },
+      { label: "Friction", minimum: 10, maximum: 19, midpoint: 15 },
+      { label: "Strain", minimum: 20, maximum: 29, midpoint: 25 },
+      { label: "Open conflict", minimum: 30, maximum: 39, midpoint: 35 },
+      { label: "Rupture", minimum: 40, maximum: 49, midpoint: 45 }
+    ]
+  };
+  const ONBOARDING_NAME_PLACEHOLDERS = [
+    "First Name",
+    "Surname",
+    "Title",
+    "Accepted Nickname",
+    "Rejected Nickname"
+  ];
+
+  function onboardingFieldRows(source, label) {
+    const pattern = new RegExp(
+      "^[ \\t]*" + escapeRegExp(label) + "[ \\t]*:[ \\t]*(.*?)[ \\t]*$",
+      "i"
+    );
+    return textOf(source).replace(/\r/g, "").split("\n")
+      .map((row, index) => {
+        const match = row.match(pattern);
+        return match ? { index, value: line(match[1], 4000) } : null;
+      })
+      .filter(Boolean);
+  }
+
+  function onboardingReadyValue(source) {
+    const matches = onboardingFieldRows(source, "Ready");
+    if (matches.length !== 1) return "";
+    const normalized = keyOf(matches[0].value);
+    return normalized === "yes" || normalized === "no" ? normalized : "";
+  }
+
+  function onboardingProfileHeaderValid(source, name, label) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n")
+      .map(row => row.trim()).filter(Boolean);
+    if (rows.length < 2 || rows[rows.length - 1] !== "}") return false;
+    const match = rows[0].match(/^\{\s*(.+?)['’]s\s+(Outer|Inner)\s*:\s*$/i);
+    return !!(match && sameNameForm(match[1], name) && keyOf(match[2]) === keyOf(label));
+  }
+
   function onboardingMissingDetails(outerSource, innerSource, innerConflict) {
     const missing = [];
     const outerWrapper = outerWrapperStatus(outerSource);
@@ -976,11 +1050,12 @@ function CharacterContinuity(hook, incomingText) {
     return [
       "{ " + name + "'s Outer:",
       "Onboarding: Pending",
+      "Ready: No",
       "Name, age, gender, pronouns: ",
       "Race/Species: ",
       "Physical attributes: ",
       "Clothing style: ",
-      "Starting status: Side",
+      "Starting status: ",
       "}"
     ].join("\n");
   }
@@ -999,6 +1074,642 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
   }
 
+  function onboardingNamesTemplate(name) {
+    return [
+      "{",
+      name + "'s Names:",
+      "Canonical: " + name,
+      "",
+      "Alias: ",
+      "Status: ",
+      "Use: ",
+      "Progress: ",
+      "Reason: ",
+      "}"
+    ].join("\n");
+  }
+
+  function onboardingViewsTemplate(name) {
+    return [
+      "{",
+      name + "'s Views:",
+      "Loves:",
+      "Likes:",
+      "Neutrals:",
+      "Dislikes:",
+      "Hates:",
+      "}"
+    ].join("\n");
+  }
+
+  function onboardingRelationshipsTemplate(name) {
+    return [
+      "{",
+      name + "'s Relationships:",
+      "About: ",
+      "Role: ",
+      "Trust: ",
+      "Closeness: ",
+      "Boundaries: ",
+      "Conflict: ",
+      "}"
+    ].join("\n");
+  }
+
+  function onboardingExperiencesTitle(name) {
+    return line(name, 120) + "'s " + settings.EXPERIENCES_LABEL;
+  }
+
+  function onboardingExperiencesTemplate(name) {
+    return [
+      "{ " + name + "'s Experiences:",
+      "About: ",
+      "Experience: ",
+      "}"
+    ].join("\n");
+  }
+
+  function onboardingInsertControls(source, includeReady) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    if (!onboardingMarkerPresent(source)) {
+      const opening = rows.findIndex(row => row.trim());
+      rows.splice(Math.max(0, opening + 1), 0, "Onboarding: Pending");
+    }
+    if (includeReady && !onboardingFieldRows(rows.join("\n"), "Ready").length) {
+      const marker = rows.findIndex(row => /^[ \t]*Onboarding[ \t]*:/i.test(row));
+      rows.splice(Math.max(0, marker + 1), 0, "Ready: No");
+    }
+    return rows.join("\n");
+  }
+
+  function onboardingWithoutControls(source) {
+    return textOf(source).replace(/\r/g, "").split("\n")
+      .filter(row => !/^[ \t]*(?:Onboarding|Ready)[ \t]*:/i.test(row))
+      .join("\n");
+  }
+
+  function onboardingOuterNames() {
+    return cards.map(card => nameFromNamedTitle(titleOf(card), settings.OUTER_CHARACTER_LABEL))
+      .filter(Boolean);
+  }
+
+  function onboardingCanonicalPermission(value) {
+    const supplied = line(value, 160);
+    const normalized = nameKeyOf(supplied);
+    if (normalized === "general") return "General";
+    if (normalized === "none") return "None";
+    if (["player", "the player", "you", nameKeyOf(player.name)].includes(normalized)) return "Player";
+    const matches = onboardingOuterNames().filter(name => sameNameForm(name, supplied));
+    return matches.length === 1 ? matches[0] : "";
+  }
+
+  function onboardingCanonicalTarget(ownerName, value, allowSelf, allowUnknown) {
+    const supplied = line(value, 160);
+    const normalized = nameKeyOf(supplied);
+    if (!normalized) return "";
+    if (allowSelf && (normalized === "self" || sameNameForm(supplied, ownerName))) return "Self";
+    if (["player", "the player", "you", nameKeyOf(player.name)].includes(normalized)) return "Player";
+    const matches = onboardingOuterNames().filter(name => sameNameForm(name, supplied));
+    if (matches.length === 1 && !sameNameForm(matches[0], ownerName)) return matches[0];
+    return allowUnknown && !/[{}\[\]|\r\n]/.test(supplied) ? supplied : "";
+  }
+
+  function onboardingValidateProfile(name, label, source, maximum) {
+    const errors = [];
+    if (!onboardingProfileHeaderValid(source, name, label)) {
+      errors.push(label + " wrapper or owner header is invalid");
+    }
+    const required = label === "Outer"
+      ? ["Name, age, gender, pronouns", "Race/Species", "Physical attributes", "Clothing style", "Starting status"]
+      : ["Personality", "Mannerisms", "Wants", "Fears", "Mental wounds", "Principles"];
+    required.forEach(field => {
+      const matches = onboardingFieldRows(source, field);
+      if (matches.length !== 1 || !matches[0].value) {
+        errors.push(label + " requires one filled " + field + " line");
+      }
+    });
+    if (label === "Outer") {
+      const identity = onboardingFieldRows(source, "Name, age, gender, pronouns");
+      const parts = identity.length === 1
+        ? identity[0].value.split(",").map(value => value.trim())
+        : [];
+      if (parts.length < 4 || parts.slice(0, 4).some(value => !value)) {
+        errors.push("Outer identity needs name, age, gender, and pronouns");
+      } else if (!sameNameForm(parts[0], name)) {
+        errors.push("Outer identity name must match the canonical owner " + name);
+      }
+      const status = onboardingFieldRows(source, "Starting status");
+      if (status.length === 1 && !normalizeCastStatus(status[0].value, "")) {
+        errors.push("Outer Starting status must be Main or Side");
+      }
+      if (onboardingFieldRows(source, "Ready").length !== 1 || !onboardingReadyValue(source)) {
+        errors.push("Outer requires exactly one Ready: No or Ready: Yes line");
+      }
+    } else if (onboardingFieldRows(source, "Ready").length) {
+      errors.push("Ready belongs only in Outer");
+    }
+    const markerRows = onboardingFieldRows(source, "Onboarding");
+    if (markerRows.length !== 1 || keyOf(markerRows[0].value) !== "pending") {
+      errors.push(label + " requires exactly one Onboarding: Pending line");
+    }
+    const entry = onboardingWithoutControls(source);
+    if (entry.length > maximum) errors.push(label + " exceeds its character limit");
+    return { entry, errors };
+  }
+
+  function onboardingCanonicalProgress(value) {
+    const raw = line(value, 2000);
+    if (!raw) return { ok: true, value: "" };
+    const segments = raw.split(/\s*;\s*/).filter(Boolean);
+    const normalized = [];
+    for (const segment of segments) {
+      const bare = segment.match(/^(\d+)\s*\/\s*(\d+)$/);
+      const named = segment.match(/^(.+?)\s+(\d+)\s*\/\s*(\d+)$/);
+      const permission = onboardingCanonicalPermission(bare ? "General" : (named ? named[1] : ""));
+      const count = Number(bare ? bare[1] : (named && named[2]));
+      const threshold = Number(bare ? bare[2] : (named && named[3]));
+      if (!permission || permission === "None" || !Number.isSafeInteger(count)
+        || count < 1 || count >= settings.NAME_ESTABLISHMENT_CONFIRMATIONS
+        || threshold !== settings.NAME_ESTABLISHMENT_CONFIRMATIONS) {
+        return { ok: false, value: raw };
+      }
+      normalized.push(permission + " " + count + "/" + threshold);
+    }
+    return { ok: true, value: unique(normalized, 200).join("; ") };
+  }
+
+  function onboardingCanonicalNames(name, source) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+      .filter(item => item.value);
+    const errors = [];
+    if (nonempty.length < 4 || nonempty[0].value !== "{"
+      || nameKeyOf(nonempty[1].value) !== nameKeyOf(name + "'s Names:")
+      || nonempty[nonempty.length - 1].value !== "}") {
+      errors.push("Names wrapper or owner header is invalid");
+    }
+    const canonicalRows = onboardingFieldRows(source, "Canonical");
+    if (canonicalRows.length !== 1 || !sameNameForm(canonicalRows[0].value, name)) {
+      errors.push("Names requires Canonical: " + name);
+    }
+    const canonicalIndex = canonicalRows.length ? canonicalRows[0].index : 1;
+    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    const starts = [];
+    for (let index = canonicalIndex + 1; index < closingIndex; index++) {
+      if (/^[ \t]*Alias[ \t]*:/i.test(rows[index])) starts.push(index);
+    }
+    const firstStart = starts.length ? starts[0] : closingIndex;
+    for (let index = canonicalIndex + 1; index < firstStart; index++) {
+      if (rows[index].trim()) errors.push("Names has content outside an Alias record");
+    }
+    const records = [];
+    const seen = new Set();
+    starts.forEach((start, recordIndex) => {
+      const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : closingIndex;
+      const recordRows = rows.slice(start, end).filter(row => row.trim());
+      const aliasMatch = recordRows[0] && recordRows[0].match(
+        /^[ \t]*Alias[ \t]*:[ \t]*(.*?)[ \t]*$/i
+      );
+      const alias = aliasMatch ? line(aliasMatch[1], 160) : "";
+      if (ONBOARDING_NAME_PLACEHOLDERS.some(value => sameNameForm(value, alias))) return;
+      const labels = ["Alias", "Status", "Use", "Progress", "Reason"];
+      const values = {};
+      if (recordRows.length !== labels.length) {
+        errors.push("Names Alias " + (alias || "record") + " must contain exactly five fields");
+        return;
+      }
+      labels.forEach((label, index) => {
+        const match = recordRows[index].match(
+          new RegExp("^[ \\t]*" + escapeRegExp(label) + "[ \\t]*:[ \\t]*(.*?)[ \\t]*$", "i")
+        );
+        if (!match) {
+          errors.push("Names Alias " + (alias || "record")
+            + " has a missing or reordered " + label + " field");
+        }
+        values[label] = match ? line(match[1], 4000) : "";
+      });
+      if (labels.every(label => !values[label])) return;
+      if (!alias || sameNameForm(alias, name) || /[{}\[\]|\r\n]/.test(alias)) {
+        errors.push("Names contains an empty, canonical, or structurally unsafe Alias");
+        return;
+      }
+      const aliasKey = nameKeyOf(alias);
+      if (seen.has(aliasKey)) errors.push("Names repeats Alias " + alias);
+      seen.add(aliasKey);
+      const status = ["Emerging", "Active", "Retired", "Rejected"]
+        .find(value => sameNameForm(value, values.Status));
+      if (!status) errors.push("Names Alias " + alias + " has an unsupported Status");
+      const uses = values.Use.split(/\s*,\s*/).filter(Boolean)
+        .map(onboardingCanonicalPermission);
+      if (!uses.length || uses.some(value => !value)
+        || ((uses.includes("General") || uses.includes("None")) && new Set(uses).size > 1)) {
+        errors.push("Names Alias " + alias + " has an invalid Use permission");
+      }
+      const use = unique(uses.filter(Boolean), 160).join(", ");
+      const progress = onboardingCanonicalProgress(values.Progress);
+      if (!progress.ok) errors.push("Names Alias " + alias + " has invalid Progress");
+      const suppliedReason = wholeLine(values.Reason, 0);
+      const baselineReasons = {
+        "replace with an accepted first name form or delete this record": "Creator-approved first-name form.",
+        "replace with an accepted surname or delete this record": "Creator-approved surname.",
+        "replace with an accepted title or delete this record": "Creator-approved title.",
+        "replace with a nickname accepted from the player or delete this record":
+          "Creator-approved nickname accepted from the Player.",
+        [keyOf("Replace with a nickname " + name + " rejects, or delete this record.")]:
+          "Creator-marked nickname that " + name + " rejects."
+      };
+      const reason = baselineReasons[keyOf(suppliedReason)] || suppliedReason;
+      if (!reason || /[{}\[\]]/.test(reason)) {
+        errors.push("Names Alias " + alias + " needs a safe Reason");
+      }
+      records.push({
+        alias,
+        status: status || values.Status,
+        use: status === "Retired" || status === "Rejected" ? "None" : use,
+        progress: status === "Retired" || status === "Rejected" ? "" : progress.value,
+        reason
+      });
+    });
+    const entryRows = ["{", name + "'s Names:", "Canonical: " + name];
+    records.forEach(record => {
+      entryRows.push(
+        "",
+        "Alias: " + record.alias,
+        "Status: " + record.status,
+        "Use: " + record.use,
+        "Progress: " + record.progress,
+        "Reason: " + record.reason
+      );
+    });
+    entryRows.push("}");
+    const entry = entryRows.join("\n");
+    if (entry.length > settings.MAX_NAMES_CARD_CHARS) {
+      errors.push("Names exceeds its 1,000-character limit");
+    }
+    return { entry, errors };
+  }
+
+  function onboardingCanonicalViews(name, source) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+      .filter(item => item.value);
+    const errors = [];
+    if (nonempty.length < 7 || nonempty[0].value !== "{"
+      || nameKeyOf(nonempty[1].value) !== nameKeyOf(name + "'s Views:")
+      || nonempty[nonempty.length - 1].value !== "}") {
+      errors.push("Views wrapper or owner header is invalid");
+    }
+    const grouped = {};
+    ONBOARDING_VIEW_CATEGORIES.forEach(category => { grouped[category] = []; });
+    let current = "";
+    const headings = [];
+    const seenTargets = new Set();
+    const bodyStart = nonempty.length >= 2 ? nonempty[1].index + 1 : 0;
+    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    for (let index = bodyStart; index < closingIndex; index++) {
+      const row = rows[index].trim();
+      if (!row) continue;
+      const category = ONBOARDING_VIEW_CATEGORIES.find(
+        value => keyOf(value + ":") === keyOf(row)
+      );
+      if (category) {
+        current = category;
+        headings.push(category);
+        continue;
+      }
+      const match = row.match(/^(.+?)\s+(?:—|–|-)\s+(.+)$/);
+      if (!current || !match) {
+        errors.push("Views line " + (index + 1) + " is not under a valid category");
+        continue;
+      }
+      const target = onboardingCanonicalTarget(name, match[1], true, true);
+      const explanation = wholeLine(match[2], 0);
+      if (!target || !explanation || /[{}\[\]]/.test(explanation)) {
+        errors.push("Views line " + (index + 1) + " needs a safe target and explanation");
+        continue;
+      }
+      const targetKey = nameKeyOf(target);
+      if (seenTargets.has(targetKey)) errors.push("Views repeats target " + target);
+      seenTargets.add(targetKey);
+      grouped[current].push({ target, explanation });
+    }
+    if (headings.length !== ONBOARDING_VIEW_CATEGORIES.length
+      || headings.some((value, index) => value !== ONBOARDING_VIEW_CATEGORIES[index])) {
+      errors.push("Views requires Loves, Likes, Neutrals, Dislikes, and Hates once, in order");
+    }
+    const entryRows = ["{", name + "'s Views:"];
+    ONBOARDING_VIEW_CATEGORIES.forEach(category => {
+      entryRows.push(category + ":");
+      grouped[category].forEach(record => {
+        entryRows.push(record.target + " — " + record.explanation);
+      });
+    });
+    entryRows.push("}");
+    const entry = entryRows.join("\n");
+    if (entry.length > settings.MAX_VIEWS_CARD_CHARS) {
+      errors.push("Views exceeds its 1,000-character limit");
+    }
+    return { entry, errors };
+  }
+
+  function onboardingCanonicalRelationshipField(field, value) {
+    const raw = line(value, 4000);
+    if (!raw) return { ok: true, value: "" };
+    const former = raw.match(/^Former(?:\s+(?:—|–|-)\s+(.+))?$/i);
+    if (field === "Role" && former) {
+      const description = line(former[1], 2000);
+      return /[{}\[\]]/.test(description)
+        ? { ok: false, value: raw }
+        : { ok: true, value: "Former" + (description ? " — " + description : "") };
+    }
+    const stages = ONBOARDING_RELATIONSHIP_STAGES[field] || [];
+    const numeric = raw.match(/^(-?\d+)\s*\(([^)]+)\)(?:\s+(?:—|–|-)\s+(.+))?$/);
+    let stage;
+    let score;
+    let description;
+    if (numeric) {
+      const suppliedScore = Number(numeric[1]);
+      if (!Number.isSafeInteger(suppliedScore) || !stages.length) {
+        return { ok: false, value: raw };
+      }
+      score = Math.max(
+        stages[0].minimum,
+        Math.min(stages[stages.length - 1].maximum, suppliedScore)
+      );
+      stage = stages.find(item => score >= item.minimum && score <= item.maximum);
+      description = line(numeric[3], 2000);
+    } else {
+      const stageOnly = raw.match(/^(.+?)(?:\s+(?:—|–|-)\s+(.+))?$/);
+      stage = stageOnly && stages.find(item => sameNameForm(item.label, stageOnly[1]));
+      if (!stage) return { ok: false, value: raw };
+      score = stage.midpoint;
+      description = line(stageOnly[2], 2000);
+    }
+    if (!stage || /[{}\[\]]/.test(description)) return { ok: false, value: raw };
+    return {
+      ok: true,
+      value: score + " (" + stage.label + ")" + (description ? " — " + description : "")
+    };
+  }
+
+  function onboardingCanonicalRelationships(name, source) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+      .filter(item => item.value);
+    const errors = [];
+    if (nonempty.length < 3 || nonempty[0].value !== "{"
+      || nameKeyOf(nonempty[1].value) !== nameKeyOf(name + "'s Relationships:")
+      || nonempty[nonempty.length - 1].value !== "}") {
+      errors.push("Relationships wrapper or owner header is invalid");
+    }
+    const bodyStart = nonempty.length >= 2 ? nonempty[1].index + 1 : 0;
+    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    const starts = [];
+    for (let index = bodyStart; index < closingIndex; index++) {
+      if (/^[ \t]*About[ \t]*:/i.test(rows[index])) starts.push(index);
+    }
+    const firstStart = starts.length ? starts[0] : closingIndex;
+    for (let index = bodyStart; index < firstStart; index++) {
+      if (rows[index].trim()) errors.push("Relationships has content outside an About record");
+    }
+    const records = [];
+    const seenTargets = new Set();
+    starts.forEach((start, recordIndex) => {
+      const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : closingIndex;
+      const recordRows = rows.slice(start, end).filter(row => row.trim());
+      const labels = ["About"].concat(ONBOARDING_RELATIONSHIP_FIELDS);
+      const values = {};
+      if (recordRows.length !== labels.length) {
+        errors.push("Relationships record at line " + (start + 1)
+          + " must contain exactly six fields");
+        return;
+      }
+      labels.forEach((label, index) => {
+        const match = recordRows[index].match(
+          new RegExp("^[ \\t]*" + escapeRegExp(label) + "[ \\t]*:[ \\t]*(.*?)[ \\t]*$", "i")
+        );
+        if (!match) {
+          errors.push("Relationships record at line " + (start + 1)
+            + " has a missing or reordered " + label + " field");
+        }
+        values[label] = match ? line(match[1], 4000) : "";
+      });
+      if (labels.every(label => !values[label])) return;
+      const target = onboardingCanonicalTarget(name, values.About, false, false);
+      if (!target) {
+        errors.push("Relationships record at line " + (start + 1)
+          + " has an unknown or self About target");
+        return;
+      }
+      const targetKey = nameKeyOf(target);
+      if (seenTargets.has(targetKey)) errors.push("Relationships repeats target " + target);
+      seenTargets.add(targetKey);
+      const fields = {};
+      ONBOARDING_RELATIONSHIP_FIELDS.forEach(field => {
+        const parsed = onboardingCanonicalRelationshipField(field, values[field]);
+        if (!parsed.ok) {
+          errors.push("Relationships " + target + " " + field
+            + " needs a supported stage or score-stage value");
+        }
+        fields[field] = parsed.value;
+      });
+      records.push({ target, fields });
+    });
+    const entryRows = ["{", name + "'s Relationships:"];
+    records.forEach((record, index) => {
+      if (index > 0) entryRows.push("");
+      entryRows.push("About: " + record.target);
+      ONBOARDING_RELATIONSHIP_FIELDS.forEach(field => {
+        entryRows.push(field + ": " + record.fields[field]);
+      });
+    });
+    entryRows.push("}");
+    const entry = entryRows.join("\n");
+    if (entry.length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+      errors.push("Relationships exceeds its 1,000-character limit");
+    }
+    return { entry, errors };
+  }
+
+  function onboardingCanonicalExperiences(name, source) {
+    const trimmed = textOf(source).replace(/\r/g, "").trim();
+    const rows = trimmed.split("\n");
+    const errors = [];
+    const header = rows[0] && rows[0].match(/^\{\s*(.+?)['’]s\s+Experiences\s*:\s*$/i);
+    if (!header || !sameNameForm(header[1], name) || rows[rows.length - 1] !== "}") {
+      errors.push("Experiences wrapper or owner header is invalid");
+    }
+    const pattern = new RegExp(
+      "^- \\[About:\\s*([^\\]\\r\\n]+)\\]\\s*" + escapeRegExp(name)
+        + "\\s+experienced:\\s*(.+)\\.$",
+      "i"
+    );
+    const records = [];
+    const seen = new Set();
+    const addRecord = (rawTarget, rawSituation, lineNumber) => {
+      const target = onboardingCanonicalTarget(name, rawTarget, true, true);
+      const suppliedSituation = wholeLine(rawSituation, 0);
+      const situation = line(suppliedSituation, settings.MAX_STATE_VALUE_CHARS)
+        .replace(/[.!?]+$/g, "").trim();
+      if (!target || !situation || /[{}|\r\n]/.test(target + situation)
+        || situation !== suppliedSituation.replace(/[.!?]+$/g, "").trim()) {
+        errors.push("Experiences line " + lineNumber
+          + " has an unsafe or overlong target or event");
+        return;
+      }
+      const signature = nameKeyOf(target) + "|" + keyOf(situation);
+      if (seen.has(signature)) errors.push("Experiences repeats the same target and event");
+      seen.add(signature);
+      records.push({ target, situation });
+    };
+    for (let index = 1; index < rows.length - 1; index++) {
+      const row = rows[index].trim();
+      if (!row) continue;
+      const match = row.match(pattern);
+      if (match) {
+        addRecord(match[1], match[2], index + 1);
+        continue;
+      }
+      const about = row.match(/^About\s*:\s*(.*?)\s*$/i);
+      if (!about) {
+        errors.push("Experiences line " + (index + 1) + " is malformed");
+        continue;
+      }
+      const next = rows[index + 1] && rows[index + 1].trim();
+      const experience = next && next.match(/^Experience\s*:\s*(.*?)\s*$/i);
+      if (!experience || index + 1 >= rows.length - 1) {
+        errors.push("Experiences About at line " + (index + 1)
+          + " requires the next Experience field");
+        continue;
+      }
+      index += 1;
+      if (!about[1] && !experience[1]) continue;
+      if (!about[1] || !experience[1]) {
+        errors.push("Experiences fields at lines " + index + "-" + (index + 1)
+          + " must both be filled or both be blank");
+        continue;
+      }
+      addRecord(about[1], experience[1], index);
+    }
+    const entry = ["{ " + name + "'s Experiences:"]
+      .concat(records.map(record => "- [About: " + record.target + "] " + name
+        + " experienced: " + record.situation + "."))
+      .concat("}")
+      .join("\n");
+    if (entry.length > settings.MAX_EXPERIENCES_CARD_CHARS) {
+      errors.push("Experiences exceeds its 1,000-character limit");
+    }
+    return { entry, errors };
+  }
+
+  function onboardingCommitPack(name, pack) {
+    const outer = onboardingValidateProfile(
+      name,
+      "Outer",
+      entryOf(pack.outer),
+      settings.MAX_OUTER_CARD_CHARS
+    );
+    const inner = onboardingValidateProfile(
+      name,
+      "Inner",
+      entryOf(pack.inner),
+      settings.MAX_INNER_CARD_CHARS
+    );
+    const names = onboardingCanonicalNames(name, entryOf(pack.names));
+    const views = onboardingCanonicalViews(name, entryOf(pack.views));
+    const relationships = onboardingCanonicalRelationships(name, entryOf(pack.relationships));
+    const experiences = onboardingCanonicalExperiences(name, entryOf(pack.experiences));
+    const errors = outer.errors.concat(
+      inner.errors,
+      names.errors,
+      views.errors,
+      relationships.errors,
+      experiences.errors
+    );
+    if (onboardingReadyValue(entryOf(pack.outer)) !== "yes") {
+      errors.unshift("Outer Ready must be Yes before activation");
+    }
+    if (errors.length) return { ok: false, error: errors[0] };
+    const changes = [
+      { card: pack.names, title: namedTitle(name, settings.NAMES_LABEL), entry: names.entry },
+      { card: pack.views, title: namedTitle(name, settings.VIEWS_LABEL), entry: views.entry },
+      {
+        card: pack.relationships,
+        title: namedTitle(name, settings.RELATIONSHIPS_LABEL),
+        entry: relationships.entry
+      },
+      {
+        card: pack.experiences,
+        title: onboardingExperiencesTitle(name),
+        entry: experiences.entry
+      },
+      {
+        card: pack.inner,
+        title: namedTitle(name, settings.INNER_CHARACTER_LABEL),
+        entry: inner.entry
+      },
+      {
+        card: pack.outer,
+        title: namedTitle(name, settings.OUTER_CHARACTER_LABEL),
+        entry: outer.entry
+      }
+    ];
+    const snapshots = changes.map(change => ({
+      index: cardIndex(change.card),
+      title: titleOf(change.card),
+      keys: change.card.keys,
+      entry: entryOf(change.card),
+      type: change.card.type
+    }));
+    try {
+      changes.forEach(change => {
+        const saved = saveCard(change.card, change.entry, change.title);
+        if (!saved || entryOf(saved) !== change.entry
+          || !managedCardIdentityMatches(saved, change.title)) {
+          throw new Error("could not verify " + change.title);
+        }
+        change.card = saved;
+      });
+    } catch (error) {
+      let restored = true;
+      snapshots.slice().reverse().forEach(snapshot => {
+        if (!updateCardAt(
+          snapshot.index,
+          snapshot.keys,
+          snapshot.entry,
+          snapshot.type,
+          snapshot.title
+        )) restored = false;
+      });
+      return {
+        ok: false,
+        error: "activation transaction failed at " + (error.message || "an unknown card")
+          + (restored ? "" : "; rollback was incomplete")
+      };
+    }
+    return { ok: true };
+  }
+
+  function onboardingExactCards(title) {
+    const wanted = keyOf(title);
+    return cards.filter(card => keyOf(titleOf(card)) === wanted);
+  }
+
+  function ensureOnboardingPackCard(name, title, template, label) {
+    let matching = onboardingExactCards(title);
+    if (!matching.length) {
+      const created = addCard(title, template(name));
+      if (created) matching = [created];
+    }
+    if (matching.length !== 1) {
+      activeRosterDiagnostics.push(
+        name + " has conflicting " + label + " cards and remains pending."
+      );
+      return null;
+    }
+    return matching[0];
+  }
+
   function namesCardOwner(title) {
     const match = line(title, 260).match(new RegExp(
       "^(.+?)\\s+(?:—|–|-)\\s+" + escapeRegExp(settings.NAMES_LABEL) + "(?:\\s+\\d+)?$",
@@ -1012,11 +1723,15 @@ function CharacterContinuity(hook, incomingText) {
     cards.forEach(card => {
       const owner = namesCardOwner(titleOf(card));
       if (!owner) return;
+      const pendingOwner = namedCards(owner, settings.OUTER_CHARACTER_LABEL)
+        .some(outer => onboardingMarkerPresent(entryOf(outer)));
       const aliases = textOf(entryOf(card)).replace(/\r/g, "").split("\n")
         .map(row => {
           const match = row.match(/^[ \\t]*Alias[ \\t]*:[ \\t]*(.*?)[ \\t]*$/i);
           return match ? line(match[1], 160) : "";
-        }).filter(Boolean);
+        })
+        .filter(value => value && !(pendingOwner
+          && ONBOARDING_NAME_PLACEHOLDERS.some(placeholder => sameNameForm(placeholder, value))));
       if (aliases.some(value => sameNameForm(value, alias))
         && !owners.some(value => sameNameForm(value, owner))) owners.push(owner);
     });
@@ -1033,6 +1748,7 @@ function CharacterContinuity(hook, incomingText) {
     }
     let outerCards = namedCards(slot.name, settings.OUTER_CHARACTER_LABEL);
     let innerCards = namedCards(slot.name, settings.INNER_CHARACTER_LABEL);
+    let createdOuter = false;
     if (!outerCards.length) {
       const aliasOwners = storedAliasOwners(slot.name);
       if (aliasOwners.length) {
@@ -1047,7 +1763,10 @@ function CharacterContinuity(hook, incomingText) {
       );
       if (created) {
         outerCards = [created];
-        activeRosterDiagnostics.push(slot.name + " confirmed; blank Outer and Side status initialized.");
+        createdOuter = true;
+        activeRosterDiagnostics.push(
+          slot.name + " confirmed; the six-card creator template was initialized."
+        );
       } else {
         slot.valid = false;
         activeRosterDiagnostics.push(slot.name + " could not be onboarded because its Outer template could not be created.");
@@ -1076,6 +1795,98 @@ function CharacterContinuity(hook, incomingText) {
     if (innerCards.length !== 1) {
       slot.valid = false;
       activeRosterDiagnostics.push(slot.name + " has conflicting Inner cards and remains unavailable for onboarding.");
+      return;
+    }
+    const onboarding = createdOuter
+      || onboardingMarkerPresent(entryOf(outerCards[0]))
+      || onboardingMarkerPresent(entryOf(innerCards[0]));
+    if (!onboarding) return;
+
+    const outerControlled = onboardingInsertControls(entryOf(outerCards[0]), true);
+    if (outerControlled !== entryOf(outerCards[0])) {
+      const saved = saveCard(
+        outerCards[0],
+        outerControlled,
+        namedTitle(slot.name, settings.OUTER_CHARACTER_LABEL)
+      );
+      if (!saved) {
+        slot.valid = false;
+        activeRosterDiagnostics.push(
+          slot.name + " remains pending because its Outer onboarding controls could not be restored."
+        );
+        return;
+      }
+      outerCards[0] = saved;
+    }
+    const innerControlled = onboardingInsertControls(entryOf(innerCards[0]), false);
+    if (innerControlled !== entryOf(innerCards[0])) {
+      const saved = saveCard(
+        innerCards[0],
+        innerControlled,
+        namedTitle(slot.name, settings.INNER_CHARACTER_LABEL)
+      );
+      if (!saved) {
+        slot.valid = false;
+        activeRosterDiagnostics.push(
+          slot.name + " remains pending because its Inner onboarding marker could not be restored."
+        );
+        return;
+      }
+      innerCards[0] = saved;
+    }
+
+    const pack = {
+      outer: outerCards[0],
+      inner: innerCards[0],
+      names: ensureOnboardingPackCard(
+        slot.name,
+        namedTitle(slot.name, settings.NAMES_LABEL),
+        onboardingNamesTemplate,
+        "Names"
+      ),
+      views: ensureOnboardingPackCard(
+        slot.name,
+        namedTitle(slot.name, settings.VIEWS_LABEL),
+        onboardingViewsTemplate,
+        "Views"
+      ),
+      relationships: ensureOnboardingPackCard(
+        slot.name,
+        namedTitle(slot.name, settings.RELATIONSHIPS_LABEL),
+        onboardingRelationshipsTemplate,
+        "Relationships"
+      ),
+      experiences: ensureOnboardingPackCard(
+        slot.name,
+        onboardingExperiencesTitle(slot.name),
+        onboardingExperiencesTemplate,
+        "Experiences"
+      )
+    };
+    if (Object.values(pack).some(card => !card)) {
+      slot.valid = false;
+      return;
+    }
+    const readyRows = onboardingFieldRows(entryOf(pack.outer), "Ready");
+    if (readyRows.length !== 1 || !onboardingReadyValue(entryOf(pack.outer))) {
+      activeRosterDiagnostics.push(
+        slot.name + " remains pending: Outer needs exactly one Ready: No or Ready: Yes line."
+      );
+      return;
+    }
+    if (onboardingReadyValue(entryOf(pack.outer)) !== "yes") {
+      activeRosterDiagnostics.push(
+        slot.name + " onboarding is pending; complete the six setup cards, then change Outer Ready to Yes."
+      );
+      return;
+    }
+    const committed = onboardingCommitPack(slot.name, pack);
+    if (committed.ok) {
+      activeRosterDiagnostics.push(
+        slot.name + " onboarding completed; all six creator cards were validated and activated."
+      );
+    } else {
+      activeRosterDiagnostics.push(slot.name + " remains pending: " + committed.error + ".");
     }
   }
 
@@ -1167,7 +1978,14 @@ function CharacterContinuity(hook, incomingText) {
       const onboardingMissing = onboardingGenerated
         ? onboardingMissingDetails(source, innerSource, innerConflict)
         : [];
-      const onboardingPending = onboardingGenerated && onboardingMissing.length > 0;
+      if (onboardingGenerated) {
+        if (onboardingReadyValue(source) === "yes") {
+          onboardingMissing.push("resolve the onboarding validation diagnostic");
+        } else {
+          onboardingMissing.push("review all six setup cards, then set Outer Ready to Yes");
+        }
+      }
+      const onboardingPending = onboardingGenerated;
       const outerWarnings = [];
       const innerWarnings = [];
       if (duplicateCount) {
@@ -2499,35 +3317,6 @@ function CharacterContinuity(hook, incomingText) {
     }
   }
 
-  function removeOnboardingMarker(card, intendedTitle) {
-    if (!card || !onboardingMarkerPresent(entryOf(card))) return card;
-    const entry = textOf(entryOf(card)).replace(/\r/g, "").split("\n")
-      .filter(row => !/^[ \\t]*Onboarding[ \\t]*:[ \\t]*Pending[ \\t]*$/i.test(row))
-      .join("\n");
-    return saveCard(card, entry, intendedTitle);
-  }
-
-  function finalizeReadyOnboardingTemplates() {
-    characters.filter(character => character.onboardingGenerated && !character.onboardingPending)
-      .forEach(character => {
-        const outerSaved = removeOnboardingMarker(
-          character.outerCard,
-          namedTitle(character.name, settings.OUTER_CHARACTER_LABEL)
-        );
-        const innerSaved = removeOnboardingMarker(
-          character.innerCard,
-          namedTitle(character.name, settings.INNER_CHARACTER_LABEL)
-        );
-        if (outerSaved) character.outerCard = outerSaved;
-        if (innerSaved) character.innerCard = innerSaved;
-        if (outerSaved && innerSaved) {
-          activeRosterDiagnostics.push(character.name + " onboarding completed; Outer and Inner are creator-authored and active.");
-        } else {
-          activeRosterDiagnostics.push(character.name + " is ready, but a Pending marker could not be cleared from its template.");
-        }
-      });
-  }
-
   function activeNpcRosterCharacterSlots(includePending) {
     const used = new Set();
     return activeNpcRoster.slots.map(slot => {
@@ -2555,7 +3344,6 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   initializeActiveNpcRoster();
-  finalizeReadyOnboardingTemplates();
 
   function numberedNamedTitleParts(title, label) {
     const match = line(title, 260).match(new RegExp(
@@ -2854,7 +3642,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function refreshViewsStore(repair) {
     const store = { owners: {}, diagnostics: [], pageStats: [] };
-    characters.forEach(character => {
+    characters.filter(character => !character.onboardingPending).forEach(character => {
       ensureBaseViewsCard(character);
       const activeRefs = viewPageCards(character, false);
       const buriedRefs = viewPageCards(character, true);
@@ -2891,8 +3679,9 @@ function CharacterContinuity(hook, incomingText) {
     if (repair) {
       const priorBindings = viewManagedBindings(store);
       let changed = false;
-      characters.forEach(character => {
+      characters.filter(character => !character.onboardingPending).forEach(character => {
         const owner = store.owners[character.key];
+        if (!owner) return;
         changed = repairViewsCollection(character, false, owner.activePages, store.diagnostics) || changed;
         changed = repairViewsCollection(character, true, owner.buriedPages, store.diagnostics) || changed;
       });
@@ -3247,7 +4036,7 @@ function CharacterContinuity(hook, incomingText) {
       headerOwner: "Player",
       player: true,
       character: null
-    }].concat(characters.map(character => ({
+    }].concat(characters.filter(character => !character.onboardingPending).map(character => ({
       key: "npc:" + character.key,
       canonical: character.name,
       titleBase: character.name,
@@ -4155,7 +4944,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function refreshRelationshipsStore() {
     const store = { owners: {}, diagnostics: [], pageStats: [] };
-    characters.forEach(character => {
+    characters.filter(character => !character.onboardingPending).forEach(character => {
       ensureBaseRelationshipsCard(character);
       const refs = relationshipPageCards(character);
       const pages = refs.map(ref => parseRelationshipsPage(character, ref.card, ref.page));
@@ -4699,11 +5488,11 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function syncAllStateCards() {
-    characters.forEach(syncStateCard);
+    characters.filter(character => !character.onboardingPending).forEach(syncStateCard);
   }
 
   function writeAllStateCards() {
-    characters.forEach(writeStateCard);
+    characters.filter(character => !character.onboardingPending).forEach(writeStateCard);
     CC.cardsInitialized = true;
   }
 
@@ -4835,12 +5624,12 @@ function CharacterContinuity(hook, incomingText) {
 
   function refreshExperiencesStore(internalize) {
     const store = { owners: {}, diagnostics: [], pageStats: [] };
-    characters.forEach(character => {
+    characters.filter(character => !character.onboardingPending).forEach(character => {
       store.owners[character.key] = { character, pages: [], records: [], contextRecords: [] };
     });
     cards.forEach(card => {
       const parts = experiencesTitleParts(titleOf(card));
-      if (!parts) return;
+      if (!parts || !store.owners[parts.owner.key]) return;
       const parsed = parseExperiencesPage(parts.owner, card, parts.page);
       store.owners[parts.owner.key].pages.push(parsed);
     });
@@ -8890,14 +9679,120 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function operationInstructionEchoLine(value) {
+  function controlPresentationText(value) {
+    let source = textOf(value).replace(/\r/g, "").trim();
+    if (!source) return "";
+    source = source
+      .replace(/^(?:>\s*)+/, "")
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^(?:[-*+]\s+|\d+[.)]\s+)/, "")
+      .trim();
+    let prior = "";
+    while (source && source !== prior) {
+      prior = source;
+      if ((source.startsWith("**") && source.endsWith("**"))
+        || (source.startsWith("__") && source.endsWith("__"))) {
+        source = source.slice(2, -2).trim();
+      } else if (source.startsWith("`") && source.endsWith("`")
+        && !source.startsWith("```") && source.length > 1) {
+        source = source.slice(1, -1).trim();
+      }
+    }
+    return source;
+  }
+
+  function ccoPresentation(value) {
+    const original = textOf(value).replace(/\r/g, "").trim();
+    let source = controlPresentationText(original);
+    let changed = source !== original;
+    const label = source.match(/^(?:Record|State|Name|Relationship|View|CCO record)\s*:\s*(.+)$/i);
+    if (label) {
+      source = label[1].trim();
+      changed = true;
+    }
+    const unwrapped = controlPresentationText(source);
+    if (unwrapped !== source) changed = true;
+    source = unwrapped;
+
+    let numericAnnotation = "";
+    const annotation = source.match(/\s+([+-]\d+)\s*$/);
+    if (annotation) {
+      numericAnnotation = annotation[1];
+      source = source.slice(0, annotation.index).trimEnd();
+      changed = true;
+    }
+    const annotationUnwrapped = controlPresentationText(source);
+    if (annotationUnwrapped !== source) changed = true;
+    source = annotationUnwrapped;
+
+    const squareWrapped = source.match(/^\[\s*(CCO\|[^()[\]{}\r\n]*)\s*\]$/);
+    const braceWrapped = source.match(/^\{\s*(CCO\|[^()[\]{}\r\n]*)\s*\}$/);
+    if (squareWrapped || braceWrapped) {
+      source = (squareWrapped || braceWrapped)[1].trim();
+      changed = true;
+    }
+
+    const parenthesized = /^\(CCO\|[^()\r\n]*\)$/.test(source);
+    const bare = /^CCO\|[^()\r\n]*$/.test(source);
+    return {
+      original,
+      source,
+      record: parenthesized ? source : (bare ? "(" + source + ")" : ""),
+      bare,
+      changed: changed || bare,
+      numericAnnotation,
+      protocolLike: /^(?:\(\s*)?CCO\s*\|/i.test(source)
+        || /^(?:\(\s*)?[SNRV]\s*\|/i.test(source)
+    };
+  }
+
+  function bareCcoIndex(value) {
+    const source = textOf(value);
+    const pattern = /CCO\s*\|/gi;
+    let match = pattern.exec(source);
+    while (match) {
+      let prior = match.index - 1;
+      while (prior >= 0 && /\s/.test(source[prior])) prior -= 1;
+      if (prior < 0 || source[prior] !== "(") return match.index;
+      match = pattern.exec(source);
+    }
+    return -1;
+  }
+
+  function injectedControlReferenceLines(plan) {
+    const packets = [];
+    if (plan && Array.isArray(plan.modelActiveKeys) && plan.modelActiveKeys.length) {
+      packets.push(portrayalRules());
+    }
+    if (plan && plan.task === "recovery") packets.push(recoveryTask());
+    if (plan && textOf(plan.operationTaskText).trim()) packets.push(plan.operationTaskText);
+    return unique(packets.flatMap(packet => textOf(packet).split("\n"))
+      .map(controlPresentationText)
+      .filter(value => value && !/^<\/?SYSTEM>$/i.test(value)), 1000);
+  }
+
+  function operationInstructionEchoLine(value, plan) {
     const source = textOf(value).replace(/\r/g, "").trim();
     if (!source) return false;
-    const normalized = source
+    const presentation = ccoPresentation(source);
+    if (presentation.record) return false;
+    const normalized = controlPresentationText(source)
       .replace(/[“”]/g, '"')
       .replace(/[‘’‛]/g, "'")
       .replace(/[‐‑‒–—―]/g, "-")
       .replace(/[ \t]+/g, " ");
+    const normalizedKey = keyOf(normalized);
+    if (injectedControlReferenceLines(plan).some(reference =>
+      keyOf(reference) === normalizedKey
+    )) return true;
+    if ([
+      /^Portray each active NPC distinctly from that NPC's supplied Outer\b/i,
+      /^Every named wrapper belongs to its named NPC\b/i,
+      /\balone authors the Player's speech, actions, inner life, views, consent, commitments, memories, boundaries, names, and relationship choices\.?$/i,
+      /^Write a complete scene response in ordinary story prose\b/i,
+      /^Active NPCs respond from their own perspectives\b/i
+    ].some(pattern => pattern.test(normalized))) return true;
+    if (!plan || plan.task !== "operation" || !plan.taskDelivered) return false;
     return [
       /^<\/?SYSTEM>$/i,
       /^[.\-:]*\s*(?:State\s*:\s*(?:copy\s+)?\(CCO\|S\||\(CCO\|S\|AboutCode\|)/i,
@@ -8906,7 +9801,7 @@ function CharacterContinuity(hook, incomingText) {
       /^[.\-:]*\s*KEEP confirms that supplied Current Situation\b/i,
       /^[.\-:]*\s*Copy that Situation exactly when the supplied evidence continues it\b/i,
       /^[.\-:]*\s*Copy AboutCode and evidence IDs from (?:the )?(?:supplied )?packets\b/i,
-      /^[.\-:]*\s*(?:Use|Copy)\s+1\s*-\s*3\s+(?:of|triggers?|trigger codes?)(?:\s+from)?\s*:/i,
+      /^[.\-:]*\s*(?:Use|Copy)\s+1\s*-\s*3\s+(?:of(?:\s+the\s+following)?(?:\s+triggers?)?|triggers?|trigger codes?)(?:\s+from)?\s*:/i,
       /^[.\-:]*\s*Situation(?:\s+(?:is|names)|\s*:)\s+.*\b(?:owner|current event|event phrase)\b/i,
       /^[.\-:]*\s*Thought(?:\s+is|\s*:)\s+.*\bfirst-person inner speech\b/i,
       /^[.\-:]*\s*(?:Use|Copy)\s+(?:a\s+)?distinct later confirmation\b/i,
@@ -8950,15 +9845,71 @@ function CharacterContinuity(hook, incomingText) {
     ].some(pattern => pattern.test(normalized));
   }
 
-  function stripOperationInstructionEchoes(value, plan) {
-    const source = textOf(value).replace(/\r/g, "");
-    if (!plan || plan.task !== "operation" || !plan.taskDelivered) {
-      return { text: source, count: 0, sample: "" };
-    }
+  function stripSystemControlBlocks(value) {
+    let source = textOf(value).replace(/\r/g, "");
     const removed = [];
+    const openTag = "(?:<\\s*SYSTEM\\s*>|&lt;\\s*SYSTEM\\s*&gt;)";
+    const closeTag = "(?:<\\s*\\/\\s*SYSTEM\\s*>|&lt;\\s*\\/\\s*SYSTEM\\s*&gt;)";
+    source = source.replace(new RegExp(openTag + "[\\s\\S]*?" + closeTag, "gi"), block => {
+      removed.push(line(block, 220));
+      return "";
+    });
+    const unmatched = source.search(new RegExp(openTag, "i"));
+    if (unmatched >= 0) {
+      removed.push(line(source.slice(unmatched), 220));
+      source = source.slice(0, unmatched);
+    }
+    source = source.replace(new RegExp(closeTag, "gi"), tag => {
+      removed.push(line(tag, 220));
+      return "";
+    });
+    return { text: source, removed };
+  }
+
+  function stripControlCodeFences(value, plan) {
+    const lines = textOf(value).replace(/\r/g, "").split("\n");
+    const removed = [];
+    const result = [];
+    let index = 0;
+    const fenceMarker = value => {
+      const match = controlPresentationText(value).match(/^(```|~~~)[A-Za-z0-9_-]*\s*$/);
+      return match ? match[1] : "";
+    };
+    while (index < lines.length) {
+      const marker = fenceMarker(lines[index]);
+      if (!marker) {
+        result.push(lines[index]);
+        index += 1;
+        continue;
+      }
+      let closing = index + 1;
+      while (closing < lines.length
+        && controlPresentationText(lines[closing]) !== marker) closing += 1;
+      const end = closing < lines.length ? closing : lines.length;
+      const inside = lines.slice(index + 1, end);
+      const containsControl = inside.some(item =>
+        ccoPresentation(item).protocolLike || operationInstructionEchoLine(item, plan)
+      );
+      if (!containsControl) {
+        result.push(...lines.slice(index, closing < lines.length ? closing + 1 : lines.length));
+        index = closing < lines.length ? closing + 1 : lines.length;
+        continue;
+      }
+      removed.push(line(lines[index], 220));
+      result.push(...inside);
+      if (closing < lines.length) removed.push(line(lines[closing], 220));
+      index = closing < lines.length ? closing + 1 : lines.length;
+    }
+    return { text: result.join("\n"), removed };
+  }
+
+  function stripOperationInstructionEchoes(value, plan) {
+    const systemBlocks = stripSystemControlBlocks(value);
+    const fences = stripControlCodeFences(systemBlocks.text, plan);
+    const removed = systemBlocks.removed.concat(fences.removed);
     const kept = [];
-    source.split("\n").forEach(rawLine => {
-      if (operationInstructionEchoLine(rawLine)) removed.push(line(rawLine, 220));
+    fences.text.split("\n").forEach(rawLine => {
+      if (operationInstructionEchoLine(rawLine, plan)) removed.push(line(rawLine, 220));
       else kept.push(rawLine);
     });
     return {
@@ -9079,59 +10030,54 @@ function CharacterContinuity(hook, incomingText) {
   function parseTerminalCandidate(output, plan) {
     const strippedSource = stripOperationInstructionEchoes(output, plan).text;
     const strippedLines = strippedSource.split("\n");
-    const originalCcoMarkers = strippedSource.match(/\(\s*CCO\b/gi) || [];
-    const originalShorthandMarkers = strippedSource.match(/\(\s*[SNRV]\s*\|/gi) || [];
-    const originalBareProtocolLines = strippedLines.filter(value =>
-      /^\s*(?:CCO|[SNRV])\s*\|/i.test(value)
-    );
-    const recoverableBareRecord = originalBareProtocolLines.length === 1
-      && originalCcoMarkers.length === 0
-      && originalShorthandMarkers.length === 0
-      && strippedLines[0] === strippedLines[0].trim()
-      && /^CCO\|[^()\r\n]*$/.test(strippedLines[0]);
-    let canonicalizedBareRecord = "";
-    let removedNumericAnnotation = "";
+    const presentation = ccoPresentation(strippedLines[0] || "");
+    let canonicalizedPresentedRecord = "";
     let source = strippedSource;
-    if (recoverableBareRecord) {
-      canonicalizedBareRecord = strippedLines[0];
-      let normalizedRecord = canonicalizedBareRecord;
-      const numericAnnotation = normalizedRecord.match(/\s+([+-]\d+)\s*$/);
-      if (numericAnnotation) {
-        removedNumericAnnotation = numericAnnotation[1];
-        normalizedRecord = normalizedRecord.slice(0, numericAnnotation.index).trimEnd();
-      }
-      source = "(" + normalizedRecord + ")"
+    if (presentation.record && presentation.changed) {
+      canonicalizedPresentedRecord = strippedLines[0];
+      source = presentation.record
         + (strippedLines.length > 1 ? "\n" + strippedLines.slice(1).join("\n") : "");
     }
-    const bareNormalizationNote = canonicalizedBareRecord
-      ? " Exact bare first-line CCO delimiters were canonicalized."
-        + (removedNumericAnnotation
-          ? " The terminal signed numeric annotation " + removedNumericAnnotation
+    const presentationNormalizationNote = canonicalizedPresentedRecord
+      ? (presentation.bare
+        ? " Exact bare first-line CCO delimiters were canonicalized."
+        : " Harmless first-line CCO presentation wrappers were removed.")
+        + (presentation.numericAnnotation
+          ? " The terminal signed numeric annotation " + presentation.numericAnnotation
             + " was removed before validation; managed code owns numerical changes."
           : "")
       : "";
     const ccoMarkers = source.match(/\(\s*CCO\b/gi) || [];
     const shorthandMarkers = source.match(/\(\s*[SNRV]\s*\|/gi) || [];
-    const bareProtocolLines = source.split("\n").filter(value =>
-      /^\s*(?:CCO|[SNRV])\s*\|/i.test(value)
+    const bareProtocolLines = source.split("\n").filter(value => {
+      const displayed = ccoPresentation(value);
+      return displayed.protocolLike && !/\(\s*CCO\b/i.test(value)
+        && !/\(\s*[SNRV]\s*\|/i.test(value);
+    });
+    const inlineBareCcoLines = source.split("\n").filter(value =>
+      bareCcoIndex(value) >= 0 && !bareProtocolLines.includes(value)
     );
-    const protocolLikeCount = ccoMarkers.length + shorthandMarkers.length + bareProtocolLines.length;
+    const protocolLikeCount = ccoMarkers.length + shorthandMarkers.length
+      + bareProtocolLines.length + inlineBareCcoLines.length;
     const stripLine = value => {
-      if (/^\s*(?:CCO|[SNRV])\s*\|/i.test(value)) return "";
+      if (ccoPresentation(value).protocolLike) return "";
       let result = value.replace(/\(\s*(?:CCO\b|[SNRV]\s*\|)[^()\r\n]*\)/gi, "");
       const leftover = result.search(/\(\s*(?:CCO\b|[SNRV]\s*\|)/i);
       if (leftover >= 0) result = result.slice(0, leftover);
+      const bareIndex = bareCcoIndex(result);
+      if (bareIndex >= 0) result = result.slice(0, bareIndex);
       return result.replace(/[ \t]{2,}/g, " ").trimEnd();
     };
     const story = source.split("\n").map(stripLine).join("\n").replace(/\n{3,}/g, "\n\n").trim();
     if (!protocolLikeCount) {
       return { story, candidate: null, malformed: false, hadProtocol: false, reason: "No CCO record", raw: "" };
     }
-    if (bareProtocolLines.length) {
+    if (bareProtocolLines.length || inlineBareCcoLines.length) {
+      const bareRecord = bareProtocolLines[0] || inlineBareCcoLines[0];
       return {
         story, candidate: null, malformed: true, hadProtocol: true,
         reason: "A bare protocol-like record was stripped; a complete record begins with (CCO| and ends with ).",
-        raw: line(bareProtocolLines[0].trim(), 300)
+        raw: line(bareRecord.trim(), 300)
       };
     }
     if (shorthandMarkers.length) {
@@ -9150,7 +10096,7 @@ function CharacterContinuity(hook, incomingText) {
     const firstLineEnd = source.indexOf("\n");
     const firstLine = (firstLineEnd >= 0 ? source.slice(0, firstLineEnd) : source);
     const raw = firstLine.trim();
-    const reportedRaw = line(canonicalizedBareRecord || raw, 300);
+    const reportedRaw = line(canonicalizedPresentedRecord || raw, 300);
     if (firstLine !== raw || !/^\(CCO\|[^()\r\n]*\)$/.test(raw)) {
       return {
         story, candidate: null, malformed: true, hadProtocol: true,
@@ -9219,7 +10165,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       const stateLabelNormalized = triggerField.changed || situationField.changed || thoughtField.changed;
       const stateReason = parsedCcoReason("CCO State record parsed.", routing)
-        + bareNormalizationNote
+        + presentationNormalizationNote
         + (stateLabelNormalized
           ? " Exact position-matched State field labels were normalized to bare values."
           : "");
@@ -9252,7 +10198,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO Name record parsed.", routing) + bareNormalizationNote,
+        reason: parsedCcoReason("CCO Name record parsed.", routing) + presentationNormalizationNote,
         raw: reportedRaw,
         candidate: { kind: "name", subjectCode, evidenceIds, alias, transition, replacedAlias, useField, explanation }
       };
@@ -9275,7 +10221,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO Relationship record parsed.", routing) + bareNormalizationNote,
+        reason: parsedCcoReason("CCO Relationship record parsed.", routing) + presentationNormalizationNote,
         raw: reportedRaw,
         candidate: {
           kind: "relationship", targetCode, evidenceIds, field, eventKind,
@@ -9303,7 +10249,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO View record parsed.", routing) + bareNormalizationNote,
+        reason: parsedCcoReason("CCO View record parsed.", routing) + presentationNormalizationNote,
         raw: reportedRaw,
         candidate: { kind: "view", targetField, evidenceIds, destination, severity, explanation }
       };
@@ -11577,7 +12523,7 @@ function CharacterContinuity(hook, incomingText) {
     const parsed = parseTerminalCandidate(outputValue, plan);
     if (instructionEcho.count > 0 && !parsed.candidate && !parsed.unauthorized) {
       parsed.malformed = true;
-      parsed.reason = "Operation instruction echo stripped (" + instructionEcho.count + " line"
+      parsed.reason = "CC control echo stripped (" + instructionEcho.count + " line"
         + (instructionEcho.count === 1 ? "" : "s") + ")."
         + (parsed.hadProtocol ? " " + parsed.reason : "");
       parsed.raw = instructionEcho.sample;
@@ -11586,7 +12532,7 @@ function CharacterContinuity(hook, incomingText) {
       ? parsed.reason + (parsed.raw ? " Record: " + line(parsed.raw, 180) : "")
       : (parsed.reason || "No CCO record");
     CC.last.protocol = instructionEcho.count > 0 && parsed.candidate
-      ? "Operation instruction echo stripped (" + instructionEcho.count + "). " + protocolSummary
+      ? "CC control echo stripped (" + instructionEcho.count + "). " + protocolSummary
       : protocolSummary;
     const story = parsed.story.trim();
     if (!hasCompleteStory(story)) {
@@ -11778,7 +12724,7 @@ function CharacterContinuity(hook, incomingText) {
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
     }
     if (instructionEcho.count > 0 && parsed.candidate) {
-      CC.last.warning = [CC.last.warning, "Operation instruction echo was stripped before the valid CCO record and story were processed."]
+      CC.last.warning = [CC.last.warning, "CC control echo was stripped before the valid CCO record and story were processed."]
         .filter(Boolean).join(" ");
     }
 
