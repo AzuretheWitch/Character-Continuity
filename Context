@@ -1,0 +1,5 @@
+const modifier = (text) => ({
+  text: CharacterContinuity("context", text)
+});
+
+modifier(text);
