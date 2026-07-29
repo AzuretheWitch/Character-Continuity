@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.72",
+  VERSION: "Character Continuity Stable v1.0.73",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -843,6 +843,79 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   const titleMigrationDiagnostics = [];
+  const wrapperMigrationDiagnostics = [];
+
+  function ownedEntryWrapperInfo(value, owner, headerLabel) {
+    const source = textOf(value).replace(/\r/g, "");
+    const rows = source.split("\n");
+    const nonempty = rows.map((row, index) => ({ index, value: row.trim() }))
+      .filter(item => item.value);
+    const result = {
+      source,
+      rows,
+      valid: false,
+      combined: false,
+      openingIndex: -1,
+      headerIndex: -1,
+      closingIndex: -1
+    };
+    if (nonempty.length < 3 || nonempty[nonempty.length - 1].value !== "}") return result;
+    const wantedOwner = line(owner, 120);
+    const wantedLabel = line(headerLabel, 120);
+    if (!wantedOwner || !wantedLabel) return result;
+    const combined = nonempty[0].value.match(
+      /^\{\s*(.+?)['’]s\s+(.+?)\s*:\s*$/i
+    );
+    if (combined
+      && sameNameForm(combined[1], wantedOwner)
+      && keyOf(combined[2]) === keyOf(wantedLabel)) {
+      return {
+        ...result,
+        valid: true,
+        combined: true,
+        openingIndex: nonempty[0].index,
+        headerIndex: nonempty[0].index,
+        closingIndex: nonempty[nonempty.length - 1].index
+      };
+    }
+    if (nonempty[0].value !== "{") return result;
+    const split = nonempty[1].value.match(
+      /^(.+?)['’]s\s+(.+?)\s*:\s*$/i
+    );
+    if (!split
+      || !sameNameForm(split[1], wantedOwner)
+      || keyOf(split[2]) !== keyOf(wantedLabel)) {
+      return result;
+    }
+    return {
+      ...result,
+      valid: true,
+      combined: false,
+      openingIndex: nonempty[0].index,
+      headerIndex: nonempty[1].index,
+      closingIndex: nonempty[nonempty.length - 1].index
+    };
+  }
+
+  function canonicalOwnedEntryWrapper(value, owner, headerLabel) {
+    const info = ownedEntryWrapperInfo(value, owner, headerLabel);
+    if (!info.valid) {
+      return { valid: false, changed: false, entry: info.source };
+    }
+    const bodyStart = info.combined ? info.openingIndex + 1 : info.headerIndex + 1;
+    const body = info.rows.slice(bodyStart, info.closingIndex);
+    const entry = [
+      "{",
+      line(owner, 120) + "'s " + line(headerLabel, 120) + ":",
+      ...body,
+      "}"
+    ].join("\n");
+    return {
+      valid: true,
+      changed: entry !== info.source,
+      entry
+    };
+  }
 
   function physicalLogicalCardTitle(card) {
     const managed = managedTitleFromKey(card && card.keys);
@@ -873,6 +946,39 @@ function CharacterContinuity(hook, incomingText) {
       titleMigrationDiagnostics.push(
         failed + " character-owned card title" + (failed === 1 ? "" : "s")
           + " could not be migrated and remains readable through legacy-title compatibility."
+      );
+    }
+  }
+
+  function migrateOwnedEntryWrappers() {
+    let migrated = 0;
+    let failed = 0;
+    cards.slice().forEach(card => {
+      const parts = ownedCardTitleParts(physicalLogicalCardTitle(card));
+      if (!parts || parts.page !== 1) return;
+      const labelKey = keyOf(parts.label);
+      const headerLabel = labelKey === keyOf(settings.OUTER_CHARACTER_LABEL)
+        ? settings.OUTER_CHARACTER_LABEL
+        : (labelKey === keyOf(settings.INNER_CHARACTER_LABEL)
+          ? settings.INNER_CHARACTER_LABEL
+          : (labelKey === keyOf(settings.STATE_LABEL) ? "current private State" : ""));
+      if (!headerLabel) return;
+      const normalized = canonicalOwnedEntryWrapper(entryOf(card), parts.owner, headerLabel);
+      if (!normalized.valid || !normalized.changed) return;
+      const saved = saveCard(card, normalized.entry, parts.title);
+      if (saved && entryOf(saved) === normalized.entry) migrated += 1;
+      else failed += 1;
+    });
+    if (migrated) {
+      wrapperMigrationDiagnostics.push(
+        "Migrated " + migrated + " Outer, Inner, or State entry wrapper"
+          + (migrated === 1 ? "" : "s") + " to the split format in place."
+      );
+    }
+    if (failed) {
+      wrapperMigrationDiagnostics.push(
+        failed + " legacy entry wrapper" + (failed === 1 ? "" : "s")
+          + " could not be migrated and remains readable through compatibility parsing."
       );
     }
   }
@@ -1046,6 +1152,7 @@ function CharacterContinuity(hook, incomingText) {
   const runtime = readRuntime();
   if (!runtime.enabled) return finish(originalText);
   migrateOwnedCardTitles();
+  migrateOwnedEntryWrappers();
 
   function playerProfile() {
     let card = findCard(settings.PLAYER_TITLE);
@@ -1135,7 +1242,8 @@ function CharacterContinuity(hook, incomingText) {
 
   function renderOuterBlock(name, fields) {
     return [
-      "{ " + name + "'s Outer:",
+      "{",
+      name + "'s Outer:",
       ...fields.map(field => field.label + ": " + field.value),
       "}"
     ].join("\n");
@@ -1191,7 +1299,8 @@ function CharacterContinuity(hook, incomingText) {
 
   function renderInnerBlock(name, fields) {
     return [
-      "{ " + name + "'s Inner:",
+      "{",
+      name + "'s Inner:",
       ...fields.map(field => field.label + ": " + field.value),
       "}"
     ].join("\n");
@@ -1397,11 +1506,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingProfileHeaderValid(source, name, label) {
-    const rows = textOf(source).replace(/\r/g, "").split("\n")
-      .map(row => row.trim()).filter(Boolean);
-    if (rows.length < 2 || rows[rows.length - 1] !== "}") return false;
-    const match = rows[0].match(/^\{\s*(.+?)['’]s\s+(Outer|Inner)\s*:\s*$/i);
-    return !!(match && sameNameForm(match[1], name) && keyOf(match[2]) === keyOf(label));
+    return ownedEntryWrapperInfo(source, name, label).valid;
   }
 
   function onboardingMissingDetails(outerSource, innerSource, innerConflict) {
@@ -1433,7 +1538,8 @@ function CharacterContinuity(hook, incomingText) {
 
   function onboardingOuterTemplate(name) {
     return [
-      "{ " + name + "'s Outer:",
+      "{",
+      name + "'s Outer:",
       "Onboarding: Pending",
       "Ready: No",
       "Name, age, gender, pronouns: ",
@@ -1447,7 +1553,8 @@ function CharacterContinuity(hook, incomingText) {
 
   function onboardingInnerTemplate(name) {
     return [
-      "{ " + name + "'s Inner:",
+      "{",
+      name + "'s Inner:",
       "Onboarding: Pending",
       "Personality: ",
       "Mannerisms: ",
@@ -1518,8 +1625,12 @@ function CharacterContinuity(hook, incomingText) {
   function onboardingInsertControls(source, includeReady) {
     const rows = textOf(source).replace(/\r/g, "").split("\n");
     if (!onboardingMarkerPresent(source)) {
+      const profileHeader = rows.findIndex(row =>
+        /^.*?['’]s[ \t]+(?:Outer|Inner)[ \t]*:[ \t]*$/i.test(row.trim())
+      );
       const opening = rows.findIndex(row => row.trim());
-      rows.splice(Math.max(0, opening + 1), 0, "Onboarding: Pending");
+      const insertion = profileHeader >= 0 ? profileHeader + 1 : Math.max(0, opening + 1);
+      rows.splice(insertion, 0, "Onboarding: Pending");
     }
     if (includeReady && !onboardingFieldRows(rows.join("\n"), "Ready").length) {
       const marker = rows.findIndex(row => /^[ \t]*Onboarding[ \t]*:/i.test(row));
@@ -5917,7 +6028,8 @@ function CharacterContinuity(hook, incomingText) {
   function stateEntry(character, npc) {
     const state = normalizeState(npc && npc.state, CC.stateClock);
     return [
-      "{ " + character.name + "'s current private State:",
+      "{",
+      character.name + "'s current private State:",
       "Thought: " + state.thought.value,
       "Feeling: " + state.feeling.value,
       "Goal: " + state.goal.value,
@@ -7612,7 +7724,9 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function outerAnchor(character) {
-    return clean(character && character.outer ? character.outer : "{ " + character.name + "'s Outer: }", 20000);
+    return clean(character && character.outer
+      ? character.outer
+      : ["{", character.name + "'s Outer:", "}"].join("\n"), 20000);
   }
 
   function innerAnchor(character) {
@@ -7633,7 +7747,9 @@ function CharacterContinuity(hook, incomingText) {
       compactOperationField(source, "Physical attributes", 200),
       compactOperationField(source, "Clothing style", 120)
     ].filter(Boolean);
-    return rows.length ? ["{ " + character.name + "'s compact Outer:", ...rows, "}"].join("\n") : "";
+    return rows.length
+      ? ["{", character.name + "'s compact Outer:", ...rows, "}"].join("\n")
+      : "";
   }
 
   function compactOperationInnerAnchor(character) {
@@ -7648,7 +7764,8 @@ function CharacterContinuity(hook, incomingText) {
     ].filter(Boolean);
     if (!rows.length) return "";
     return [
-      "{ " + character.name + "'s compact Inner:",
+      "{",
+      character.name + "'s compact Inner:",
       ...rows,
       "}",
       "Each choice follows " + character.name + "'s Principles."
@@ -7665,7 +7782,9 @@ function CharacterContinuity(hook, incomingText) {
     if (state.situation.value) parts.push("Situation: " + state.situation.value);
     if (state.target.name) parts.push("About: " + modelTargetName(state.target.key, state.target.name));
     if (state.triggers.value.length) parts.push("Triggers: " + state.triggers.value.join(", "));
-    return parts.length ? "{ " + character.name + "'s current private State:\n" + parts.join("\n") + "\n}" : "";
+    return parts.length
+      ? ["{", character.name + "'s current private State:", ...parts, "}"].join("\n")
+      : "";
   }
 
   const EXPERIENCE_STOP_WORDS = new Set([
@@ -14966,6 +15085,7 @@ function CharacterContinuity(hook, incomingText) {
     const warning = [
       runtime.warning,
       ...titleMigrationDiagnostics,
+      ...wrapperMigrationDiagnostics,
       ...activeRosterDiagnostics,
       ...characterDiscoveryDiagnostics,
       ...storeSessionWarnings(),
@@ -15033,6 +15153,7 @@ function CharacterContinuity(hook, incomingText) {
       "Active NPC slots: " + rosterSlots,
       "Active NPC diagnostics: " + (activeRosterDiagnostics.join("; ") || "None"),
       "Card title migration: " + (titleMigrationDiagnostics.join("; ") || "None"),
+      "Card wrapper migration: " + (wrapperMigrationDiagnostics.join("; ") || "None"),
       "Identity discovery: " + (characterDiscoveryDiagnostics.join("; ") || "None"),
       "Outer: " + (characters.map(outerStatus).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),

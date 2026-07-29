@@ -60,7 +60,7 @@ When enabled, qualifying interaction counts can promote Side NPCs to Main, and p
 
 ## Fixed safety limits
 
-These v1.0.72 limits are not editable through `CC — Settings`:
+These v1.0.73 limits are not editable through `CC — Settings`:
 
 | Limit | Value |
 | --- | ---: |

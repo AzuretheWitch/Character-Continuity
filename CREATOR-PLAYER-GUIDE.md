@@ -112,14 +112,15 @@ All six cards are validated together. Outer and Inner must be complete. The othe
 
 CC does **not** create `Mira Vale's State` while onboarding is pending.
 
-All character-owned cards use possessive titles. v1.0.72 recognizes legacy em-dash titles such as `Mira Vale — Outer` and attempts to migrate them in place. `CC — Debug` reports the result on its `Card title migration` line.
+All character-owned cards use possessive titles, and wrapped continuity entries use split wrappers. v1.0.73 recognizes legacy em-dash titles and combined openings such as `{ Mira Vale's Outer:`, then attempts to migrate both in place. `CC — Debug` reports these results on its `Card title migration` and `Card wrapper migration` lines.
 
 ### 3. Complete Outer
 
 Generated form:
 
 ```text
-{ Mira Vale's Outer:
+{
+Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
 Name, age, gender, pronouns:
@@ -133,7 +134,8 @@ Starting status:
 Completed example:
 
 ```text
-{ Mira Vale's Outer:
+{
+Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
 Name, age, gender, pronouns: Mira Vale, 29, woman, she/her
@@ -158,7 +160,8 @@ Requirements:
 Generated form:
 
 ```text
-{ Mira Vale's Inner:
+{
+Mira Vale's Inner:
 Onboarding: Pending
 Personality:
 Mannerisms:
@@ -172,7 +175,8 @@ Principles:
 Completed example:
 
 ```text
-{ Mira Vale's Inner:
+{
+Mira Vale's Inner:
 Onboarding: Pending
 Personality: observant, self-contained, practical, wry, slow to trust
 Mannerisms: checks exits on arrival; rolls a coin across her knuckles while thinking
@@ -368,7 +372,7 @@ An empty State card therefore does not prove that installation failed: the NPC m
 
 ### Structured-output fallback handling
 
-Some models express a requested continuity operation through recognizable labels instead of the exact hidden CCO syntax. v1.0.72 can normalize a complete, high-confidence fallback form into a candidate and then apply the ordinary evidence, frozen-owner, target, provenance, and transaction checks.
+Some models express a requested continuity operation through recognizable labels instead of the exact hidden CCO syntax. v1.0.73 can normalize a complete, high-confidence fallback form into a candidate and then apply the ordinary evidence, frozen-owner, target, provenance, and transaction checks.
 
 Debug reports these cases as:
 
@@ -415,14 +419,15 @@ text = CharacterContinuity("context", text);
 
 Use each line only inside its corresponding modifier, as shown in the [installation guide](INSTALLATION.md#3-install-all-three-connectors).
 
-With the exact connectors installed, v1.0.72 strips accepted, rejected, normalized, and malformed candidate forms before returning visible story text. If a raw control record still appears, save the complete generated response and `CC — Debug` contents so the sanitizer path can be reproduced.
+With the exact connectors installed, v1.0.73 strips accepted, rejected, normalized, and malformed candidate forms before returning visible story text. If a raw control record still appears, save the complete generated response and `CC — Debug` contents so the sanitizer path can be reproduced.
 
 ### A State block appears in the Context Viewer
 
 This is expected when it looks like:
 
 ```text
-{ Snow's current private State:
+{
+Snow's current private State:
 Thought: ...
 Feeling: ...
 }
@@ -434,7 +439,7 @@ CC injects current State so the model can portray it. A raw line beginning with 
 
 - Confirm Scripts are enabled in both the Scenario and account Gameplay settings.
 - Confirm all four script tabs were saved.
-- Confirm the full v1.0.72 `Library` file is in the Library script tab only.
+- Confirm the full v1.0.73 `Library` file is in the Library script tab only.
 - Confirm Input, Context, and Output pass `text` into CC and return CC's result.
 - Start a fresh Adventure from the saved Scenario.
 
@@ -495,6 +500,7 @@ Useful lines include:
 - `Operation outcome / drain`
 - `Active NPC slots`
 - `Card title migration`
+- `Card wrapper migration`
 - `State clock / lifetime`
 - `Components`
 - `Budget configured / effective / used / headroom`

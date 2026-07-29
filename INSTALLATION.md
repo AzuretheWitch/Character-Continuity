@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs **Character Continuity Stable v1.0.72** in an AI Dungeon Scenario. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs **Character Continuity Stable v1.0.73** in an AI Dungeon Scenario. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
 
 ## What you need
 
@@ -128,7 +128,8 @@ Example Outer card:
 - **Entry:**
 
 ```text
-{ Snow's Outer:
+{
+Snow's Outer:
 Name, age, gender, pronouns: Snow, 31, woman, she/her
 Race/Species: arctic fox demi-human
 Physical attributes: medium height, sturdy build, silver-white hair, pale-grey eyes, white ears and tail
@@ -143,7 +144,8 @@ Example Inner card:
 - **Entry:**
 
 ```text
-{ Snow's Inner:
+{
+Snow's Inner:
 Personality: collected, observant, pragmatic, patient, quietly caring
 Mannerisms: speaks calmly and precisely; uses dry humor, silence, and practical acts
 Wants: keep the inn safe, sustainable, and welcoming
@@ -156,11 +158,14 @@ Principles: seek clear consent; accept refusal; care without controlling; protec
 Rules:
 
 - Use the exact same canonical name in both card names and headers.
+- Put the opening `{` and possessive card header on separate lines.
 - Keep one opening `{` and one closing `}`.
 - Fill every listed Outer and Inner field.
 - `Starting status` must be `Main` or `Side`.
 - Do not create a State card manually.
 - Optional Names, Views, Relationships, and Experiences baselines may also be added before play.
+
+v1.0.73 still reads older combined openings such as `{ Snow's Outer:` and normalizes them to the split form in place.
 
 When no `CC — Active NPCs` card exists yet, CC seeds its roster from completed Outer cards, up to the five-slot limit.
 
@@ -196,7 +201,7 @@ Look for:
 `CC — Status` should end with:
 
 ```text
-Version: Character Continuity Stable v1.0.72
+Version: Character Continuity Stable v1.0.73
 ```
 
 An initial State card may be empty. It fills only after CC accepts a supported, evidence-grounded State operation.
@@ -221,7 +226,7 @@ Use the integration order recommended by the other script. Test the combined set
 
 ## Installation checklist
 
-- [ ] The complete v1.0.72 `Library` file is in the Library script tab.
+- [ ] The complete v1.0.73 `Library` file is in the Library script tab.
 - [ ] Input calls and returns `CharacterContinuity("input", text)`.
 - [ ] Context calls and returns `CharacterContinuity("context", text)`.
 - [ ] Output calls and returns `CharacterContinuity("output", text)`.
@@ -230,13 +235,13 @@ Use the integration order recommended by the other script. Test the combined set
 - [ ] Every directly authored starting NPC has completed Outer and Inner cards.
 - [ ] No State cards were created manually.
 - [ ] A fresh Adventure was started after saving.
-- [ ] `CC — Status` reports `Character Continuity Stable v1.0.72`.
+- [ ] `CC — Status` reports `Character Continuity Stable v1.0.73`.
 
 ## Quick installation troubleshooting
 
-If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above. v1.0.72 normally strips both accepted and malformed candidates before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
+If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above. v1.0.73 normally strips both accepted and malformed candidates before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
 
-Seeing a populated `{ Name's current private State: ... }` block in AI Dungeon's **Context Viewer** is expected; that is how CC supplies private continuity for portrayal. Seeing raw `(CCO|...)` data in the visible story is not expected.
+Seeing a populated private State block in AI Dungeon's **Context Viewer**, with `{` followed by `Name's current private State:` on the next line, is expected; that is how CC supplies private continuity for portrayal. Seeing raw `(CCO|...)` data in the visible story is not expected.
 
 For additional diagnosis, see [Troubleshooting](CREATOR-PLAYER-GUIDE.md#troubleshooting).
 

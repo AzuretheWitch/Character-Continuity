@@ -1,4 +1,4 @@
-# Character Continuity Stable v1.0.72
+# Character Continuity Stable v1.0.73
 
 Character Continuity, or **CC**, is an AI Dungeon companion script for keeping predetermined NPCs recognizable, emotionally continuous, and capable of gradual change.
 
@@ -32,7 +32,7 @@ CC separates stable character foundations from continuity that should change dur
 
 `Outer` and `Inner` remain the NPC's creator-authored foundation. CC may shorten an overlong copy when building model context, but story events do not rewrite those cards.
 
-All character-owned Story Card titles use the possessive format. v1.0.72 recognizes older em-dash titles such as `Name — Outer` and attempts to migrate them in place without changing their entries.
+All character-owned Story Card titles use the possessive format. Wrapped continuity entries place the opening `{` and possessive header on separate lines. v1.0.73 recognizes older em-dash card titles and combined entry openings such as `{ Name's Outer:`, then attempts to migrate both in place without deleting or recreating the card.
 
 ## Temporary private State
 
@@ -48,7 +48,17 @@ State records what matters to an NPC **right now**:
 
 State is temporary. Each field expires after the configured number of completed AI responses unless new evidence refreshes it.
 
-CC deliberately supplies a populated State block to the model so the NPC can portray it through behavior and subtext. Seeing `{ Snow's current private State: ... }` in the Context Viewer is normal. Seeing a raw `(CCO|...)` record in the visible story is not.
+CC deliberately supplies a populated State block to the model so the NPC can portray it through behavior and subtext. Seeing a block beginning with the following lines in the Context Viewer is normal:
+
+```text
+{
+Snow's current private State:
+Thought: ...
+Feeling: ...
+}
+```
+
+Seeing a raw `(CCO|...)` record in the visible story is not.
 
 ## Directional continuity
 
