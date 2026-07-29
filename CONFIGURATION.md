@@ -60,7 +60,7 @@ When enabled, qualifying interaction counts can promote Side NPCs to Main, and p
 
 ## Fixed safety limits
 
-These v1.0.61 limits are not editable through `CC — Settings`:
+These v1.0.72 limits are not editable through `CC — Settings`:
 
 | Limit | Value |
 | --- | ---: |
@@ -71,13 +71,16 @@ These v1.0.61 limits are not editable through `CC — Settings`:
 | Relationships card page | `1,000` characters |
 | Views card page | `1,000` characters |
 | Experiences card page | `1,000` characters |
+| Imported Experience field | `5,000` characters before safe splitting |
+| Stored Experience record | `650` characters |
+| Model-facing Experience copy | `320` characters |
 | Individual State value | `120` characters |
 | State triggers | `3` |
 | Confirmations required for Experience promotion | `3` |
 | Operation-specific instruction | approximately `600` tokens |
 | Complete continuity operation turn | approximately `1,400` tokens |
 
-When a managed collection outgrows one page, CC can create numbered pages where supported rather than cutting a record in half.
+When a managed collection outgrows one page, CC can create numbered pages where supported. An oversized imported Experience can be divided at word boundaries into valid stored records before paging.
 
 ## Suggested starting profiles
 

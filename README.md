@@ -1,4 +1,4 @@
-# Character Continuity Stable v1.0.61
+# Character Continuity Stable v1.0.72
 
 Character Continuity, or **CC**, is an AI Dungeon companion script for keeping predetermined NPCs recognizable, emotionally continuous, and capable of gradual change.
 
@@ -16,13 +16,14 @@ CC separates stable character foundations from continuity that should change dur
 
 | Card | Main author | Purpose |
 | --- | --- | --- |
-| `Player — Identity` | Creator or player | Supplies the Player character's name and pronouns. |
-| `Name — Outer` | Creator | Defines the NPC's identity, appearance, species, clothing style, pronouns, and starting Main/Side status. |
-| `Name — Inner` | Creator | Defines the NPC's personality, mannerisms, wants, fears, mental wounds, and principles. |
-| `Name — State` | CC | Holds the NPC's temporary Thought, Feeling, Goal, Tension, Situation, About target, and triggers. |
-| `Name — Names` | Creator baseline, then CC | Tracks the canonical name and aliases that are Emerging, Active, Retired, or Rejected, including who may use them. |
-| `Name — Relationships` | Creator baseline, then CC | Tracks the NPC's directional Role, Trust, Closeness, Boundaries, and Conflict. |
-| `Name — Views` | Creator baseline, then CC | Tracks what the NPC Loves, Likes, feels Neutral toward, Dislikes, or Hates. |
+| `Player's Identity` | Creator or player | Supplies the Player character's name and pronouns. |
+| `Player's Names` | Player baseline, then CC | Records Player aliases that the Player explicitly supplies or accepts. |
+| `Name's Outer` | Creator | Defines the NPC's identity, appearance, species, clothing style, pronouns, and starting Main/Side status. |
+| `Name's Inner` | Creator | Defines the NPC's personality, mannerisms, wants, fears, mental wounds, and principles. |
+| `Name's State` | CC | Holds the NPC's temporary Thought, Feeling, Goal, Tension, Situation, About target, and triggers. |
+| `Name's Names` | Creator baseline, then CC | Tracks the canonical name and aliases that are Emerging, Active, Retired, or Rejected, including who may use them. |
+| `Name's Relationships` | Creator baseline, then CC | Tracks the NPC's directional Role, Trust, Closeness, Boundaries, and Conflict. |
+| `Name's Views` | Creator baseline, then CC | Tracks what the NPC Loves, Likes, feels Neutral toward, Dislikes, or Hates. |
 | `Name's Experiences` | Creator baseline, then CC | Stores lasting events that remain important after temporary State expires. |
 | `CC — Settings` | Creator or player | Controls CC's editable runtime settings. |
 | `CC — Active NPCs` | Creator or player | Holds the five stable `N1`–`N5` active-roster slots and starts onboarding. |
@@ -30,6 +31,8 @@ CC separates stable character foundations from continuity that should change dur
 | `CC — Debug` | CC | Provides detailed diagnostics when `Debug: true`. |
 
 `Outer` and `Inner` remain the NPC's creator-authored foundation. CC may shorten an overlong copy when building model context, but story events do not rewrite those cards.
+
+All character-owned Story Card titles use the possessive format. v1.0.72 recognizes older em-dash titles such as `Name — Outer` and attempts to migrate them in place without changing their entries.
 
 ## Temporary private State
 
@@ -51,7 +54,7 @@ CC deliberately supplies a populated State block to the model so the NPC can por
 
 Relationships and Views belong to an owner and point toward a target.
 
-`Snow → Player` and `Player → Snow` are not interchangeable. CC tracks NPC-owned continuity while reserving the Player character's speech, actions, thoughts, feelings, consent, commitments, memories, boundaries, names, and relationship decisions for the player.
+`Snow → Player` and `Player → Snow` are not interchangeable. CC tracks NPC-owned continuity while reserving the Player character's speech, actions, thoughts, feelings, consent, commitments, memories, boundaries, and relationship decisions for the player. `Player's Names` can record aliases the Player explicitly supplies or accepts; repeated NPC usage alone cannot establish one.
 
 Relationships can track:
 
@@ -124,7 +127,7 @@ On an eligible turn, CC:
 7. Removes the record before returning the story to the player.
 8. Saves the update only if every check succeeds.
 
-Malformed, unsupported, or unauthorized updates are rejected without changing saved continuity. Complete story prose is preserved whenever possible.
+Complete high-confidence fallback forms from smaller models can be normalized into a hidden candidate and passed through the same evidence, owner, target, and transaction validators. Malformed, partial, unsupported, or unauthorized candidates are stripped or rejected without changing saved continuity. Complete story prose is preserved whenever possible.
 
 ## Retry and context protection
 

@@ -33,7 +33,7 @@ Outer and Inner are the creator-owned foundation. State is managed by CC. Names,
 For a Scenario intended for other players:
 
 1. Follow the complete [installation guide](INSTALLATION.md), including all three exact connectors.
-2. Add `Player — Identity`, using a suitable default or placeholder.
+2. Add `Player's Identity`, using a suitable default or placeholder.
 3. Decide how each starting NPC will be created:
    - directly author completed Outer and Inner cards in the Scenario, or
    - use onboarding in a private test Adventure.
@@ -48,7 +48,7 @@ Changes made inside a test Adventure do not rewrite the parent Scenario. If you 
 
 ### Directly authored starting NPCs
 
-Direct authoring is best when the initial cast is already known. Each NPC needs a complete `Name — Outer` card and a complete `Name — Inner` card. Do not include onboarding controls in a finished direct-authored pair, and do not manually create `Name — State`.
+Direct authoring is best when the initial cast is already known. Each NPC needs a complete `Name's Outer` card and a complete `Name's Inner` card. Do not include onboarding controls in a finished direct-authored pair, and do not manually create `Name's State`.
 
 Use [the installation guide's templates](INSTALLATION.md#option-a-author-completed-cards-before-play) for the exact minimum format.
 
@@ -63,7 +63,7 @@ During ordinary play:
 - Edit `CC — Settings` when you want a different State lifetime, cast behavior, Relationship pace, or context budget.
 - Use `CC — Active NPCs` only when you intentionally want to add, remove, or reconnect an NPC.
 
-The Player character remains player-owned. CC does not establish the Player's private thoughts, feelings, consent, commitments, memories, boundaries, names, or relationship decisions.
+The Player character remains player-owned. CC does not establish the Player's private thoughts, feelings, consent, commitments, memories, boundaries, or relationship decisions. `Player's Names` can record an alias the Player explicitly supplies or accepts; repeated NPC usage alone cannot establish one.
 
 ## Confirmed onboarding
 
@@ -101,16 +101,18 @@ For a genuinely new name, CC creates:
 
 | Card | Required content before activation | What to do |
 | --- | --- | --- |
-| `Mira Vale — Outer` | Every listed character field | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing. |
-| `Mira Vale — Inner` | Every listed character field | Complete it. Keep `Onboarding: Pending` while editing. |
-| `Mira Vale — Names` | No alias records required | Add starting aliases, or leave the blank five-field Alias record untouched. |
-| `Mira Vale — Views` | No View records required | Add baseline Views, or leave all five category headings empty. |
-| `Mira Vale — Relationships` | No Relationship records required | Add baselines, or leave the blank six-field record untouched. |
+| `Mira Vale's Outer` | Every listed character field | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing. |
+| `Mira Vale's Inner` | Every listed character field | Complete it. Keep `Onboarding: Pending` while editing. |
+| `Mira Vale's Names` | No alias records required | Add starting aliases, or leave the blank five-field Alias record untouched. |
+| `Mira Vale's Views` | No View records required | Add baseline Views, or leave all five category headings empty. |
+| `Mira Vale's Relationships` | No Relationship records required | Add baselines, or leave the blank six-field record untouched. |
 | `Mira Vale's Experiences` | No Experience records required | Add prior Experiences, or leave the blank About/Experience pair untouched. |
 
 All six cards are validated together. Outer and Inner must be complete. The other four may contain no baseline records, but their wrappers, headings, and blank field titles must remain intact until activation.
 
-CC does **not** create `Mira Vale — State` while onboarding is pending.
+CC does **not** create `Mira Vale's State` while onboarding is pending.
+
+All character-owned cards use possessive titles. v1.0.72 recognizes legacy em-dash titles such as `Mira Vale — Outer` and attempts to migrate them in place. `CC — Debug` reports the result on its `Card title migration` line.
 
 ### 3. Complete Outer
 
@@ -290,13 +292,14 @@ To add another Relationship, repeat the complete About, Role, Trust, Closeness, 
 Example:
 
 ```text
-{ Mira Vale's Experiences:
+{
+Mira Vale's Experiences:
 About: Player
 Experience: the Player gave her shelter without demanding anything in return
 }
 ```
 
-About and Experience must either both be filled or both remain blank. Keep the Experience concise—no longer than a State value—and describe a completed event rather than a personality trait.
+About and Experience must either both be filled or both remain blank. Describe a completed event rather than a personality trait. A stored Experience may contain up to 650 characters; CC supplies at most 320 characters from an individual Experience to the model and can safely split a longer imported field at word boundaries.
 
 To add another Experience, repeat the About and Experience pair.
 
@@ -342,7 +345,7 @@ Removing a roster name does not delete the NPC's continuity cards. Re-enter the 
 ## Editing cards after activation
 
 - Edit **Outer** or **Inner** only when deliberately revising the stable character foundation.
-- Edit **Player — Identity** when the Player character's name or pronouns need correction.
+- Edit **Player's Identity** when the Player character's name or pronouns need correction.
 - Edit **CC — Settings** for runtime behavior.
 - Edit **CC — Active NPCs** for onboarding, removal, or reconnection.
 - Let CC manage **State**, **Names**, **Relationships**, **Views**, and **Experiences** during ordinary play.
@@ -361,7 +364,20 @@ A managed State card contains temporary fields such as Thought, Feeling, Goal, T
 6. CC removes the hidden record before returning visible story text.
 7. The Context connector can later inject a readable private-State block so the model can portray it through behavior and subtext.
 
-An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, or the candidate may have failed validation. An empty State card **combined with visible raw CCO text** points strongly to an incorrect connector.
+An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, or the candidate may have failed validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
+
+### Structured-output fallback handling
+
+Some models express a requested continuity operation through recognizable labels instead of the exact hidden CCO syntax. v1.0.72 can normalize a complete, high-confidence fallback form into a candidate and then apply the ordinary evidence, frozen-owner, target, provenance, and transaction checks.
+
+Debug reports these cases as:
+
+- `normalized accepted`
+- `normalized unchanged`
+- `normalized rejected`
+- `malformed stripped`
+
+Partial records, inline candidate fragments, and unsupported structures are stripped without changing saved continuity. If a generated response contains no complete story prose after cleaning, CC requests prose-only recovery.
 
 ## Troubleshooting
 
@@ -399,6 +415,8 @@ text = CharacterContinuity("context", text);
 
 Use each line only inside its corresponding modifier, as shown in the [installation guide](INSTALLATION.md#3-install-all-three-connectors).
 
+With the exact connectors installed, v1.0.72 strips accepted, rejected, normalized, and malformed candidate forms before returning visible story text. If a raw control record still appears, save the complete generated response and `CC — Debug` contents so the sanitizer path can be reproduced.
+
 ### A State block appears in the Context Viewer
 
 This is expected when it looks like:
@@ -416,7 +434,7 @@ CC injects current State so the model can portray it. A raw line beginning with 
 
 - Confirm Scripts are enabled in both the Scenario and account Gameplay settings.
 - Confirm all four script tabs were saved.
-- Confirm the full v1.0.61 file is in Library only.
+- Confirm the full v1.0.72 `Library` file is in the Library script tab only.
 - Confirm Input, Context, and Output pass `text` into CC and return CC's result.
 - Start a fresh Adventure from the saved Scenario.
 
@@ -476,6 +494,8 @@ Useful lines include:
 - `Last candidate / update`
 - `Operation outcome / drain`
 - `Active NPC slots`
+- `Card title migration`
 - `State clock / lifetime`
 - `Components`
 - `Budget configured / effective / used / headroom`
+- `Store session output parses/writes`
