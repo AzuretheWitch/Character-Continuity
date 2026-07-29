@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.61",
+  VERSION: "Character Continuity Stable v1.0.72",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -8,7 +8,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   NAMES_LABEL: "Names",
   EXPERIENCES_LABEL: "Experiences",
   STATE_LABEL: "State",
-  PLAYER_TITLE: "Player — Identity",
+  PLAYER_TITLE: "Player's Identity",
   ACTIVE_NPCS_TITLE: "CC — Active NPCs",
   SETTINGS_TITLE: "CC — Settings",
   STATUS_TITLE: "CC — Status",
@@ -38,6 +38,9 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_RELATIONSHIPS_CARD_CHARS: 1000,
   MAX_NAMES_CARD_CHARS: 1000,
   MAX_EXPERIENCES_CARD_CHARS: 1000,
+  MAX_EXPERIENCE_IMPORT_CHARS: 5000,
+  MAX_STORED_EXPERIENCE_CHARS: 650,
+  MAX_MODEL_EXPERIENCE_CHARS: 320,
   MAX_DEBUG_CARD_CHARS: 2000,
   MAX_PROVENANCE_RECORDS: 160,
   MAX_OPERATION_DRAIN_RECORDS: 160,
@@ -78,6 +81,26 @@ function CharacterContinuity(hook, incomingText) {
   const rootState = state;
   const historyList = history;
   const cards = storyCards;
+  const STORE_KINDS = ["names", "views", "relationships", "experiences"];
+  const storeSession = STORE_KINDS.reduce((result, kind) => {
+    result[kind] = {
+      loaded: false,
+      dirty: false,
+      repaired: false,
+      projected: false,
+      parses: 0,
+      writes: 0,
+      invalidations: 0,
+      lastWrite: "",
+      verifying: false,
+      verificationFailed: false
+    };
+    return result;
+  }, {});
+  const cardTitleCache = new Map();
+  const namedTitlePartsCache = new Map();
+  const namedCardOwnerCache = new Map();
+  let cardCatalog = null;
 
   function finish(value) {
     return typeof value === "string" && value.length ? value : " ";
@@ -215,6 +238,91 @@ function CharacterContinuity(hook, incomingText) {
     return (hash >>> 0).toString(16);
   }
 
+  function storeSessionFor(kind) {
+    return storeSession[keyOf(kind)] || null;
+  }
+
+  function storeIsFresh(kind, value) {
+    const session = storeSessionFor(kind);
+    return !!(session && session.loaded && !session.dirty && value);
+  }
+
+  function recordStoreParse(kind, writesAtStart) {
+    const session = storeSessionFor(kind);
+    if (!session) return;
+    session.loaded = true;
+    session.parses += 1;
+    session.dirty = session.writes > Math.max(0, Number(writesAtStart) || 0);
+  }
+
+  function verifiedStoreAfterParse(kind, currentStore, refresh) {
+    const session = storeSessionFor(kind);
+    if (!session || !session.dirty || typeof refresh !== "function") return currentStore;
+    if (session.verifying) {
+      session.verificationFailed = true;
+      session.dirty = false;
+      return currentStore;
+    }
+    session.verifying = true;
+    const verified = refresh() || currentStore;
+    session.verifying = false;
+    return verified;
+  }
+
+  function markStoreDirty(kind, reason) {
+    const session = storeSessionFor(kind);
+    if (!session) return;
+    session.dirty = true;
+    session.repaired = false;
+    session.projected = false;
+    session.writes += 1;
+    session.invalidations += 1;
+    session.lastWrite = line(reason, 240);
+  }
+
+  function storeKindForManagedTitle(value) {
+    const parts = ownedCardTitleParts(value);
+    if (!parts) return "";
+    if (keyOf(parts.label) === keyOf(settings.NAMES_LABEL)) return "names";
+    if ([settings.BURIED_VIEWS_LABEL, settings.VIEWS_LABEL]
+      .some(label => keyOf(parts.label) === keyOf(label))) return "views";
+    if (keyOf(parts.label) === keyOf(settings.RELATIONSHIPS_LABEL)) return "relationships";
+    if (keyOf(parts.label) === keyOf(settings.EXPERIENCES_LABEL)) return "experiences";
+    return "";
+  }
+
+  function markManagedTitlesDirty(values, reason) {
+    const kinds = new Set((Array.isArray(values) ? values : [values])
+      .map(storeKindForManagedTitle)
+      .filter(Boolean));
+    kinds.forEach(kind => markStoreDirty(kind, reason));
+  }
+
+  function storeSessionSummary() {
+    return STORE_KINDS.map(kind => {
+      const session = storeSession[kind];
+      const unexpected = session.parses > session.writes + 1;
+      return kind.charAt(0).toUpperCase() + ":" + session.parses + "p/"
+        + session.writes + "w" + (unexpected ? "!" : (session.verificationFailed ? "?" : ""));
+    }).join(", ");
+  }
+
+  function storeSessionWarnings() {
+    return STORE_KINDS.flatMap(kind => {
+      const session = storeSession[kind];
+      const warnings = [];
+      if (session.parses > session.writes + 1) {
+        warnings.push(kind + " parsed " + session.parses + " times after " + session.writes
+          + " managed write" + (session.writes === 1 ? "" : "s") + " in one " + hook + " hook");
+      }
+      if (session.verificationFailed) {
+        warnings.push(kind + " could not settle its latest managed write after one verification reread; "
+          + "the reread state was used for the rest of this " + hook + " hook");
+      }
+      return warnings;
+    }).filter(Boolean);
+  }
+
   function visibleTitleOf(card) {
     if (!card) return "";
     return line(typeof card.title === "string" ? card.title : "", 220);
@@ -252,6 +360,83 @@ function CharacterContinuity(hook, incomingText) {
     return keyOf(value) === keyOf(settings.SCRIPT_CARD_TITLE);
   }
 
+  const OWNED_CARD_LABELS = [
+    settings.OUTER_CHARACTER_LABEL,
+    settings.INNER_CHARACTER_LABEL,
+    settings.NAMES_LABEL,
+    settings.STATE_LABEL,
+    settings.RELATIONSHIPS_LABEL,
+    settings.BURIED_VIEWS_LABEL,
+    settings.VIEWS_LABEL,
+    settings.EXPERIENCES_LABEL,
+    "Identity"
+  ];
+  const PAGED_OWNED_CARD_LABELS = new Set([
+    settings.NAMES_LABEL,
+    settings.RELATIONSHIPS_LABEL,
+    settings.BURIED_VIEWS_LABEL,
+    settings.VIEWS_LABEL,
+    settings.EXPERIENCES_LABEL
+  ].map(keyOf));
+  const OWNED_CARD_LABEL_PATTERN = OWNED_CARD_LABELS
+    .slice()
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegExp)
+    .join("|");
+  const POSSESSIVE_OWNED_TITLE = new RegExp(
+    "^(.+?)['’]s\\s+(" + OWNED_CARD_LABEL_PATTERN + ")(?:\\s+(\\d+))?$",
+    "i"
+  );
+  const LEGACY_OWNED_TITLE = new RegExp(
+    "^(.+?)\\s+(?:—|–|-)\\s+(" + OWNED_CARD_LABEL_PATTERN + ")(?:\\s+(\\d+))?$",
+    "i"
+  );
+
+  function canonicalOwnedLabel(value) {
+    const normalized = keyOf(value);
+    return OWNED_CARD_LABELS.find(label => keyOf(label) === normalized) || "";
+  }
+
+  function ownedCardTitle(name, label, page = 1) {
+    const owner = line(name, 120);
+    const canonicalLabel = canonicalOwnedLabel(label);
+    const pageNumber = Number(page) || 1;
+    if (!owner || !canonicalLabel || !Number.isSafeInteger(pageNumber) || pageNumber < 1) return "";
+    if (pageNumber > 1 && !PAGED_OWNED_CARD_LABELS.has(keyOf(canonicalLabel))) return "";
+    if (keyOf(canonicalLabel) === "identity" && !sameNameForm(owner, "Player")) return "";
+    return owner + "'s " + canonicalLabel + (pageNumber > 1 ? " " + pageNumber : "");
+  }
+
+  function ownedCardTitleParts(value) {
+    const source = line(value, 260);
+    const possessive = source.match(POSSESSIVE_OWNED_TITLE);
+    const legacy = possessive ? null : source.match(LEGACY_OWNED_TITLE);
+    const match = possessive || legacy;
+    if (!match) return null;
+    const owner = line(match[1], 120);
+    const label = canonicalOwnedLabel(match[2]);
+    const suppliedPage = !!match[3];
+    const page = suppliedPage ? Number(match[3]) : 1;
+    if (!owner || !label || !Number.isSafeInteger(page) || page < 1
+      || (suppliedPage && page === 1)
+      || (suppliedPage && !PAGED_OWNED_CARD_LABELS.has(keyOf(label)))
+      || (keyOf(label) === "identity" && !sameNameForm(owner, "Player"))) {
+      return null;
+    }
+    return {
+      owner,
+      label,
+      page,
+      legacy: !!legacy,
+      title: ownedCardTitle(owner, label, page)
+    };
+  }
+
+  function canonicalOwnedCardTitle(value) {
+    const parts = ownedCardTitleParts(value);
+    return parts ? parts.title : "";
+  }
+
   function managedTitleFromEntry(card) {
     const source = entryOf(card).replace(/\r/g, "");
     if (!source.trim()) return "";
@@ -263,14 +448,14 @@ function CharacterContinuity(hook, incomingText) {
       const label = keyOf(profile[2]) === "outer"
         ? settings.OUTER_CHARACTER_LABEL
         : settings.INNER_CHARACTER_LABEL;
-      return line(profile[1], 120) + " — " + label;
+      return ownedCardTitle(profile[1], label);
     }
 
     const stateProfile = source.match(
       /^\s*\{\s*(.+?)['’]s\s+current\s+private\s+State\s*:/i
     );
     if (stateProfile) {
-      return line(stateProfile[1], 120) + " — " + settings.STATE_LABEL;
+      return ownedCardTitle(stateProfile[1], settings.STATE_LABEL);
     }
 
     const headers = source.split("\n")
@@ -292,7 +477,7 @@ function CharacterContinuity(hook, incomingText) {
             ? settings.VIEWS_LABEL
             : (normalizedLabel === "names" ? settings.NAMES_LABEL : settings.RELATIONSHIPS_LABEL));
         const page = paged[3] ? Number(paged[3]) : 1;
-        return owner + " — " + label + (Number.isSafeInteger(page) && page > 1 ? " " + page : "");
+        return ownedCardTitle(owner, label, page);
       }
 
       const experiences = header.match(
@@ -300,8 +485,7 @@ function CharacterContinuity(hook, incomingText) {
       );
       if (experiences) {
         const page = experiences[2] ? Number(experiences[2]) : 1;
-        return line(experiences[1], 120) + "'s " + settings.EXPERIENCES_LABEL
-          + (Number.isSafeInteger(page) && page > 1 ? " " + page : "");
+        return ownedCardTitle(experiences[1], settings.EXPERIENCES_LABEL, page);
       }
     }
 
@@ -315,20 +499,161 @@ function CharacterContinuity(hook, incomingText) {
 
   function titleOf(card) {
     if (!card) return "";
+    const rawKeys = card.keys;
+    const rawTitle = card.title;
+    const rawEntry = card.entry;
+    const cached = cardTitleCache.get(card);
+    if (cached
+      && cached.keys === rawKeys
+      && cached.title === rawTitle
+      && cached.entry === rawEntry) {
+      return cached.value;
+    }
     const managedTitle = managedTitleFromKey(card.keys);
-    if (managedTitle) return managedTitle;
-    const visibleTitle = visibleTitleOf(card);
-    if (visibleTitle && !defaultScriptCardTitle(visibleTitle)) return visibleTitle;
-    const entryTitle = managedTitleFromEntry(card);
-    if (entryTitle) return entryTitle;
-    return line(card.keys, 220) || visibleTitle;
+    const visibleTitle = managedTitle ? "" : visibleTitleOf(card);
+    const entryTitle = managedTitle || (visibleTitle && !defaultScriptCardTitle(visibleTitle))
+      ? ""
+      : managedTitleFromEntry(card);
+    const resolved = managedTitle
+      || (visibleTitle && !defaultScriptCardTitle(visibleTitle) ? visibleTitle : "")
+      || entryTitle
+      || line(card.keys, 220)
+      || visibleTitle;
+    const value = canonicalOwnedCardTitle(resolved) || resolved;
+    cardTitleCache.set(card, {
+      keys: rawKeys,
+      title: rawTitle,
+      entry: rawEntry,
+      value
+    });
+    return value;
+  }
+
+  function invalidateCardCatalog() {
+    cardCatalog = null;
+  }
+
+  function catalogAppend(map, key, value) {
+    if (!key) return;
+    if (!map.has(key)) map.set(key, []);
+    map.get(key).push(value);
+  }
+
+  function currentCardCatalog() {
+    if (cardCatalog) return cardCatalog;
+    const catalog = {
+      records: [],
+      indexByCard: new Map(),
+      byTitle: new Map(),
+      byRawKey: new Map(),
+      byId: new Map(),
+      namedLabels: new Map(),
+      pagedLabels: new Map(),
+      experienceOwners: null
+    };
+    cards.forEach((card, index) => {
+      if (!card) return;
+      const title = titleOf(card);
+      const record = {
+        card,
+        index,
+        title,
+        titleKey: keyOf(title),
+        rawKey: textOf(card.keys).trim(),
+        id: card.id === null || card.id === undefined ? "" : textOf(card.id)
+      };
+      catalog.records.push(record);
+      catalog.indexByCard.set(card, index);
+      catalogAppend(catalog.byTitle, record.titleKey, record);
+      catalogAppend(catalog.byRawKey, record.rawKey, record);
+      catalogAppend(catalog.byId, record.id, record);
+    });
+    cardCatalog = catalog;
+    return catalog;
+  }
+
+  function catalogRecordsByTitle(title) {
+    return (currentCardCatalog().byTitle.get(keyOf(title)) || []).slice();
+  }
+
+  function catalogRecordsByRawKey(value) {
+    return (currentCardCatalog().byRawKey.get(textOf(value).trim()) || []).slice();
+  }
+
+  function firstCatalogCard(records) {
+    const ordered = (Array.isArray(records) ? records : [])
+      .filter(record => record && record.card)
+      .sort((left, right) => left.index - right.index);
+    return ordered.length ? ordered[0].card : null;
+  }
+
+  function catalogNamedLabel(label) {
+    const catalog = currentCardCatalog();
+    const labelKey = keyOf(label);
+    if (catalog.namedLabels.has(labelKey)) return catalog.namedLabels.get(labelKey);
+    const index = { records: [], byOwner: new Map() };
+    catalog.records.forEach(record => {
+      const owner = nameFromNamedTitle(record.title, label);
+      if (!owner) return;
+      const item = { ...record, owner, ownerKey: nameKeyOf(owner) };
+      index.records.push(item);
+      catalogAppend(index.byOwner, item.ownerKey, item);
+    });
+    catalog.namedLabels.set(labelKey, index);
+    return index;
+  }
+
+  function catalogNamedCards(name, label) {
+    const records = catalogNamedLabel(label).byOwner.get(nameKeyOf(name)) || [];
+    return records.map(record => record.card);
+  }
+
+  function catalogNamedOwners(label) {
+    return catalogNamedLabel(label).records.map(record => record.owner);
+  }
+
+  function catalogPagedLabel(label) {
+    const catalog = currentCardCatalog();
+    const labelKey = keyOf(label);
+    if (catalog.pagedLabels.has(labelKey)) return catalog.pagedLabels.get(labelKey);
+    const index = { records: [], byOwner: new Map() };
+    catalog.records.forEach(record => {
+      const parts = numberedNamedTitleParts(record.title, label);
+      if (!parts) return;
+      const item = {
+        ...record,
+        owner: parts.owner,
+        ownerKey: nameKeyOf(parts.owner),
+        page: parts.page
+      };
+      index.records.push(item);
+      catalogAppend(index.byOwner, item.ownerKey, item);
+    });
+    index.records.sort((left, right) => left.index - right.index);
+    index.byOwner.forEach(records => records.sort((left, right) =>
+      left.page - right.page || left.index - right.index
+    ));
+    catalog.pagedLabels.set(labelKey, index);
+    return index;
+  }
+
+  function catalogPagedCards(name, label) {
+    return (catalogPagedLabel(label).byOwner.get(nameKeyOf(name)) || [])
+      .map(record => ({ card: record.card, page: record.page }));
+  }
+
+  function catalogCardOrder(card) {
+    const index = currentCardCatalog().indexByCard.get(card);
+    return Number.isInteger(index) ? index : -1;
   }
 
   function restoreVisibleCardTitle(card, intendedTitle) {
     const logicalTitle = line(intendedTitle, 220);
     if (!card || !logicalTitle) return card;
     try {
+      const priorTitle = card.title;
       card.title = logicalTitle;
+      if (priorTitle !== card.title) invalidateCardCatalog();
     } catch (error) {
       debug("Could not restore the visible Story Card title " + logicalTitle + ": " + error.message);
     }
@@ -343,20 +668,20 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function findCard(title) {
-    const wanted = keyOf(title);
     const wantedKey = managedCardKey(title);
-    return cards.find(card => keyOf(titleOf(card)) === wanted
-      || (wantedKey && textOf(card && card.keys).trim() === wantedKey)) || null;
+    const matches = catalogRecordsByTitle(title)
+      .concat(wantedKey ? catalogRecordsByRawKey(wantedKey) : []);
+    return firstCatalogCard(matches);
   }
 
   function cardIndex(card) {
     if (!card) return -1;
-    const direct = cards.indexOf(card);
-    if (direct >= 0) return direct;
+    const catalog = currentCardCatalog();
+    const direct = catalog.indexByCard.get(card);
+    if (Number.isInteger(direct)) return direct;
     const id = card.id === null || card.id === undefined ? "" : textOf(card.id);
-    return id
-      ? cards.findIndex(candidate => candidate && textOf(candidate.id) === id)
-      : -1;
+    const match = id ? firstCatalogCard(catalog.byId.get(id) || []) : null;
+    return match ? catalog.indexByCard.get(match) : -1;
   }
 
   function extractLine(source, label) {
@@ -371,7 +696,8 @@ function CharacterContinuity(hook, incomingText) {
   function updateCardAt(index, keys, entry, type, intendedTitle) {
     if (!Number.isInteger(index) || index < 0 || index >= cards.length) return null;
     const current = cards[index];
-    const logicalTitle = line(intendedTitle || titleOf(current), 220);
+    const priorTitle = line(titleOf(current), 220);
+    const logicalTitle = line(intendedTitle || priorTitle, 220);
     const nextKeys = textOf(keys).trim()
       ? textOf(keys)
       : (textOf(current && current.keys).trim()
@@ -388,7 +714,13 @@ function CharacterContinuity(hook, incomingText) {
     }
     try {
       updateStoryCard(index, nextKeys, nextEntry, nextType);
-      return restoreVisibleCardTitle(cards[index] || current, logicalTitle);
+      invalidateCardCatalog();
+      const updated = restoreVisibleCardTitle(cards[index] || current, logicalTitle);
+      markManagedTitlesDirty(
+        [priorTitle, logicalTitle],
+        "Updated " + (logicalTitle || priorTitle || "managed Story Card")
+      );
+      return updated;
     } catch (error) {
       debug("Could not update " + (titleOf(current) || nextKeys) + " through the Story Card API: " + error.message);
       return null;
@@ -414,7 +746,7 @@ function CharacterContinuity(hook, incomingText) {
     const cardTitle = line(title, 220);
     if (!cardTitle) return null;
     const cardKey = managedCardKey(cardTitle);
-    const existing = cards.find(card => textOf(card && card.keys).trim() === cardKey)
+    const existing = firstCatalogCard(catalogRecordsByRawKey(cardKey))
       || findCard(cardTitle);
     if (existing) return restoreVisibleCardTitle(existing, cardTitle);
     const before = cards.length;
@@ -425,7 +757,8 @@ function CharacterContinuity(hook, incomingText) {
         typeof entry === "string" ? entry : "",
         settings.CARD_TYPE
       );
-      created = cards.find(card => textOf(card && card.keys).trim() === cardKey) || null;
+      invalidateCardCatalog();
+      created = firstCatalogCard(catalogRecordsByRawKey(cardKey));
       if (!created && Number.isInteger(result)) {
         created = cards[result] || cards[result - 1] || null;
       } else if (!created && cards.length > before) {
@@ -436,8 +769,11 @@ function CharacterContinuity(hook, incomingText) {
     } catch (error) {
       debug("Could not create " + cardTitle + ": " + error.message);
     }
+    const added = cards.length > before;
     created = created || (cards.length > before ? cards[cards.length - 1] : null);
-    return restoreVisibleCardTitle(created, cardTitle);
+    created = restoreVisibleCardTitle(created, cardTitle);
+    if (added && created) markManagedTitlesDirty(cardTitle, "Added " + cardTitle);
+    return created;
   }
 
   function upsertCard(title, entry) {
@@ -448,8 +784,11 @@ function CharacterContinuity(hook, incomingText) {
   function removeCard(card) {
     const index = cardIndex(card);
     if (index < 0) return false;
+    const removedTitle = titleOf(cards[index] || card);
     try {
       removeStoryCard(index);
+      invalidateCardCatalog();
+      markManagedTitlesDirty(removedTitle, "Removed " + (removedTitle || "managed Story Card"));
       return true;
     } catch (error) {
       debug("Could not remove " + (titleOf(card) || "Story Card") + ": " + error.message);
@@ -467,7 +806,12 @@ function CharacterContinuity(hook, incomingText) {
     if (!indices.length) return true;
     let removed = true;
     indices.forEach(index => {
-      try { removeStoryCard(index); } catch (error) {
+      const removedTitle = titleOf(cards[index]);
+      try {
+        removeStoryCard(index);
+        invalidateCardCatalog();
+        markManagedTitlesDirty(removedTitle, "Removed " + (removedTitle || "managed Story Card"));
+      } catch (error) {
         debug("Could not remove Story Card at index " + index + ": " + error.message);
         removed = false;
       }
@@ -476,22 +820,61 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function namedTitle(name, label) {
-    return line(name, 120) + " — " + label;
+    return ownedCardTitle(name, label);
   }
 
   function nameFromNamedTitle(title, label) {
-    const match = line(title, 220).match(new RegExp("^(.+?)\\s+(?:—|–|-)\\s+" + escapeRegExp(label) + "$", "i"));
-    return match ? line(match[1], 120) : "";
+    const cacheKey = textOf(label) + "\u241f" + textOf(title);
+    if (namedCardOwnerCache.has(cacheKey)) return namedCardOwnerCache.get(cacheKey);
+    const parts = ownedCardTitleParts(title);
+    const owner = parts && parts.page === 1 && keyOf(parts.label) === keyOf(label)
+      ? parts.owner
+      : "";
+    namedCardOwnerCache.set(cacheKey, owner);
+    return owner;
   }
 
   function namedCards(name, label) {
-    const wanted = nameKeyOf(name);
-    return cards.filter(card => nameKeyOf(nameFromNamedTitle(titleOf(card), label)) === wanted);
+    return catalogNamedCards(name, label);
   }
 
   function namedCard(name, label) {
-    const wanted = nameKeyOf(name);
-    return cards.find(card => nameKeyOf(nameFromNamedTitle(titleOf(card), label)) === wanted) || null;
+    return catalogNamedCards(name, label)[0] || null;
+  }
+
+  const titleMigrationDiagnostics = [];
+
+  function physicalLogicalCardTitle(card) {
+    const managed = managedTitleFromKey(card && card.keys);
+    if (managed) return managed;
+    const visible = visibleTitleOf(card);
+    if (visible && !defaultScriptCardTitle(visible)) return visible;
+    return managedTitleFromEntry(card);
+  }
+
+  function migrateOwnedCardTitles() {
+    let migrated = 0;
+    let failed = 0;
+    cards.slice().forEach(card => {
+      const physical = physicalLogicalCardTitle(card);
+      const intended = canonicalOwnedCardTitle(physical);
+      if (!intended || managedCardIdentityMatches(card, intended)) return;
+      const saved = saveCard(card, entryOf(card), intended);
+      if (saved && managedCardIdentityMatches(saved, intended)) migrated += 1;
+      else failed += 1;
+    });
+    if (migrated) {
+      titleMigrationDiagnostics.push(
+        "Migrated " + migrated + " character-owned card title"
+          + (migrated === 1 ? "" : "s") + " to the possessive format in place."
+      );
+    }
+    if (failed) {
+      titleMigrationDiagnostics.push(
+        failed + " character-owned card title" + (failed === 1 ? "" : "s")
+          + " could not be migrated and remains readable through legacy-title compatibility."
+      );
+    }
   }
 
   function duplicateCardEntrySignature(card) {
@@ -662,6 +1045,7 @@ function CharacterContinuity(hook, incomingText) {
 
   const runtime = readRuntime();
   if (!runtime.enabled) return finish(originalText);
+  migrateOwnedCardTitles();
 
   function playerProfile() {
     let card = findCard(settings.PLAYER_TITLE);
@@ -882,7 +1266,8 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function readActiveNpcRoster() {
-    const matching = cards.filter(card => keyOf(titleOf(card)) === keyOf(settings.ACTIVE_NPCS_TITLE));
+    const matching = catalogRecordsByTitle(settings.ACTIVE_NPCS_TITLE)
+      .map(record => record.card);
     let card = matching[0] || null;
     const slots = Array.from({ length: settings.MAX_ACTIVE_NPCS }, (_, index) => ({
       number: index + 1,
@@ -1117,12 +1502,13 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingExperiencesTitle(name) {
-    return line(name, 120) + "'s " + settings.EXPERIENCES_LABEL;
+    return ownedCardTitle(name, settings.EXPERIENCES_LABEL);
   }
 
   function onboardingExperiencesTemplate(name) {
     return [
-      "{ " + name + "'s Experiences:",
+      "{",
+      name + "'s Experiences:",
       "About: ",
       "Experience: ",
       "}"
@@ -1149,8 +1535,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingOuterNames() {
-    return cards.map(card => nameFromNamedTitle(titleOf(card), settings.OUTER_CHARACTER_LABEL))
-      .filter(Boolean);
+    return catalogNamedOwners(settings.OUTER_CHARACTER_LABEL);
   }
 
   function onboardingCanonicalPermission(value) {
@@ -1238,22 +1623,50 @@ function CharacterContinuity(hook, incomingText) {
     return { ok: true, value: unique(normalized, 200).join("; ") };
   }
 
-  function onboardingCanonicalNames(name, source) {
+  function onboardingPageEnvelope(source, expectedHeader) {
     const rows = textOf(source).replace(/\r/g, "").split("\n");
     const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
       .filter(item => item.value);
+    const closingValid = nonempty.length > 0
+      && nonempty[nonempty.length - 1].value === "}";
+    const split = nonempty.length >= 2
+      && nonempty[0].value === "{"
+      && nameKeyOf(nonempty[1].value) === nameKeyOf(expectedHeader);
+    const combinedHeader = nonempty.length
+      && nonempty[0].value.startsWith("{")
+      ? nonempty[0].value.slice(1).trim()
+      : "";
+    const combined = !!combinedHeader
+      && nameKeyOf(combinedHeader) === nameKeyOf(expectedHeader);
+    const headerIndex = split
+      ? nonempty[1].index
+      : (combined ? nonempty[0].index : -1);
+    return {
+      rows,
+      nonempty,
+      recognized: closingValid && (split || combined),
+      canonical: closingValid && split,
+      combined,
+      headerIndex,
+      bodyStart: headerIndex >= 0 ? headerIndex + 1 : 0,
+      closingIndex: nonempty.length ? nonempty[nonempty.length - 1].index : rows.length
+    };
+  }
+
+  function onboardingCanonicalNames(name, source) {
+    const envelope = onboardingPageEnvelope(source, name + "'s Names:");
+    const rows = envelope.rows;
+    const nonempty = envelope.nonempty;
     const errors = [];
-    if (nonempty.length < 4 || nonempty[0].value !== "{"
-      || nameKeyOf(nonempty[1].value) !== nameKeyOf(name + "'s Names:")
-      || nonempty[nonempty.length - 1].value !== "}") {
+    if (nonempty.length < 3 || !envelope.recognized) {
       errors.push("Names wrapper or owner header is invalid");
     }
     const canonicalRows = onboardingFieldRows(source, "Canonical");
     if (canonicalRows.length !== 1 || !sameNameForm(canonicalRows[0].value, name)) {
       errors.push("Names requires Canonical: " + name);
     }
-    const canonicalIndex = canonicalRows.length ? canonicalRows[0].index : 1;
-    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    const canonicalIndex = canonicalRows.length ? canonicalRows[0].index : envelope.headerIndex;
+    const closingIndex = envelope.closingIndex;
     const starts = [];
     for (let index = canonicalIndex + 1; index < closingIndex; index++) {
       if (/^[ \t]*Alias[ \t]*:/i.test(rows[index])) starts.push(index);
@@ -1453,30 +1866,47 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingCanonicalRelationships(name, source) {
-    const rows = textOf(source).replace(/\r/g, "").split("\n");
-    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
-      .filter(item => item.value);
+    const envelope = onboardingPageEnvelope(source, name + "'s Relationships:");
+    const rows = envelope.rows;
+    const nonempty = envelope.nonempty;
     const errors = [];
-    if (nonempty.length < 3 || nonempty[0].value !== "{"
-      || nameKeyOf(nonempty[1].value) !== nameKeyOf(name + "'s Relationships:")
-      || nonempty[nonempty.length - 1].value !== "}") {
+    if (nonempty.length < 2 || !envelope.recognized) {
       errors.push("Relationships wrapper or owner header is invalid");
     }
-    const bodyStart = nonempty.length >= 2 ? nonempty[1].index + 1 : 0;
-    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    const bodyStart = envelope.bodyStart;
+    const closingIndex = envelope.closingIndex;
     const starts = [];
     for (let index = bodyStart; index < closingIndex; index++) {
       if (/^[ \t]*About[ \t]*:/i.test(rows[index])) starts.push(index);
     }
     const firstStart = starts.length ? starts[0] : closingIndex;
-    for (let index = bodyStart; index < firstStart; index++) {
-      if (rows[index].trim()) errors.push("Relationships has content outside an About record");
+    const leadingRows = rows.slice(bodyStart, firstStart)
+      .map((value, offset) => ({ value, index: bodyStart + offset }))
+      .filter(item => item.value.trim());
+    const legacyPlayerFields = leadingRows.length === ONBOARDING_RELATIONSHIP_FIELDS.length
+      && leadingRows.every((item, index) => new RegExp(
+        "^[ \\t]*" + escapeRegExp(ONBOARDING_RELATIONSHIP_FIELDS[index]) + "[ \\t]*:",
+        "i"
+      ).test(item.value));
+    if (leadingRows.length && !legacyPlayerFields) {
+      errors.push("Relationships has content outside an About record");
     }
     const records = [];
     const seenTargets = new Set();
+    const blocks = [];
+    if (legacyPlayerFields) {
+      blocks.push({
+        start: leadingRows[0].index,
+        rows: ["About: Player"].concat(leadingRows.map(item => item.value))
+      });
+    }
     starts.forEach((start, recordIndex) => {
       const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : closingIndex;
-      const recordRows = rows.slice(start, end).filter(row => row.trim());
+      blocks.push({ start, rows: rows.slice(start, end).filter(row => row.trim()) });
+    });
+    blocks.forEach(block => {
+      const start = block.start;
+      const recordRows = block.rows;
       const labels = ["About"].concat(ONBOARDING_RELATIONSHIP_FIELDS);
       const values = {};
       if (recordRows.length !== labels.length) {
@@ -1532,11 +1962,10 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingCanonicalExperiences(name, source) {
-    const trimmed = textOf(source).replace(/\r/g, "").trim();
-    const rows = trimmed.split("\n");
+    const envelope = onboardingPageEnvelope(source, name + "'s Experiences:");
+    const rows = envelope.rows;
     const errors = [];
-    const header = rows[0] && rows[0].match(/^\{\s*(.+?)['’]s\s+Experiences\s*:\s*$/i);
-    if (!header || !sameNameForm(header[1], name) || rows[rows.length - 1] !== "}") {
+    if (!envelope.recognized) {
       errors.push("Experiences wrapper or owner header is invalid");
     }
     const pattern = new RegExp(
@@ -1549,7 +1978,7 @@ function CharacterContinuity(hook, incomingText) {
     const addRecord = (rawTarget, rawSituation, lineNumber) => {
       const target = onboardingCanonicalTarget(name, rawTarget, true, true);
       const suppliedSituation = wholeLine(rawSituation, 0);
-      const situation = line(suppliedSituation, settings.MAX_STATE_VALUE_CHARS)
+      const situation = line(suppliedSituation, settings.MAX_EXPERIENCES_CARD_CHARS)
         .replace(/[.!?]+$/g, "").trim();
       if (!target || !situation || /[{}|\r\n]/.test(target + situation)
         || situation !== suppliedSituation.replace(/[.!?]+$/g, "").trim()) {
@@ -1562,7 +1991,7 @@ function CharacterContinuity(hook, incomingText) {
       seen.add(signature);
       records.push({ target, situation });
     };
-    for (let index = 1; index < rows.length - 1; index++) {
+    for (let index = envelope.bodyStart; index < envelope.closingIndex; index++) {
       const row = rows[index].trim();
       if (!row) continue;
       const match = row.match(pattern);
@@ -1577,7 +2006,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       const next = rows[index + 1] && rows[index + 1].trim();
       const experience = next && next.match(/^Experience\s*:\s*(.*?)\s*$/i);
-      if (!experience || index + 1 >= rows.length - 1) {
+      if (!experience || index + 1 >= envelope.closingIndex) {
         errors.push("Experiences About at line " + (index + 1)
           + " requires the next Experience field");
         continue;
@@ -1591,11 +2020,13 @@ function CharacterContinuity(hook, incomingText) {
       }
       addRecord(about[1], experience[1], index);
     }
-    const entry = ["{ " + name + "'s Experiences:"]
-      .concat(records.map(record => "- [About: " + record.target + "] " + name
-        + " experienced: " + record.situation + "."))
-      .concat("}")
-      .join("\n");
+    const entryRows = ["{", name + "'s Experiences:"];
+    records.forEach((record, index) => {
+      if (index > 0) entryRows.push("");
+      entryRows.push("About: " + record.target, "Experience: " + record.situation);
+    });
+    entryRows.push("}");
+    const entry = entryRows.join("\n");
     if (entry.length > settings.MAX_EXPERIENCES_CARD_CHARS) {
       errors.push("Experiences exceeds its 1,000-character limit");
     }
@@ -1691,8 +2122,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingExactCards(title) {
-    const wanted = keyOf(title);
-    return cards.filter(card => keyOf(titleOf(card)) === wanted);
+    return catalogRecordsByTitle(title).map(record => record.card);
   }
 
   function ensureOnboardingPackCard(name, title, template, label) {
@@ -1710,18 +2140,11 @@ function CharacterContinuity(hook, incomingText) {
     return matching[0];
   }
 
-  function namesCardOwner(title) {
-    const match = line(title, 260).match(new RegExp(
-      "^(.+?)\\s+(?:—|–|-)\\s+" + escapeRegExp(settings.NAMES_LABEL) + "(?:\\s+\\d+)?$",
-      "i"
-    ));
-    return match ? line(match[1], 120) : "";
-  }
-
   function storedAliasOwners(alias) {
     const owners = [];
-    cards.forEach(card => {
-      const owner = namesCardOwner(titleOf(card));
+    catalogPagedLabel(settings.NAMES_LABEL).records.forEach(item => {
+      const card = item.card;
+      const owner = item.owner;
       if (!owner) return;
       const pendingOwner = namedCards(owner, settings.OUTER_CHARACTER_LABEL)
         .some(outer => onboardingMarkerPresent(entryOf(outer)));
@@ -1894,14 +2317,33 @@ function CharacterContinuity(hook, incomingText) {
   activeNpcRoster.slots.forEach(ensureConfirmedOnboarding);
 
   const characterDiscoveryDiagnostics = [];
+  let preparedProfileCount = 0;
+  let rosterSkippedProfileCount = 0;
 
   function discoverCharacters() {
     const label = settings.OUTER_CHARACTER_LABEL;
-    const candidates = cards.map((card, index) => {
-      const name = nameFromNamedTitle(titleOf(card), label);
-      if (!name) return null;
-      return { card, index, name, key: nameKeyOf(name), source: entryOf(card), duplicateCount: 0 };
+    const prepared = catalogNamedLabel(label).records;
+    preparedProfileCount = new Set(prepared.map(item => item.ownerKey).filter(Boolean)).size;
+    const rosterKeys = activeNpcRoster.card
+      ? new Set(activeNpcRoster.slots
+        .filter(slot => slot && slot.valid && slot.name)
+        .map(slot => nameKeyOf(slot.name)))
+      : null;
+    const candidates = prepared.map(item => {
+      if (rosterKeys && !rosterKeys.has(item.ownerKey)) return null;
+      return {
+        card: item.card,
+        index: item.index,
+        name: item.owner,
+        key: item.ownerKey,
+        source: entryOf(item.card),
+        duplicateCount: 0
+      };
     }).filter(candidate => candidate && candidate.key);
+    rosterSkippedProfileCount = Math.max(
+      0,
+      preparedProfileCount - new Set(candidates.map(candidate => candidate.key)).size
+    );
     const groups = new Map();
     candidates.forEach(candidate => {
       if (!groups.has(candidate.key)) groups.set(candidate.key, []);
@@ -2967,6 +3409,7 @@ function CharacterContinuity(hook, incomingText) {
       viewRepairDiagnostics: [], viewTransactionDiagnostics: [],
       relationshipRepairDiagnostics: [], relationshipTransactionDiagnostics: [],
       nameRepairDiagnostics: [], nameTransactionDiagnostics: [],
+      experienceRepairDiagnostics: [], experienceTransactionDiagnostics: [],
       lastTimeJumpEvidenceId: "",
       cardHashes: {}, cardsInitialized: false,
       last: {
@@ -3268,6 +3711,8 @@ function CharacterContinuity(hook, incomingText) {
   if (!Array.isArray(CC.relationshipTransactionDiagnostics)) CC.relationshipTransactionDiagnostics = [];
   if (!Array.isArray(CC.nameRepairDiagnostics)) CC.nameRepairDiagnostics = [];
   if (!Array.isArray(CC.nameTransactionDiagnostics)) CC.nameTransactionDiagnostics = [];
+  if (!Array.isArray(CC.experienceRepairDiagnostics)) CC.experienceRepairDiagnostics = [];
+  if (!Array.isArray(CC.experienceTransactionDiagnostics)) CC.experienceTransactionDiagnostics = [];
   if (typeof CC.lastTimeJumpEvidenceId !== "string") CC.lastTimeJumpEvidenceId = "";
   if (typeof CC.openingEvidenceId !== "string") CC.openingEvidenceId = "";
   if (!CC.cardHashes || typeof CC.cardHashes !== "object" || Array.isArray(CC.cardHashes)) CC.cardHashes = {};
@@ -3346,16 +3791,16 @@ function CharacterContinuity(hook, incomingText) {
   initializeActiveNpcRoster();
 
   function numberedNamedTitleParts(title, label) {
-    const match = line(title, 260).match(new RegExp(
-      "^(.+?)\\s+(?:—|–|-)\\s+" + escapeRegExp(label) + "(?:\\s+(\\d+))?$",
-      "i"
-    ));
-    if (!match) return null;
-    const page = match[2] ? Number(match[2]) : 1;
-    if (match[2] && page === 1) return null;
-    return Number.isSafeInteger(page) && page >= 1
-      ? { owner: line(match[1], 120), page }
-      : null;
+    const cacheKey = textOf(label) + "\u241f" + textOf(title);
+    if (namedTitlePartsCache.has(cacheKey)) return namedTitlePartsCache.get(cacheKey);
+    const parsed = ownedCardTitleParts(title);
+    if (!parsed || keyOf(parsed.label) !== keyOf(label)) {
+      namedTitlePartsCache.set(cacheKey, null);
+      return null;
+    }
+    const parts = { owner: parsed.owner, page: parsed.page };
+    namedTitlePartsCache.set(cacheKey, parts);
+    return parts;
   }
 
   function viewPageTitle(character, buried, page) {
@@ -3508,12 +3953,7 @@ function CharacterContinuity(hook, incomingText) {
     const label = buried
       ? settings.BURIED_VIEWS_LABEL
       : settings.VIEWS_LABEL;
-    return cards.map(card => {
-      const parts = numberedNamedTitleParts(titleOf(card), label);
-      return parts && nameKeyOf(parts.owner) === character.key
-        ? { card, page: parts.page }
-        : null;
-    }).filter(Boolean).sort((left, right) => left.page - right.page || cards.indexOf(left.card) - cards.indexOf(right.card));
+    return catalogPagedCards(character.name, label);
   }
 
   function ensureBaseViewsCard(character) {
@@ -3641,42 +4081,50 @@ function CharacterContinuity(hook, incomingText) {
   let viewsStore = null;
 
   function refreshViewsStore(repair) {
-    const store = { owners: {}, diagnostics: [], pageStats: [] };
-    characters.filter(character => !character.onboardingPending).forEach(character => {
-      ensureBaseViewsCard(character);
-      const activeRefs = viewPageCards(character, false);
-      const buriedRefs = viewPageCards(character, true);
-      const activePages = activeRefs.map(ref => parseViewsPage(character, ref.card, false, ref.page));
-      const buriedPages = buriedRefs.map(ref => parseViewsPage(character, ref.card, true, ref.page));
-      markDuplicateViewPages(character, false, activePages, store.diagnostics);
-      markDuplicateViewPages(character, true, buriedPages, store.diagnostics);
-      markViewDuplicates(activePages, store.diagnostics, character.name + " active Views");
-      markViewDuplicates(buriedPages, store.diagnostics, character.name + " buried Views");
-      activePages.concat(buriedPages).forEach(page => {
-        if (textOf(page.card.type) !== settings.CARD_TYPE
-          || !managedCardIdentityMatches(page.card, page.title)) {
-          page.card = saveCard(page.card, entryOf(page.card)) || page.card;
-        }
-        page.records.forEach(record => { record.card = page.card; });
-        if (!page.wrapperValid) store.diagnostics.push(page.title + " wrapper was missing or mismatched.");
-        if (!page.headingsValid) store.diagnostics.push(page.title + " was missing one or more category headings.");
-        page.invalid.forEach(item => store.diagnostics.push(page.title + " line " + item.line + " contained " + item.reason + "."));
-        page.records.filter(record => record.oversize).forEach(record => store.diagnostics.push(
-          page.title + " has an oversized record for " + record.targetName + "; it was preserved and excluded."
-        ));
-        store.pageStats.push(page.title + " " + page.chars + "/" + settings.MAX_VIEWS_CARD_CHARS
-          + " chars, " + page.records.length + " records" + (page.safe ? "" : ", unsafe"));
+    const session = storeSessionFor("views");
+    let store = storeIsFresh("views", viewsStore) ? viewsStore : null;
+    if (!store) {
+      const writesAtStart = session ? session.writes : 0;
+      store = { owners: {}, diagnostics: [], pageStats: [] };
+      characters.filter(character => !character.onboardingPending).forEach(character => {
+        ensureBaseViewsCard(character);
+        const activeRefs = viewPageCards(character, false);
+        const buriedRefs = viewPageCards(character, true);
+        const activePages = activeRefs.map(ref => parseViewsPage(character, ref.card, false, ref.page));
+        const buriedPages = buriedRefs.map(ref => parseViewsPage(character, ref.card, true, ref.page));
+        markDuplicateViewPages(character, false, activePages, store.diagnostics);
+        markDuplicateViewPages(character, true, buriedPages, store.diagnostics);
+        markViewDuplicates(activePages, store.diagnostics, character.name + " active Views");
+        markViewDuplicates(buriedPages, store.diagnostics, character.name + " buried Views");
+        activePages.concat(buriedPages).forEach(page => {
+          if (textOf(page.card.type) !== settings.CARD_TYPE
+            || !managedCardIdentityMatches(page.card, page.title)) {
+            page.card = saveCard(page.card, entryOf(page.card)) || page.card;
+          }
+          page.records.forEach(record => { record.card = page.card; });
+          if (!page.wrapperValid) store.diagnostics.push(page.title + " wrapper was missing or mismatched.");
+          if (!page.headingsValid) store.diagnostics.push(page.title + " was missing one or more category headings.");
+          page.invalid.forEach(item => store.diagnostics.push(page.title + " line " + item.line + " contained " + item.reason + "."));
+          page.records.filter(record => record.oversize).forEach(record => store.diagnostics.push(
+            page.title + " has an oversized record for " + record.targetName + "; it was preserved and excluded."
+          ));
+          store.pageStats.push(page.title + " " + page.chars + "/" + settings.MAX_VIEWS_CARD_CHARS
+            + " chars, " + page.records.length + " records" + (page.safe ? "" : ", unsafe"));
+        });
+        store.owners[character.key] = {
+          character,
+          activePages,
+          buriedPages,
+          activeRecords: activePages.flatMap(page => page.records).filter(record => record.writable && !record.duplicate && !record.conflict && !record.oversize),
+          buriedRecords: buriedPages.flatMap(page => page.records).filter(record => record.writable && !record.duplicate && !record.conflict && !record.oversize)
+        };
       });
-      store.owners[character.key] = {
-        character,
-        activePages,
-        buriedPages,
-        activeRecords: activePages.flatMap(page => page.records).filter(record => record.writable && !record.duplicate && !record.conflict && !record.oversize),
-        buriedRecords: buriedPages.flatMap(page => page.records).filter(record => record.writable && !record.duplicate && !record.conflict && !record.oversize)
-      };
-    });
+      viewsStore = store;
+      recordStoreParse("views", writesAtStart);
+      store = verifiedStoreAfterParse("views", store, () => refreshViewsStore(false));
+    }
 
-    if (repair) {
+    if (repair && !(session && session.repaired)) {
       const priorBindings = viewManagedBindings(store);
       let changed = false;
       characters.filter(character => !character.onboardingPending).forEach(character => {
@@ -3706,8 +4154,10 @@ function CharacterContinuity(hook, incomingText) {
         });
         CC.viewRepairDiagnostics = unique(CC.viewRepairDiagnostics.concat(store.diagnostics), 300).slice(-30);
         repaired.diagnostics = unique(store.diagnostics.concat(repaired.diagnostics), 300);
+        if (session) session.repaired = true;
         return repaired;
       }
+      if (session) session.repaired = true;
     }
     viewsStore = store;
     return store;
@@ -3815,19 +4265,20 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function managedViewsCard(card) {
-    const title = titleOf(card);
-    return !!characters.some(character => {
-      const active = numberedNamedTitleParts(title, settings.VIEWS_LABEL);
-      const buried = numberedNamedTitleParts(title, settings.BURIED_VIEWS_LABEL);
-      return (active && nameKeyOf(active.owner) === character.key)
-        || (buried && nameKeyOf(buried.owner) === character.key);
+  function orderedUniqueOwnedCatalogRecords(values) {
+    const byCard = new Map();
+    (Array.isArray(values) ? values : []).forEach(record => {
+      if (!record || !record.card || byCard.has(record.card)) return;
+      byCard.set(record.card, record);
     });
+    return Array.from(byCard.values())
+      .sort((left, right) => catalogCardOrder(left.card) - catalogCardOrder(right.card));
   }
 
-  function captureManagedViewsCards() {
+  function captureOwnedManagedCards(records) {
     const titleCounts = {};
-    return cards.filter(managedViewsCard).map(card => {
+    return orderedUniqueOwnedCatalogRecords(records).map(record => {
+      const card = record.card;
       const title = titleOf(card);
       const titleKey = nameKeyOf(title);
       const occurrence = titleCounts[titleKey] || 0;
@@ -3842,19 +4293,29 @@ function CharacterContinuity(hook, incomingText) {
     });
   }
 
-  function restoreManagedViewsCards(snapshot) {
-    if (!Array.isArray(snapshot)) return false;
-    const existing = cards.filter(managedViewsCard);
+  function restoreOwnedManagedCards(snapshot, currentRecords, resolveOwnerKey) {
+    const records = orderedUniqueOwnedCatalogRecords(currentRecords);
+    const currentOwnerKeys = new Set(records.map(record => record.ownerKey).filter(Boolean));
     const pools = {};
-    existing.forEach(card => {
-      const titleKey = nameKeyOf(titleOf(card));
+    records.forEach(record => {
+      const titleKey = nameKeyOf(titleOf(record.card));
       if (!pools[titleKey]) pools[titleKey] = [];
-      pools[titleKey].push(card);
+      pools[titleKey].push(record.card);
     });
+    const eligible = (Array.isArray(snapshot) ? snapshot : []).map(item => {
+      const storedOwnerKey = line(item && item.ownerKey, 180);
+      const resolvedOwnerKey = currentOwnerKeys.has(storedOwnerKey)
+        ? storedOwnerKey
+        : (typeof resolveOwnerKey === "function" ? resolveOwnerKey(item) : "");
+      return currentOwnerKeys.has(resolvedOwnerKey)
+        ? { item, ownerKey: resolvedOwnerKey }
+        : null;
+    }).filter(Boolean);
+    const representedOwnerKeys = new Set(eligible.map(record => record.ownerKey));
     const used = new Set();
     const restoredCounts = {};
     let restored = true;
-    snapshot.forEach(item => {
+    eligible.forEach(({ item }) => {
       const titleKey = nameKeyOf(item.title);
       const fallbackOccurrence = restoredCounts[titleKey] || 0;
       const occurrence = Number.isSafeInteger(item.occurrence) && item.occurrence >= 0
@@ -3868,10 +4329,50 @@ function CharacterContinuity(hook, incomingText) {
         return;
       }
       used.add(card);
-      const index = cardIndex(card);
-      if (!updateCardAt(index, item.keys, item.entry, item.type, item.title)) restored = false;
+      if (!updateCardAt(cardIndex(card), item.keys, item.entry, item.type, item.title)) {
+        restored = false;
+      }
     });
-    if (!removeCards(existing.filter(card => !used.has(card)))) restored = false;
+    const stale = records
+      .filter(record => representedOwnerKeys.has(record.ownerKey) && !used.has(record.card))
+      .map(record => record.card);
+    if (!removeCards(stale)) restored = false;
+    return restored;
+  }
+
+  function managedViewsRecords() {
+    return orderedUniqueOwnedCatalogRecords(characters.flatMap(character =>
+      catalogPagedCards(character.name, settings.VIEWS_LABEL)
+        .concat(catalogPagedCards(character.name, settings.BURIED_VIEWS_LABEL))
+        .map(item => ({ card: item.card, ownerKey: character.key }))
+    ));
+  }
+
+  function managedViewsCards() {
+    return managedViewsRecords().map(record => record.card);
+  }
+
+  function managedViewsSnapshotOwnerKey(item) {
+    const title = item && item.title;
+    const parts = numberedNamedTitleParts(title, settings.VIEWS_LABEL)
+      || numberedNamedTitleParts(title, settings.BURIED_VIEWS_LABEL);
+    const character = parts
+      ? characters.find(candidate => sameNameForm(candidate.name, parts.owner))
+      : null;
+    return character ? character.key : "";
+  }
+
+  function captureManagedViewsCards() {
+    return captureOwnedManagedCards(managedViewsRecords());
+  }
+
+  function restoreManagedViewsCards(snapshot) {
+    if (!Array.isArray(snapshot)) return false;
+    const restored = restoreOwnedManagedCards(
+      snapshot,
+      managedViewsRecords(),
+      managedViewsSnapshotOwnerKey
+    );
     refreshViewsStore(false);
     return restored;
   }
@@ -4205,11 +4706,11 @@ function CharacterContinuity(hook, incomingText) {
 
   function parseNamesPage(identity, card, page) {
     const source = entryOf(card).replace(/\r/g, "");
-    const rows = source.split("\n");
-    const nonempty = rows.map((value, index) => ({ value: value.trim(), index })).filter(item => item.value);
-    const wrapperValid = nonempty.length >= 4
-      && nonempty[0].value === "{"
-      && nameKeyOf(nonempty[1].value) === nameKeyOf(namePageHeader(identity))
+    const envelope = onboardingPageEnvelope(source, namePageHeader(identity));
+    const rows = envelope.rows;
+    const nonempty = envelope.nonempty;
+    const wrapperValid = nonempty.length >= 3
+      && envelope.recognized
       && nameKeyOf(extractLine(source, "Canonical")) === nameKeyOf(identity.canonical)
       && nonempty[nonempty.length - 1].value === "}";
     const items = [];
@@ -4242,17 +4743,14 @@ function CharacterContinuity(hook, incomingText) {
     return {
       card, page, title: titleOf(card), source, items,
       records: items.filter(item => item.kind === "record"),
-      invalid, wrapperValid, safe: pageSafe, duplicatePage: false, chars: source.length
+      invalid, wrapperValid, canonicalWrapper: envelope.canonical,
+      needsCanonicalization: pageSafe && !envelope.canonical,
+      safe: pageSafe, duplicatePage: false, chars: source.length
     };
   }
 
   function namePageCards(identity) {
-    return cards.map(card => {
-      const parts = numberedNamedTitleParts(titleOf(card), settings.NAMES_LABEL);
-      return parts && nameKeyOf(parts.owner) === nameKeyOf(identity.titleBase)
-        ? { card, page: parts.page }
-        : null;
-    }).filter(Boolean).sort((left, right) => left.page - right.page || cards.indexOf(left.card) - cards.indexOf(right.card));
+    return catalogPagedCards(identity.titleBase, settings.NAMES_LABEL);
   }
 
   function ensureBaseNamesCard(identity) {
@@ -4292,6 +4790,9 @@ function CharacterContinuity(hook, incomingText) {
   let namesStore = null;
 
   function refreshNamesStore() {
+    if (storeIsFresh("names", namesStore)) return namesStore;
+    const session = storeSessionFor("names");
+    const writesAtStart = session ? session.writes : 0;
     const store = { identities: {}, diagnostics: [], pageStats: [] };
     nameIdentities.forEach(identity => {
       ensureBaseNamesCard(identity);
@@ -4341,56 +4842,44 @@ function CharacterContinuity(hook, incomingText) {
       };
     });
     namesStore = store;
-    return store;
+    recordStoreParse("names", writesAtStart);
+    return verifiedStoreAfterParse("names", store, refreshNamesStore);
   }
 
   function namesForIdentity(identityKey) {
     return namesStore && namesStore.identities ? namesStore.identities[identityKey] || null : null;
   }
 
-  function managedNamesCard(card) {
-    const parts = numberedNamedTitleParts(titleOf(card), settings.NAMES_LABEL);
-    return !!(parts && nameIdentities.some(identity => nameKeyOf(parts.owner) === nameKeyOf(identity.titleBase)));
+  function managedNamesRecords() {
+    return orderedUniqueOwnedCatalogRecords(nameIdentities.flatMap(identity =>
+      catalogPagedCards(identity.titleBase, settings.NAMES_LABEL)
+        .map(item => ({ card: item.card, ownerKey: identity.key }))
+    ));
+  }
+
+  function managedNamesCards() {
+    return managedNamesRecords().map(record => record.card);
+  }
+
+  function managedNamesSnapshotOwnerKey(item) {
+    const parts = numberedNamedTitleParts(item && item.title, settings.NAMES_LABEL);
+    const identity = parts
+      ? nameIdentities.find(candidate => sameNameForm(candidate.titleBase, parts.owner))
+      : null;
+    return identity ? identity.key : "";
   }
 
   function captureManagedNamesCards() {
-    const titleCounts = {};
-    return cards.filter(managedNamesCard).map(card => {
-      const title = titleOf(card);
-      const titleKey = nameKeyOf(title);
-      const occurrence = titleCounts[titleKey] || 0;
-      titleCounts[titleKey] = occurrence + 1;
-      return { title, occurrence, entry: entryOf(card), keys: card.keys, type: card.type };
-    });
+    return captureOwnedManagedCards(managedNamesRecords());
   }
 
   function restoreManagedNamesCards(snapshot) {
     if (!Array.isArray(snapshot)) return false;
-    const existing = cards.filter(managedNamesCard);
-    const pools = {};
-    existing.forEach(card => {
-      const titleKey = nameKeyOf(titleOf(card));
-      if (!pools[titleKey]) pools[titleKey] = [];
-      pools[titleKey].push(card);
-    });
-    const used = new Set();
-    const restoredCounts = {};
-    let restored = true;
-    snapshot.forEach(item => {
-      const titleKey = nameKeyOf(item.title);
-      const fallbackOccurrence = restoredCounts[titleKey] || 0;
-      const occurrence = Number.isSafeInteger(item.occurrence) && item.occurrence >= 0 ? item.occurrence : fallbackOccurrence;
-      restoredCounts[titleKey] = fallbackOccurrence + 1;
-      let card = pools[titleKey] && pools[titleKey][occurrence];
-      if (!card) card = addCard(item.title, item.entry);
-      if (!card) {
-        restored = false;
-        return;
-      }
-      used.add(card);
-      if (!updateCardAt(cardIndex(card), item.keys, item.entry, item.type, item.title)) restored = false;
-    });
-    if (!removeCards(existing.filter(card => !used.has(card)))) restored = false;
+    const restored = restoreOwnedManagedCards(
+      snapshot,
+      managedNamesRecords(),
+      managedNamesSnapshotOwnerKey
+    );
     refreshNamesStore();
     applyManagedNameForms();
     return restored;
@@ -4413,6 +4902,7 @@ function CharacterContinuity(hook, incomingText) {
       card: page.card, page: page.page, title: page.title,
       safe: page.safe && !page.duplicatePage,
       movable: page.safe && !page.duplicatePage && !page.items.some(item => item.oversize),
+      needsCanonicalization: page.needsCanonicalization === true,
       dirty: false, created: false, remove: false,
       items: page.items.map(copyNameItem)
     }));
@@ -4494,8 +4984,8 @@ function CharacterContinuity(hook, incomingText) {
       destination.dirty = true;
     }
     pages.forEach(page => {
-      page.remove = page.page > 1 && page.movable && page.items.length === 0;
-      if (page.remove) page.dirty = true;
+      page.remove = false;
+      if (page.page > 1 && page.movable && page.items.length === 0) page.dirty = true;
     });
     return { ok: true };
   }
@@ -4569,6 +5059,11 @@ function CharacterContinuity(hook, incomingText) {
 
   function repairNamesStore() {
     refreshNamesStore();
+    const session = storeSessionFor("names");
+    if (session && session.repaired && storeIsFresh("names", namesStore)) {
+      applyManagedNameForms();
+      return;
+    }
     const messages = [];
     nameIdentities.forEach(identity => {
       const identityData = namesForIdentity(identity.key);
@@ -4577,6 +5072,11 @@ function CharacterContinuity(hook, incomingText) {
       let changed = false;
       pages.forEach(page => {
         if (!page.movable) return;
+        if (page.needsCanonicalization) {
+          page.dirty = true;
+          changed = true;
+          messages.push("Separated the legacy wrapper from " + identity.canonical + "'s Names header.");
+        }
         page.items.slice().forEach(item => {
           if (item.kind !== "record") return;
           if (item.duplicate && !item.conflict) {
@@ -4608,9 +5108,12 @@ function CharacterContinuity(hook, incomingText) {
     CC.nameRepairDiagnostics = unique((CC.nameRepairDiagnostics || []).concat(messages), 500).slice(-30);
     refreshNamesStore();
     applyManagedNameForms();
+    if (session) session.repaired = true;
   }
 
   function applyManagedNameForms() {
+    const session = storeSessionFor("names");
+    if (session && session.projected && storeIsFresh("names", namesStore)) return;
     nameIdentities.forEach(identity => {
       const identityData = namesForIdentity(identity.key);
       const records = identityData ? identityData.contextRecords : [];
@@ -4627,6 +5130,7 @@ function CharacterContinuity(hook, incomingText) {
         identity.character.nameRecords = records;
       }
     });
+    if (session) session.projected = true;
   }
 
   function identityReferenceMatches(value, includeEmerging) {
@@ -4646,9 +5150,7 @@ function CharacterContinuity(hook, incomingText) {
     return matches.length === 1 ? matches[0] : null;
   }
 
-  refreshNamesStore();
   repairNamesStore();
-  applyManagedNameForms();
   refreshViewsStore(true);
 
   function relationshipPageTitle(character, page) {
@@ -4844,27 +5346,47 @@ function CharacterContinuity(hook, incomingText) {
 
   function parseRelationshipsPage(character, card, page) {
     const source = entryOf(card).replace(/\r/g, "");
-    const rows = source.split("\n");
-    const nonempty = rows.map((value, index) => ({ value: value.trim(), index })).filter(item => item.value);
-    const wrapperValid = nonempty.length >= 3
-      && nonempty[0].value === "{"
-      && nameKeyOf(nonempty[1].value) === nameKeyOf(relationshipPageHeader(character))
-      && nonempty[nonempty.length - 1].value === "}";
+    const envelope = onboardingPageEnvelope(source, relationshipPageHeader(character));
+    const rows = envelope.rows;
+    const nonempty = envelope.nonempty;
+    const wrapperValid = nonempty.length >= 2 && envelope.recognized;
     const items = [];
     const invalid = [];
-    const bodyStart = nonempty.length >= 2 ? nonempty[1].index + 1 : 0;
-    const closingIndex = nonempty.length ? nonempty[nonempty.length - 1].index : rows.length;
+    const bodyStart = envelope.bodyStart;
+    const closingIndex = envelope.closingIndex;
     const starts = [];
     for (let index = bodyStart; index < closingIndex; index++) {
       if (/^\s*About\s*:/i.test(rows[index])) starts.push(index);
     }
     const firstStart = starts.length ? starts[0] : closingIndex;
-    for (let index = bodyStart; index < firstStart; index++) {
-      if (rows[index].trim()) invalid.push({
-        line: index + 1,
+    const leadingRows = rows.slice(bodyStart, firstStart)
+      .map((value, offset) => ({ value, index: bodyStart + offset }))
+      .filter(item => item.value.trim());
+    const legacyPlayerFields = leadingRows.length === RELATIONSHIP_FIELDS.length
+      && leadingRows.every((item, index) => new RegExp(
+        "^\\s*" + escapeRegExp(RELATIONSHIP_FIELDS[index]) + "\\s*:",
+        "i"
+      ).test(item.value));
+    if (legacyPlayerFields) {
+      const raw = ["About: Player"].concat(leadingRows.map(item => item.value)).join("\n");
+      const item = parseRelationshipRecord(
+        character,
+        raw,
+        page,
+        card,
+        leadingRows[0].index + 1
+      );
+      items.push(item);
+      if (item.kind !== "record") invalid.push({
+        line: leadingRows[0].index + 1,
+        reason: item.reason
+      });
+    } else {
+      leadingRows.forEach(item => invalid.push({
+        line: item.index + 1,
         reason: "content outside an About-started Relationship record",
         outside: true
-      });
+      }));
     }
     starts.forEach((start, recordIndex) => {
       const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : closingIndex;
@@ -4890,6 +5412,9 @@ function CharacterContinuity(hook, incomingText) {
       records: items.filter(item => item.kind === "record"),
       invalid,
       wrapperValid,
+      canonicalWrapper: envelope.canonical,
+      inferredPlayerAbout: legacyPlayerFields,
+      needsCanonicalization: pageSafe && (!envelope.canonical || legacyPlayerFields),
       safe: pageSafe,
       duplicatePage: false,
       chars: source.length
@@ -4897,10 +5422,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function relationshipPageCards(character) {
-    return cards.map(card => {
-      const parts = numberedNamedTitleParts(titleOf(card), settings.RELATIONSHIPS_LABEL);
-      return parts && nameKeyOf(parts.owner) === character.key ? { card, page: parts.page } : null;
-    }).filter(Boolean).sort((left, right) => left.page - right.page || cards.indexOf(left.card) - cards.indexOf(right.card));
+    return catalogPagedCards(character.name, settings.RELATIONSHIPS_LABEL);
   }
 
   function ensureBaseRelationshipsCard(character) {
@@ -4943,6 +5465,9 @@ function CharacterContinuity(hook, incomingText) {
   let relationshipsStore = null;
 
   function refreshRelationshipsStore() {
+    if (storeIsFresh("relationships", relationshipsStore)) return relationshipsStore;
+    const session = storeSessionFor("relationships");
+    const writesAtStart = session ? session.writes : 0;
     const store = { owners: {}, diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       ensureBaseRelationshipsCard(character);
@@ -5001,7 +5526,8 @@ function CharacterContinuity(hook, incomingText) {
       };
     });
     relationshipsStore = store;
-    return store;
+    recordStoreParse("relationships", writesAtStart);
+    return verifiedStoreAfterParse("relationships", store, refreshRelationshipsStore);
   }
 
   function relationshipsForOwner(ownerKey) {
@@ -5010,51 +5536,36 @@ function CharacterContinuity(hook, incomingText) {
       : null;
   }
 
-  function managedRelationshipsCard(card) {
-    const parts = numberedNamedTitleParts(titleOf(card), settings.RELATIONSHIPS_LABEL);
-    return !!(parts && characters.some(character => nameKeyOf(parts.owner) === character.key));
+  function managedRelationshipsRecords() {
+    return orderedUniqueOwnedCatalogRecords(characters.flatMap(character =>
+      catalogPagedCards(character.name, settings.RELATIONSHIPS_LABEL)
+        .map(item => ({ card: item.card, ownerKey: character.key }))
+    ));
+  }
+
+  function managedRelationshipsCards() {
+    return managedRelationshipsRecords().map(record => record.card);
+  }
+
+  function managedRelationshipsSnapshotOwnerKey(item) {
+    const parts = numberedNamedTitleParts(item && item.title, settings.RELATIONSHIPS_LABEL);
+    const character = parts
+      ? characters.find(candidate => sameNameForm(candidate.name, parts.owner))
+      : null;
+    return character ? character.key : "";
   }
 
   function captureManagedRelationshipsCards() {
-    const titleCounts = {};
-    return cards.filter(managedRelationshipsCard).map(card => {
-      const title = titleOf(card);
-      const titleKey = nameKeyOf(title);
-      const occurrence = titleCounts[titleKey] || 0;
-      titleCounts[titleKey] = occurrence + 1;
-      return { title, occurrence, entry: entryOf(card), keys: card.keys, type: card.type };
-    });
+    return captureOwnedManagedCards(managedRelationshipsRecords());
   }
 
   function restoreManagedRelationshipsCards(snapshot) {
     if (!Array.isArray(snapshot)) return false;
-    const existing = cards.filter(managedRelationshipsCard);
-    const pools = {};
-    existing.forEach(card => {
-      const titleKey = nameKeyOf(titleOf(card));
-      if (!pools[titleKey]) pools[titleKey] = [];
-      pools[titleKey].push(card);
-    });
-    const used = new Set();
-    const restoredCounts = {};
-    let restored = true;
-    snapshot.forEach(item => {
-      const titleKey = nameKeyOf(item.title);
-      const fallbackOccurrence = restoredCounts[titleKey] || 0;
-      const occurrence = Number.isSafeInteger(item.occurrence) && item.occurrence >= 0
-        ? item.occurrence
-        : fallbackOccurrence;
-      restoredCounts[titleKey] = fallbackOccurrence + 1;
-      let card = pools[titleKey] && pools[titleKey][occurrence];
-      if (!card) card = addCard(item.title, item.entry);
-      if (!card) {
-        restored = false;
-        return;
-      }
-      used.add(card);
-      if (!updateCardAt(cardIndex(card), item.keys, item.entry, item.type, item.title)) restored = false;
-    });
-    if (!removeCards(existing.filter(card => !used.has(card)))) restored = false;
+    const restored = restoreOwnedManagedCards(
+      snapshot,
+      managedRelationshipsRecords(),
+      managedRelationshipsSnapshotOwnerKey
+    );
     refreshRelationshipsStore();
     return restored;
   }
@@ -5079,6 +5590,9 @@ function CharacterContinuity(hook, incomingText) {
       title: page.title,
       safe: page.safe && !page.duplicatePage,
       movable: page.safe && !page.duplicatePage && !page.items.some(item => item.oversize),
+      needsCanonicalization: page.needsCanonicalization === true,
+      inferredPlayerAbout: page.inferredPlayerAbout === true,
+      canonicalWrapper: page.canonicalWrapper === true,
       dirty: false,
       created: false,
       remove: false,
@@ -5174,8 +5688,8 @@ function CharacterContinuity(hook, incomingText) {
       destination.dirty = true;
     }
     pages.forEach(page => {
-      page.remove = page.page > 1 && page.movable && page.items.length === 0;
-      if (page.remove) page.dirty = true;
+      page.remove = false;
+      if (page.page > 1 && page.movable && page.items.length === 0) page.dirty = true;
     });
     return { ok: true };
   }
@@ -5236,6 +5750,8 @@ function CharacterContinuity(hook, incomingText) {
 
   function repairRelationshipsStore() {
     refreshRelationshipsStore();
+    const session = storeSessionFor("relationships");
+    if (session && session.repaired && storeIsFresh("relationships", relationshipsStore)) return;
     const repairMessages = [];
     characters.forEach(character => {
       const ownerData = relationshipsForOwner(character.key);
@@ -5245,6 +5761,20 @@ function CharacterContinuity(hook, incomingText) {
       let changed = false;
       pages.forEach(page => {
         if (!page.movable) return;
+        if (page.needsCanonicalization) {
+          page.dirty = true;
+          changed = true;
+          if (page.inferredPlayerAbout) {
+            repairMessages.push(
+              "Restored the omitted About: Player field in " + character.name + "'s legacy Relationship record."
+            );
+          }
+          if (!page.canonicalWrapper) {
+            repairMessages.push(
+              "Separated the legacy wrapper from " + character.name + "'s Relationships header."
+            );
+          }
+        }
         page.items.slice().forEach(item => {
           if (item.kind !== "record") return;
           if (item.duplicate && !item.conflict) {
@@ -5363,9 +5893,9 @@ function CharacterContinuity(hook, incomingText) {
       500
     ).slice(-30);
     refreshRelationshipsStore();
+    if (session) session.repaired = true;
   }
 
-  refreshRelationshipsStore();
   repairRelationshipsStore();
 
   function stateTitle(character) {
@@ -5374,6 +5904,12 @@ function CharacterContinuity(hook, incomingText) {
 
   function situationPhrase(value) {
     return line(value, settings.MAX_STATE_VALUE_CHARS)
+      .replace(/[.!?]+$/g, "")
+      .trim();
+  }
+
+  function experiencePhrase(value) {
+    return line(value, settings.MAX_EXPERIENCE_IMPORT_CHARS)
       .replace(/[.!?]+$/g, "")
       .trim();
   }
@@ -5500,8 +6036,7 @@ function CharacterContinuity(hook, incomingText) {
   if (!CC.cardsInitialized) writeAllStateCards();
 
   function experiencesPageTitle(character, page) {
-    return character.name + "'s " + settings.EXPERIENCES_LABEL
-      + (page > 1 ? " " + page : "");
+    return ownedCardTitle(character.name, settings.EXPERIENCES_LABEL, page);
   }
 
   function experiencesPageHeader(character, page) {
@@ -5509,25 +6044,43 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function experiencesTitleParts(title) {
-    const label = settings.EXPERIENCES_LABEL;
-    const match = line(title, 260).match(new RegExp(
-      "^(.+?)['’]s\\s+" + escapeRegExp(label) + "(?:\\s+(\\d+))?$",
-      "i"
-    ));
-    if (!match) return null;
-    const page = match[2] ? Number(match[2]) : 1;
-    if ((match[2] && page === 1) || !Number.isSafeInteger(page) || page < 1) return null;
-    const matches = characters.filter(character => sameNameForm(character.name, match[1]));
+    const parts = ownedCardTitleParts(title);
+    if (!parts || keyOf(parts.label) !== keyOf(settings.EXPERIENCES_LABEL)) return null;
+    const matches = characters.filter(character => sameNameForm(character.name, parts.owner));
     const owner = matches.length === 1 ? matches[0] : null;
-    return owner ? { owner, page } : null;
+    return owner ? { owner, page: parts.page } : null;
+  }
+
+  function catalogExperienceOwners() {
+    const catalog = currentCardCatalog();
+    if (catalog.experienceOwners) return catalog.experienceOwners;
+    const index = { records: [], byOwner: new Map() };
+    catalog.records.forEach(record => {
+      const parts = experiencesTitleParts(record.title);
+      if (!parts) return;
+      const item = {
+        ...record,
+        owner: parts.owner,
+        ownerKey: parts.owner.key,
+        page: parts.page
+      };
+      index.records.push(item);
+      catalogAppend(index.byOwner, item.ownerKey, item);
+    });
+    index.records.sort((left, right) => left.index - right.index);
+    index.byOwner.forEach(records => records.sort((left, right) =>
+      left.page - right.page || left.index - right.index
+    ));
+    catalog.experienceOwners = index;
+    return index;
   }
 
   function experienceSignature(ownerKey, targetKey, situation) {
-    return ownerKey + "|" + normalizedTargetKey(targetKey) + "|" + keyOf(situationPhrase(situation));
+    return ownerKey + "|" + normalizedTargetKey(targetKey) + "|" + keyOf(experiencePhrase(situation));
   }
 
   function baseExperienceRecord(owner, target, situation) {
-    const phrase = situationPhrase(situation);
+    const phrase = experiencePhrase(situation);
     const targetKey = normalizedTargetKey(target && target.key);
     return {
       targetKey,
@@ -5543,79 +6096,133 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function renderExperienceRecord(owner, record) {
-    return "- [About: " + line(record.targetName, 120) + "] " + owner.name
-      + " experienced: " + situationPhrase(record.situation) + ".";
+    return [
+      "About: " + line(record.targetName, 120),
+      "Experience: " + experiencePhrase(record.situation)
+    ].join("\n");
   }
 
   function renderExperiencesPage(owner, page, records) {
-    return ["{ " + experiencesPageHeader(owner, page)]
-      .concat((Array.isArray(records) ? records : []).map(record => renderExperienceRecord(owner, record)))
-      .concat("}")
-      .join("\n");
+    const rows = ["{", experiencesPageHeader(owner, page)];
+    (Array.isArray(records) ? records : []).forEach((record, index) => {
+      if (index > 0) rows.push("");
+      rows.push(renderExperienceRecord(owner, record));
+    });
+    rows.push("}");
+    return rows.join("\n");
   }
 
   function parseExperiencesPage(owner, card, page) {
     const source = entryOf(card).replace(/\r/g, "");
     const trimmed = source.trim();
-    const rows = trimmed.split("\n");
-    const expectedFirst = "{ " + experiencesPageHeader(owner, page);
-    const recordPattern = new RegExp(
+    const envelope = onboardingPageEnvelope(source, experiencesPageHeader(owner, page));
+    const rows = envelope.rows;
+    const legacyPattern = new RegExp(
       "^- \\[About:\\s*([^\\]\\r\\n]+)\\]\\s*" + escapeRegExp(owner.name)
-        + "\\s+experienced:\\s*(.+)\\.$",
+        + "\\s+experienced:\\s*(.+?)(?:[.!?])?\\s*$",
       "i"
     );
     const records = [];
-    let malformed = 0;
-    rows.slice(1, -1).forEach((row, index) => {
-      if (!row.trim()) {
-        malformed += 1;
-        return;
-      }
-      const match = row.match(recordPattern);
-      if (!match) {
-        malformed += 1;
-        return;
-      }
-      const targetSource = wholeLine(match[1], 120);
-      const situationSource = wholeLine(match[2], settings.MAX_STATE_VALUE_CHARS);
+    const malformedDetails = [];
+    let legacyFormat = false;
+    const addRecord = (rawTarget, rawSituation, lineNumber, format) => {
+      const targetSource = wholeLine(rawTarget, 120);
+      const situationSource = wholeLine(rawSituation, settings.MAX_EXPERIENCE_IMPORT_CHARS);
       const target = targetSource ? canonicalViewTarget(owner, targetSource) : null;
-      const situation = situationPhrase(situationSource);
+      const situation = experiencePhrase(situationSource);
       if (!target || !situation || /[{}|\r\n]/.test(targetSource + situationSource)) {
-        malformed += 1;
-        return;
-      }
-      const sourceCanonicalExceptTarget = "- [About: " + targetSource + "] " + owner.name
-        + " experienced: " + situation + ".";
-      if (row !== sourceCanonicalExceptTarget) {
-        malformed += 1;
-        return;
+        malformedDetails.push({
+          line: lineNumber,
+          reason: "an unsafe, unknown, or overlong About target or Experience"
+        });
+        return false;
       }
       const record = baseExperienceRecord(owner, target, situation);
       record.targetCorrected = targetSource !== record.targetName;
       record.page = page;
-      record.line = index + 2;
+      record.line = lineNumber;
       record.card = card;
+      record.sourceFormat = format;
       records.push(record);
-    });
+      if (format === "legacy") legacyFormat = true;
+      return true;
+    };
+    let index = envelope.bodyStart;
+    while (index < envelope.closingIndex) {
+      const raw = rows[index];
+      const row = raw.trim();
+      if (!row) {
+        index += 1;
+        continue;
+      }
+      const legacy = row.match(legacyPattern);
+      if (legacy) {
+        addRecord(legacy[1], legacy[2], index + 1, "legacy");
+        index += 1;
+        continue;
+      }
+      const about = row.match(/^About\s*:\s*(.*?)\s*$/i);
+      if (!about) {
+        malformedDetails.push({
+          line: index + 1,
+          reason: "content outside an About/Experience record"
+        });
+        index += 1;
+        continue;
+      }
+      const next = rows[index + 1] && rows[index + 1].trim();
+      const experience = next && next.match(/^Experience\s*:\s*(.*?)\s*$/i);
+      if (!experience || index + 1 >= envelope.closingIndex) {
+        malformedDetails.push({
+          line: index + 1,
+          reason: "an About field without its immediately following Experience field"
+        });
+        index += 1;
+        continue;
+      }
+      if (!about[1] && !experience[1]) {
+        index += 2;
+        continue;
+      }
+      if (!about[1] || !experience[1]) {
+        malformedDetails.push({
+          line: index + 1,
+          reason: "a partially filled About/Experience record"
+        });
+        index += 2;
+        continue;
+      }
+      addRecord(about[1], experience[1], index + 1, "flat");
+      index += 2;
+    }
     const canonical = renderExperiencesPage(owner, page, records);
     const maximum = settings.MAX_EXPERIENCES_CARD_CHARS;
-    const structureSafe = rows[0] === expectedFirst
-      && rows[rows.length - 1] === "}"
-      && malformed === 0
-      && trimmed.length <= maximum
-      && canonical.length <= maximum;
+    const structureRecognized = envelope.recognized && malformedDetails.length === 0;
     const targetCorrected = records.some(record => record.targetCorrected);
+    const oversizedRecord = records.some(record =>
+      experiencePhrase(record.situation).length > settings.MAX_STORED_EXPERIENCE_CHARS
+    );
+    const overLimit = trimmed.length > maximum || canonical.length > maximum;
+    const needsCanonicalization = structureRecognized
+      && (!envelope.canonical || legacyFormat || targetCorrected || oversizedRecord
+        || canonical !== trimmed);
     return {
       owner,
       card,
       page,
       title: titleOf(card),
       records,
-      malformed,
+      malformed: malformedDetails.length,
+      malformedDetails,
       canonical,
+      canonicalWrapper: envelope.canonical,
+      legacyFormat,
       targetCorrected,
-      repairable: structureSafe && targetCorrected,
-      safe: structureSafe && !targetCorrected && canonical === trimmed,
+      oversizedRecord,
+      overLimit,
+      needsCanonicalization,
+      repairable: structureRecognized,
+      safe: structureRecognized && !needsCanonicalization && !overLimit,
       duplicatePage: false
     };
   }
@@ -5623,15 +6230,19 @@ function CharacterContinuity(hook, incomingText) {
   let experiencesStore = null;
 
   function refreshExperiencesStore(internalize) {
+    const session = storeSessionFor("experiences");
+    if (storeIsFresh("experiences", experiencesStore)) {
+      return experiencesStore;
+    }
+    const writesAtStart = session ? session.writes : 0;
     const store = { owners: {}, diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       store.owners[character.key] = { character, pages: [], records: [], contextRecords: [] };
     });
-    cards.forEach(card => {
-      const parts = experiencesTitleParts(titleOf(card));
-      if (!parts || !store.owners[parts.owner.key]) return;
-      const parsed = parseExperiencesPage(parts.owner, card, parts.page);
-      store.owners[parts.owner.key].pages.push(parsed);
+    catalogExperienceOwners().records.forEach(item => {
+      if (!store.owners[item.ownerKey]) return;
+      const parsed = parseExperiencesPage(item.owner, item.card, item.page);
+      store.owners[item.ownerKey].pages.push(parsed);
     });
     Object.values(store.owners).forEach(ownerData => {
       ownerData.pages.sort((left, right) => left.page - right.page || cardIndex(left.card) - cardIndex(right.card));
@@ -5644,22 +6255,13 @@ function CharacterContinuity(hook, incomingText) {
           page.safe = false;
           store.diagnostics.push(page.title + " has duplicate physical pages and was left unchanged.");
         }
-        if (internalize && page.repairable && !page.duplicatePage) {
-          const saved = saveCard(page.card, page.canonical);
-          if (saved) {
-            page.card = saved;
-            page.records.forEach(record => {
-              record.card = saved;
-              record.targetCorrected = false;
-            });
-            page.targetCorrected = false;
-            page.repairable = false;
-            page.safe = true;
-            store.diagnostics.push(page.title + " canonicalized all alias-authored About targets.");
-          }
-        }
+        page.malformedDetails.forEach(item => store.diagnostics.push(
+          page.title + " line " + item.line + " has " + item.reason + "."
+        ));
         if (!page.safe && !page.duplicatePage) {
-          store.diagnostics.push(page.title + " is noncanonical, malformed, or over 1,000 characters and was left unchanged.");
+          store.diagnostics.push(page.title + (page.repairable
+            ? " requires canonical migration or whole-record pagination."
+            : " is malformed and was preserved unchanged."));
         }
         if (internalize && (textOf(page.card.type) !== settings.CARD_TYPE
           || !managedCardIdentityMatches(page.card, page.title))) {
@@ -5682,7 +6284,12 @@ function CharacterContinuity(hook, incomingText) {
       });
     });
     experiencesStore = store;
-    return store;
+    recordStoreParse("experiences", writesAtStart);
+    return verifiedStoreAfterParse(
+      "experiences",
+      store,
+      () => refreshExperiencesStore(false)
+    );
   }
 
   function experiencesForOwner(ownerKey) {
@@ -5691,59 +6298,228 @@ function CharacterContinuity(hook, incomingText) {
       : null;
   }
 
-  function managedExperienceCard(card) {
-    return !!experiencesTitleParts(titleOf(card));
+  function managedExperienceRecords() {
+    return orderedUniqueOwnedCatalogRecords(catalogExperienceOwners().records
+      .map(record => ({ card: record.card, ownerKey: record.ownerKey })));
+  }
+
+  function managedExperienceCards() {
+    return managedExperienceRecords().map(record => record.card);
+  }
+
+  function managedExperienceSnapshotOwnerKey(item) {
+    const parts = experiencesTitleParts(item && item.title);
+    return parts && parts.owner ? parts.owner.key : "";
   }
 
   function captureManagedExperienceCards() {
-    const titleCounts = {};
-    return cards.filter(managedExperienceCard).map(card => {
-      const title = titleOf(card);
-      const titleKey = nameKeyOf(title);
-      const occurrence = titleCounts[titleKey] || 0;
-      titleCounts[titleKey] = occurrence + 1;
-      return {
-        title,
-        occurrence,
-        entry: entryOf(card),
-        keys: card.keys,
-        type: card.type
-      };
-    });
+    return captureOwnedManagedCards(managedExperienceRecords());
   }
 
   function restoreManagedExperienceCards(snapshot) {
     if (!Array.isArray(snapshot)) return false;
-    const existing = cards.filter(managedExperienceCard);
-    const pools = {};
-    existing.forEach(card => {
-      const titleKey = nameKeyOf(titleOf(card));
-      if (!pools[titleKey]) pools[titleKey] = [];
-      pools[titleKey].push(card);
-    });
-    const used = new Set();
-    const restoredCounts = {};
-    let restored = true;
-    snapshot.forEach(item => {
-      const titleKey = nameKeyOf(item.title);
-      const fallbackOccurrence = restoredCounts[titleKey] || 0;
-      const occurrence = Number.isSafeInteger(item.occurrence) && item.occurrence >= 0
-        ? item.occurrence
-        : fallbackOccurrence;
-      restoredCounts[titleKey] = fallbackOccurrence + 1;
-      let card = pools[titleKey] && pools[titleKey][occurrence];
-      if (!card) card = addCard(item.title, item.entry);
-      if (!card) {
-        restored = false;
-        return;
-      }
-      used.add(card);
-      const index = cardIndex(card);
-      if (!updateCardAt(index, item.keys, item.entry, item.type, item.title)) restored = false;
-    });
-    if (!removeCards(existing.filter(card => !used.has(card)))) restored = false;
+    const restored = restoreOwnedManagedCards(
+      snapshot,
+      managedExperienceRecords(),
+      managedExperienceSnapshotOwnerKey
+    );
     refreshExperiencesStore(false);
     return restored;
+  }
+
+  function splitExperienceRecord(owner, record) {
+    const source = experiencePhrase(record && record.situation);
+    const maximum = settings.MAX_STORED_EXPERIENCE_CHARS;
+    if (!source) return { ok: false, error: "An empty Experience could not be migrated." };
+    if (source.length <= maximum) {
+      return { ok: true, records: [{ ...record, situation: source }] };
+    }
+    const chunks = [];
+    let remaining = source;
+    while (remaining.length > maximum) {
+      const minimum = Math.floor(maximum * 0.45);
+      let cut = remaining.lastIndexOf(" ", maximum + 1);
+      if (cut < minimum) {
+        return {
+          ok: false,
+          error: "An oversized Experience contains no safe word boundary for lossless pagination."
+        };
+      }
+      let safer = cut;
+      while (safer >= minimum && /[.!?]/.test(remaining[safer - 1] || "")) {
+        safer = remaining.lastIndexOf(" ", safer - 1);
+      }
+      if (safer >= minimum) cut = safer;
+      const chunk = remaining.slice(0, cut).trim();
+      remaining = remaining.slice(cut).trim();
+      if (!chunk || !remaining) {
+        return { ok: false, error: "An oversized Experience could not be divided safely." };
+      }
+      chunks.push(chunk);
+    }
+    chunks.push(remaining);
+    if (chunks.join(" ") !== source) {
+      return { ok: false, error: "An oversized Experience could not be divided losslessly." };
+    }
+    const records = chunks.map((chunk, index) => ({
+      ...record,
+      situation: chunk,
+      signature: experienceSignature(owner.key, record.targetKey, chunk),
+      chunk: index + 1,
+      chunks: chunks.length
+    }));
+    return { ok: true, records };
+  }
+
+  function plannedExperienceMigration(ownerData) {
+    const owner = ownerData && ownerData.character;
+    const pages = ownerData && Array.isArray(ownerData.pages)
+      ? ownerData.pages.slice().sort((left, right) => left.page - right.page)
+      : [];
+    if (!owner || !pages.length) return { ok: true, changed: false, pages: [] };
+    if (pages.some(page => page.duplicatePage)) {
+      return { ok: false, error: "Duplicate physical Experience pages require creator review." };
+    }
+    if (pages.some(page => !page.repairable)) {
+      return { ok: false, error: "Malformed Experience content was preserved for creator review." };
+    }
+    const changed = pages.some(page => !page.safe);
+    if (!changed) return { ok: true, changed: false, pages: [] };
+    const plans = pages.map(page => ({
+      owner,
+      card: page.card,
+      page: page.page,
+      title: page.title,
+      records: [],
+      created: false
+    }));
+    const sourceRecords = pages.flatMap(page => page.records.map(record => ({ ...record })))
+      .sort((left, right) => left.page - right.page || left.line - right.line);
+    const records = [];
+    let splitRecords = 0;
+    let addedChunks = 0;
+    for (const record of sourceRecords) {
+      const split = splitExperienceRecord(owner, record);
+      if (!split.ok) return split;
+      if (split.records.length > 1) {
+        splitRecords += 1;
+        addedChunks += split.records.length - 1;
+      }
+      records.push(...split.records);
+    }
+    let planIndex = 0;
+    let nextPage = Math.max(0, ...plans.map(page => page.page)) + 1;
+    for (const record of records) {
+      let placed = false;
+      while (!placed) {
+        if (planIndex >= plans.length) {
+          plans.push({
+            owner,
+            card: null,
+            page: nextPage,
+            title: experiencesPageTitle(owner, nextPage),
+            records: [],
+            created: true
+          });
+          nextPage += 1;
+        }
+        const plan = plans[planIndex];
+        const candidate = plan.records.concat(record);
+        if (renderExperiencesPage(owner, plan.page, candidate).length
+          <= settings.MAX_EXPERIENCES_CARD_CHARS) {
+          record.page = plan.page;
+          record.card = plan.card;
+          plan.records.push(record);
+          placed = true;
+        } else if (!plan.records.length) {
+          return {
+            ok: false,
+            error: "A complete Experience record could not fit an empty 1,000-character page."
+          };
+        } else {
+          planIndex += 1;
+        }
+      }
+    }
+    plans.forEach(plan => {
+      plan.entry = renderExperiencesPage(owner, plan.page, plan.records);
+    });
+    return { ok: true, changed: true, pages: plans, splitRecords, addedChunks };
+  }
+
+  function commitExperienceMigration(owner, plans) {
+    const snapshot = captureManagedExperienceCards();
+    try {
+      for (const plan of plans.filter(item => item.created)) {
+        const card = addCard(plan.title, plan.entry);
+        if (!card) throw new Error("Could not create " + plan.title + ".");
+        plan.card = card;
+      }
+      for (const plan of plans.filter(item => !item.created)) {
+        if (entryOf(plan.card).replace(/\r/g, "").trim() === plan.entry) continue;
+        const saved = saveCard(plan.card, plan.entry);
+        if (!saved) throw new Error("Could not update " + plan.title + ".");
+        plan.card = saved;
+      }
+    } catch (error) {
+      const restored = restoreManagedExperienceCards(snapshot);
+      CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
+        "Rolled back " + owner.name + " Experiences after API failure: "
+          + (error.message || "unknown failure")
+          + (restored ? "" : " (rollback was incomplete)")
+      ).slice(-20);
+      refreshExperiencesStore(false);
+      return { ok: false, error: error.message || "The Experiences migration failed." };
+    }
+    CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
+      "Committed and repacked " + owner.name + " Experiences without deleting an existing card."
+    ).slice(-20);
+    refreshExperiencesStore(false);
+    return { ok: true };
+  }
+
+  function repairExperiencesStore() {
+    refreshExperiencesStore(true);
+    const session = storeSessionFor("experiences");
+    if (session && session.repaired && storeIsFresh("experiences", experiencesStore)) return;
+    const messages = [];
+    Object.values(experiencesStore && experiencesStore.owners || {}).forEach(ownerData => {
+      const planned = plannedExperienceMigration(ownerData);
+      if (!planned.ok) {
+        messages.push(ownerData.character.name + " Experiences: " + planned.error);
+        return;
+      }
+      if (!planned.changed) return;
+      const priorPages = ownerData.pages.length;
+      const committed = commitExperienceMigration(ownerData.character, planned.pages);
+      if (!committed.ok) {
+        messages.push(
+          "Could not migrate " + ownerData.character.name + " Experiences: " + committed.error
+        );
+        return;
+      }
+      const nextPages = planned.pages.length;
+      messages.push(
+        "Migrated " + ownerData.character.name
+          + " Experiences to flat About/Experience records"
+          + (planned.splitRecords
+            ? ", losslessly divided " + planned.splitRecords + " oversized record"
+              + (planned.splitRecords === 1 ? "" : "s")
+              + " into " + (planned.splitRecords + planned.addedChunks) + " page-safe records"
+            : "")
+          + (nextPages > priorPages
+            ? " and added " + (nextPages - priorPages) + " overflow page"
+              + (nextPages - priorPages === 1 ? "" : "s")
+            : "")
+          + "."
+      );
+    });
+    CC.experienceRepairDiagnostics = unique(
+      (CC.experienceRepairDiagnostics || []).concat(messages),
+      500
+    ).slice(-30);
+    refreshExperiencesStore(false);
+    if (session) session.repaired = true;
   }
 
   function nextExperiencesPageNumber(pages) {
@@ -5971,7 +6747,7 @@ function CharacterContinuity(hook, incomingText) {
     });
   }
 
-  refreshExperiencesStore(true);
+  repairExperiencesStore();
   backfillExperienceProvenance();
 
   function clearTemporaryState() {
@@ -6159,7 +6935,8 @@ function CharacterContinuity(hook, incomingText) {
       ).slice(-20);
     }
     if (item.clipped) CC.last.evidenceDiagnostics = (CC.last.evidenceDiagnostics || []).concat(
-      item.id + " was mechanically clipped from " + item.originalChars + " to " + item.text.length + " characters."
+      item.id + " stored a " + item.text.length + "-character head-and-tail excerpt of "
+        + item.originalChars + " characters."
     ).slice(-20);
     return item;
   }
@@ -6961,9 +7738,13 @@ function CharacterContinuity(hook, incomingText) {
     const record = selection && (selection.record || selection);
     if (!record) return "";
     return [
-      "{ " + owner.name + "'s relevant Experience:",
-      "- (About: " + modelTargetName(record.targetKey, record.targetName) + ") " + owner.name
-        + " experienced: " + situationPhrase(record.situation) + ".",
+      "{",
+      owner.name + "'s relevant Experience:",
+      "About: " + modelTargetName(record.targetKey, record.targetName),
+      "Experience: " + shortenProfileValue(
+        experiencePhrase(record.situation),
+        settings.MAX_MODEL_EXPERIENCE_CHARS
+      ),
       "}"
     ].join("\n");
   }
@@ -7346,6 +8127,34 @@ function CharacterContinuity(hook, incomingText) {
   function operationAliasRegExp(alias) {
     const wanted = line(alias, 160).split(/\s+/).map(escapeRegExp).join("\\s+");
     return wanted ? "(?:" + wanted + ")" : "";
+  }
+
+  function operationFallbackMentionIndex(source, aliases) {
+    const text = textOf(source);
+    let earliest = -1;
+    (Array.isArray(aliases) ? aliases : []).forEach(alias => {
+      const wanted = operationAliasRegExp(alias);
+      if (!wanted) return;
+      const match = new RegExp(
+        "(^|[^A-Za-z0-9])" + wanted + "(?=$|[^A-Za-z0-9])",
+        "i"
+      ).exec(text);
+      if (!match) return;
+      const index = match.index + textOf(match[1]).length;
+      if (earliest < 0 || index < earliest) earliest = index;
+    });
+    return earliest;
+  }
+
+  function operationFallbackStateOwnerAnchored(owner, source) {
+    if (!owner) return false;
+    const text = textOf(source).trim();
+    const ownerIndex = operationFallbackMentionIndex(text, operationOwnerAliases(owner));
+    if (ownerIndex < 0 || ownerIndex > 96) return false;
+    if (ownerIndex === 0) return true;
+    const prefix = text.slice(0, ownerIndex);
+    return /^(?:at|in|on|near|inside|outside|beside|by|behind|before|after|across|under|over|within|amid|among|from|through)\b[^.!?…\n]{0,80},\s*$/i
+      .test(prefix);
   }
 
   function ownerSpeechAttributed(owner, source, statementPattern) {
@@ -8899,7 +9708,7 @@ function CharacterContinuity(hook, incomingText) {
     const targetMap = targetPacketForKind(owner, normalized, targets);
     const commonEnding = [
       "Ground every record field and Explanation in the supplied evidence.",
-      "For a continuity change, place one exact CCO record first, then write complete story prose. For stable continuity, begin with complete story prose.",
+      "Continuity change: place one exact CCO record first, then write complete story prose. Stable continuity: begin immediately with complete narrative paragraphs and dialogue.",
       "The Player authors the Player's inner life, choices, consent, commitments, memories, boundaries, names, and relationships."
     ];
     let rules = [];
@@ -8912,6 +9721,10 @@ function CharacterContinuity(hook, incomingText) {
       const currentSituationMatchesTarget = !!currentSituation
         && normalizedTargetKey(state.situation.targetKey || state.target.key) === normalizedTargetKey(target.key);
       const situationField = frozenConfirmation ? "KEEP" : "Situation";
+      const stateOpenFields = (evidenceIds.length > 1 ? ["EvidenceIDs"] : [])
+        .concat(["TriggerList"])
+        .concat(frozenConfirmation ? [] : ["Situation"])
+        .concat(["Thought"]);
       const stateContinuityRules = frozenConfirmation
         ? [
           "Current accepted Situation for " + target.code + ": "
@@ -8931,10 +9744,9 @@ function CharacterContinuity(hook, incomingText) {
         evidenceChoice,
         ...stateContinuityRules,
         "Record: (CCO|S|" + target.code + "|" + evidenceField + "|TriggerList|" + situationField
-          + "|Thought). The two routing fields immediately after CCO are the literal pair S|" + target.code
-          + ". Use bare values in the last three fields. Complete TriggerList with 1-3 choices: "
+          + "|Thought). Complete these bare-value fields: " + stateOpenFields.join(", ") + ". TriggerList uses 1-3 choices: "
           + TRIGGER_CODES.join(", ")
-          + ". A new Situation is a character-voiced clause of at most 100 characters. Thought is direct first-person inner speech.",
+          + ". Situation is a character-voiced clause of at most 100 characters. Thought is direct first-person inner speech.",
         ...commonEnding
       ];
     } else if (normalized === "name") {
@@ -9793,6 +10605,10 @@ function CharacterContinuity(hook, incomingText) {
       /^Active NPCs respond from their own perspectives\b/i
     ].some(pattern => pattern.test(normalized))) return true;
     if (!plan || plan.task !== "operation" || !plan.taskDelivered) return false;
+    if (/^[.\-:]*\s*(?:Use|Copy)\s+1\s*-\s*3\s+(?:of(?:\s+the\s+following)?(?:\s+triggers?)?|triggers?|trigger codes?)(?:\s+from)?\s*:/i
+      .test(normalized)) {
+      return !!operationTriggerInstruction(source);
+    }
     return [
       /^<\/?SYSTEM>$/i,
       /^[.\-:]*\s*(?:State\s*:\s*(?:copy\s+)?\(CCO\|S\||\(CCO\|S\|AboutCode\|)/i,
@@ -9801,7 +10617,6 @@ function CharacterContinuity(hook, incomingText) {
       /^[.\-:]*\s*KEEP confirms that supplied Current Situation\b/i,
       /^[.\-:]*\s*Copy that Situation exactly when the supplied evidence continues it\b/i,
       /^[.\-:]*\s*Copy AboutCode and evidence IDs from (?:the )?(?:supplied )?packets\b/i,
-      /^[.\-:]*\s*(?:Use|Copy)\s+1\s*-\s*3\s+(?:of(?:\s+the\s+following)?(?:\s+triggers?)?|triggers?|trigger codes?)(?:\s+from)?\s*:/i,
       /^[.\-:]*\s*Situation(?:\s+(?:is|names)|\s*:)\s+.*\b(?:owner|current event|event phrase)\b/i,
       /^[.\-:]*\s*Thought(?:\s+is|\s*:)\s+.*\bfirst-person inner speech\b/i,
       /^[.\-:]*\s*(?:Use|Copy)\s+(?:a\s+)?distinct later confirmation\b/i,
@@ -9903,19 +10718,944 @@ function CharacterContinuity(hook, incomingText) {
     return { text: result.join("\n"), removed };
   }
 
+  function operationTriggerInstruction(value) {
+    const source = textOf(value).replace(/\r/g, "");
+    const match = /(?:Use|Copy)\s+1\s*[-‐‑‒–—―]\s*3\s+(?:of(?:\s+the\s+following)?(?:\s+triggers?)?|triggers?|trigger codes?)(?:\s+from)?\s*:/i
+      .exec(source);
+    if (!match) return null;
+    const trailing = source.slice(match.index + match[0].length).trim();
+    let prefix = source.slice(0, match.index)
+      .replace(/[ \t]*[.\-:]+[ \t]*$/, "")
+      .trimEnd();
+    const metaPrefix = /^(?:Here(?:'s| is)|Below is)\s+(?:the\s+)?(?:requested\s+)?(?:command|continuity|CCO|record|operation)\b.*:?$/i
+      .test(prefix);
+    if (metaPrefix) {
+      prefix = "";
+    }
+    if (trailing) {
+      const listText = trailing.split(/\b(?:Situation|Thought)\s*:/i)[0];
+      const recognized = unique(
+        (listText.match(/[A-Za-z_]+/g) || [])
+          .map(item => item.toLowerCase())
+          .filter(item => TRIGGER_CODES.includes(item)),
+        20
+      );
+      if (recognized.length < 2) return null;
+    } else if (prefix && !metaPrefix) {
+      return null;
+    }
+    return {
+      prefix,
+      removed: source.slice(match.index).trim()
+    };
+  }
+
+  function operationTriggerListEchoLine(value) {
+    const source = controlPresentationText(value)
+      .replace(/[.!?;:]+$/g, "")
+      .trim();
+    if (!source || !source.includes(",")) return false;
+    const supplied = source.split(/\s*,\s*/).map(item => item.trim().toLowerCase()).filter(Boolean);
+    return supplied.length >= 2 && supplied.every(item => TRIGGER_CODES.includes(item));
+  }
+
+  function operationMetaPrefaceLine(value) {
+    const source = controlPresentationText(value)
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’‛]/g, "'")
+      .trim();
+    return /^(?:Here(?:'s| is)|Below is)\s+(?:the\s+)?(?:requested\s+)?(?:continuity\s+)?(?:command|CCO record|record|operation)\s*:?\s*$/i
+      .test(source);
+  }
+
+  function operationReasoningEchoLine(value) {
+    const source = controlPresentationText(value)
+      .replace(/[“”]/g, '"')
+      .replace(/[‘’‛]/g, "'")
+      .trim();
+    return /^(?:I|We)\s+(?:need|must|should|will)\s+to\s+(?:perform|complete|produce|write|return)\s+(?:the\s+)?(?:State|Name|Relationship|View|CCO)\s+(?:operation|record)\b.*\b(?:evidence|target|CCO|record)\b.*[.!?]?$/i
+      .test(source);
+  }
+
+  function inlineOperationMetaEchoLine(value) {
+    const source = controlPresentationText(value);
+    return /^(?:Here(?:'s| is)|Below is)\s+(?:the\s+)?(?:requested\s+)?(?:continuity\s+)?(?:command|CCO record|record|operation)\s*:\s*(?:Record\s*:\s*)?\(CCO\|/i
+      .test(source);
+  }
+
   function stripOperationInstructionEchoes(value, plan) {
     const systemBlocks = stripSystemControlBlocks(value);
     const fences = stripControlCodeFences(systemBlocks.text, plan);
     const removed = systemBlocks.removed.concat(fences.removed);
     const kept = [];
-    fences.text.split("\n").forEach(rawLine => {
+    const lines = fences.text.split("\n");
+    let continuationFields = 0;
+    lines.forEach((rawLine, index) => {
+      const triggerInstruction = plan && plan.task === "operation" && plan.taskDelivered
+        ? operationTriggerInstruction(rawLine)
+        : null;
+      if (triggerInstruction) {
+        removed.push(line(triggerInstruction.removed || rawLine, 220));
+        if (triggerInstruction.prefix) kept.push(triggerInstruction.prefix);
+        continuationFields = 3;
+        return;
+      }
+      if (continuationFields > 0) {
+        const normalized = controlPresentationText(rawLine);
+        if (!normalized) return;
+        if (operationTriggerListEchoLine(rawLine)
+          || /^(?:Situation|Thought)\s*:/i.test(normalized)) {
+          removed.push(line(rawLine, 220));
+          continuationFields -= 1;
+          return;
+        }
+        continuationFields = 0;
+      }
+      const nextLine = lines[index + 1] || "";
+      if ((operationMetaPrefaceLine(rawLine) || operationReasoningEchoLine(rawLine))
+        && (operationInstructionEchoLine(nextLine, plan)
+          || ccoPresentation(nextLine).protocolLike
+          || !!operationTriggerInstruction(nextLine))) {
+        removed.push(line(rawLine, 220));
+        return;
+      }
+      if (inlineOperationMetaEchoLine(rawLine)
+        || (plan && plan.task === "operation" && plan.taskDelivered
+          && operationReasoningEchoLine(rawLine))) {
+        removed.push(line(rawLine, 220));
+        return;
+      }
       if (operationInstructionEchoLine(rawLine, plan)) removed.push(line(rawLine, 220));
       else kept.push(rawLine);
     });
+    const cleaned = kept.filter(rawLine =>
+      !(removed.length && /^\s*(?:[-*>]|&gt;)\s*$/.test(rawLine))
+    );
     return {
-      text: kept.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
+      text: cleaned.join("\n").replace(/\n{3,}/g, "\n\n").trim(),
       count: removed.length,
       sample: removed[0] || ""
+    };
+  }
+
+  function operationFallbackLabel(value, kind) {
+    const label = keyOf(value);
+    const common = {
+      evidence: ["cite", "citation", "citations", "citations used", "cited evidence", "evidence", "evidence id", "evidence ids", "evidenceids", "source", "source id", "source ids"],
+      target: ["about", "about code", "aboutcode", "target", "target code", "targetcode", "subject", "subject code", "subjectcode"],
+      explanation: ["explanation", "reason", "reasoning"],
+      operationcode: ["operation", "operation code", "kind", "kind code"]
+    };
+    const specific = {
+      state: {
+        trigger: ["trigger", "triggers", "trigger list", "triggerlist", "trigger code", "trigger codes", "state triggers"],
+        situation: ["situation", "current situation", "event phrase", "context", "scene"],
+        thought: ["thought", "inner thought", "private thought", "inner speech", "inner voice", "internal", "reaction"],
+        feeling: ["feeling", "feelings"],
+        goal: ["goal", "goals"],
+        tension: ["tension", "tensions"]
+      },
+      name: {
+        alias: ["alias", "name", "nickname", "observed alias"],
+        transition: ["transition", "status", "name status", "lifecycle"],
+        use: ["use", "uses", "permission", "permissions", "scope"],
+        oldalias: ["old alias", "replaced alias", "replacement"]
+      },
+      relationship: {
+        field: ["field", "relationship field", "axis"],
+        event: ["event", "event kind", "change", "change kind", "movement", "a d", "ad"],
+        destination: ["destination", "value", "stage"],
+        axisvalue: RELATIONSHIP_FIELDS.map(keyOf)
+      },
+      view: {
+        destination: ["destination", "category", "view category", "judgment", "judgement", "view"],
+        severity: ["severity", "mode", "change", "o m", "om"]
+      }
+    };
+    const groups = { ...common, ...(specific[keyOf(kind)] || {}) };
+    return Object.keys(groups).find(name => groups[name].includes(label)) || "";
+  }
+
+  function operationFallbackScalar(value) {
+    const source = textOf(value).trim()
+      .replace(/^[\s"'`]+|[\s"'`,.]+$/g, "")
+      .replace(/^\[\s*|\s*\]$/g, "")
+      .trim();
+    return source;
+  }
+
+  function operationFallbackFieldEntries(value, kind) {
+    let source = controlPresentationText(value).replace(/\r/g, "").trim();
+    if (!source) return [];
+    source = source.replace(/\*\*|__/g, "").trim();
+    if (source.startsWith("{") && source.endsWith("}")) {
+      try {
+        const parsed = JSON.parse(source);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          const entries = Object.keys(parsed).map(rawLabel => {
+            const label = operationFallbackLabel(rawLabel, kind);
+            const rawValue = Array.isArray(parsed[rawLabel])
+              ? parsed[rawLabel].join(", ")
+              : textOf(parsed[rawLabel]);
+            return label && rawValue.trim()
+              ? { label, value: rawValue.trim(), rawLabel: keyOf(rawLabel) }
+              : null;
+          }).filter(Boolean);
+          if (entries.length === Object.keys(parsed).length && entries.length >= 2) return entries;
+        }
+      } catch (error) {
+        debug("Operation fallback JSON presentation was not exact JSON: " + error.message);
+      }
+    }
+
+    const parseSegment = rawSegment => {
+      const segment = textOf(rawSegment).trim()
+        .replace(/^[{[]\s*/, "")
+        .replace(/\s*[}\]],?\s*$/, "")
+        .trim();
+      const table = segment.match(/^\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|$/);
+      if (table) {
+        const label = operationFallbackLabel(table[1], kind);
+        return label && table[2].trim()
+          ? { label, value: table[2].trim(), rawLabel: keyOf(table[1]) }
+          : null;
+      }
+      const match = segment.match(/^["'`]?([A-Za-z][A-Za-z0-9 _/()'-]{0,48})["'`]?\s*(?::|=|\s+[-–—]\s+)\s*(\S[\s\S]*?)\s*$/);
+      if (!match) return null;
+      const label = operationFallbackLabel(match[1], kind);
+      return label
+        ? { label, value: match[2].trim().replace(/,\s*$/, ""), rawLabel: keyOf(match[1]) }
+        : null;
+    };
+    const segments = source.split(/\s*[|;]\s*/);
+    if (segments.length > 1) {
+      const inline = segments.map(parseSegment).filter(Boolean);
+      if (inline.length === segments.length && inline.length >= 2) return inline;
+    }
+    const single = parseSegment(source);
+    return single ? [single] : [];
+  }
+
+  function operationFallbackWrapperLine(value) {
+    const source = controlPresentationText(value).trim();
+    return /^(?:```[A-Za-z0-9_-]*|~~~[A-Za-z0-9_-]*|```|~~~|[{}\[\]()]\,?)$/.test(source)
+      || /^\|\s*(?:field|label|key)\s*\|\s*(?:value|content)\s*\|$/i.test(source)
+      || /^\|\s*:?-{3,}:?\s*\|\s*:?-{3,}:?\s*\|$/.test(source);
+  }
+
+  function operationFallbackHeaderLine(value, kind, owner) {
+    const source = controlPresentationText(value)
+      .replace(/\*\*|__/g, "")
+      .replace(/[‘’‛]/g, "'")
+      .replace(/[‐‑‒–—―]/g, "-")
+      .trim();
+    if (!source || !owner) return null;
+    const ownerName = textOf(owner.name).replace(/[‘’‛]/g, "'");
+    const ownerPattern = escapeRegExp(ownerName);
+    const kindName = operationKindLabel(kind);
+    const kindPattern = escapeRegExp(kindName);
+    const headerKindPattern = kindPattern
+      + (["name", "relationship", "view"].includes(keyOf(kind)) ? "s?" : "");
+    if (new RegExp("^" + ownerPattern + "\\s*:?\\s*$", "i").test(source)) {
+      return { owner: true, generic: false };
+    }
+    if (new RegExp(
+      "^" + ownerPattern + "(?:'s)?\\s+(?:current\\s+)?(?:private\\s+)?"
+        + headerKindPattern + "\\b(?:\\s+(?:operation|record|update))?\\s*(?::|-).*$",
+      "i"
+    ).test(source)) {
+      return { owner: true, generic: false };
+    }
+    if (new RegExp(
+      "^(?:current\\s+|private\\s+)?" + headerKindPattern
+        + "(?:\\s+(?:operation|record|update))?\\s+(?:for|of|owner)\\s*:?[\\s]*"
+        + ownerPattern + "\\b(?:\\s*(?::|-).*)?$",
+      "i"
+    ).test(source)) {
+      return { owner: true, generic: false };
+    }
+    if (new RegExp(
+      "^(?:owner|character|" + headerKindPattern + "\\s+owner)\\s*:\\s*" + ownerPattern + "\\s*$",
+      "i"
+    ).test(source)) {
+      return { owner: true, generic: false };
+    }
+    if (new RegExp(
+      "^(?:Here(?:'s| is)|Below is)\\s+(?:the\\s+)?(?:requested\\s+)?(?:continuity\\s+)?"
+        + headerKindPattern + "(?:\\s+(?:operation|record|update|fallback))?\\s*:?\\s*$",
+      "i"
+    ).test(source)) {
+      return { owner: false, generic: true };
+    }
+    if (operationMetaPrefaceLine(value)) {
+      return { owner: false, generic: true };
+    }
+    if (new RegExp(
+      "^" + headerKindPattern + "\\s+(?:operation|record|update|fallback)(?:\\s+result)?\\s*:?\\s*$",
+      "i"
+    ).test(source)) {
+      return { owner: false, generic: true };
+    }
+    if (keyOf(kind) === "state"
+      && new RegExp("^" + kindPattern + "\\s*:\\s*\\S.*$", "i").test(source)) {
+      return { owner: false, generic: true };
+    }
+    return null;
+  }
+
+  function operationFallbackRouteLine(value) {
+    const source = controlPresentationText(value).replace(/\*\*|__/g, "").trim();
+    const match = source.match(/^(S|P|N[1-5])\s*:\s*(\S.*)$/i);
+    return match ? { code: match[1].toUpperCase(), value: match[2].trim() } : null;
+  }
+
+  function frozenOperationEvidenceIds(plan, kind) {
+    const supplied = {};
+    (Array.isArray(plan && plan.sourcePacket) ? plan.sourcePacket : []).forEach(sourceItem => {
+      const id = continuitySourceId(sourceItem && sourceItem.id);
+      if (id) supplied[id] = sourceItem;
+    });
+    const eligibilityKey = keyOf(kind);
+    return new Set((Array.isArray(plan && plan.evidenceIds) ? plan.evidenceIds : [])
+      .map(continuitySourceId)
+      .filter(id => {
+        const sourceItem = supplied[id];
+        const eligibility = plan && plan.evidenceEligibility && plan.evidenceEligibility[id];
+        return id && sourceIdLegalForOperation(eligibilityKey, id)
+          && sourceItem && sourceItem[eligibilityKey] === true
+          && eligibility && eligibility[eligibilityKey] === true;
+      }));
+  }
+
+  function operationFallbackEvidenceIds(value, frozenIds) {
+    const source = textOf(value).toUpperCase();
+    const ids = source.match(/[ESXRV]\d+/g) || [];
+    const residue = source
+      .replace(/[ESXRV]\d+/g, " ")
+      .replace(/\bAND\b/g, " ")
+      .replace(/[\s,;:[\]{}"'`()!?._+-]+/g, "");
+    return ids.length > 0 && !residue
+      && new Set(ids).size === ids.length
+      && ids.every(id => frozenIds.has(id))
+      ? ids
+      : [];
+  }
+
+  function operationFallbackTargetValid(value, owner, target) {
+    if (!target) return false;
+    const source = operationFallbackScalar(value);
+    const code = textOf(target.code).trim().toUpperCase();
+    const leadingCode = source.match(/^(S|P|N[1-5])\b/i);
+    if (leadingCode && leadingCode[1].toUpperCase() === code) return true;
+    return frozenTargetDisplayNames(owner, target)
+      .some(name => sameNameForm(source, name));
+  }
+
+  function operationFallbackTriggerCodes(value) {
+    const supplied = textOf(value).match(/[A-Za-z_]+/g) || [];
+    const triggers = supplied.map(normalizeTriggerCode);
+    return supplied.length >= 1
+      && supplied.length <= settings.MAX_STATE_TRIGGERS
+      && triggers.every(Boolean)
+      && new Set(triggers).size === triggers.length
+      ? triggers
+      : [];
+  }
+
+  function operationFallbackRecordValue(value) {
+    let source = textOf(value).replace(/\r/g, "").trim().replace(/,\s*$/, "").trim();
+    const pair = source.length >= 2
+      && ((source.startsWith('"') && source.endsWith('"'))
+        || (source.startsWith("'") && source.endsWith("'"))
+        || (source.startsWith("`") && source.endsWith("`")));
+    if (pair) source = source.slice(1, -1).trim();
+    let prior = "";
+    while (source && source !== prior) {
+      prior = source;
+      if ((source.startsWith("**") && source.endsWith("**"))
+        || (source.startsWith("__") && source.endsWith("__"))) {
+        source = source.slice(2, -2).trim();
+      } else if ((source.startsWith("*") && source.endsWith("*"))
+        || (source.startsWith("_") && source.endsWith("_"))
+        || (source.startsWith("`") && source.endsWith("`"))) {
+        source = source.slice(1, -1).trim();
+      }
+    }
+    return source;
+  }
+
+  function operationFallbackSingleField(fields, label) {
+    const matching = fields.filter(field => field.label === label);
+    return matching.length === 1 ? matching[0] : null;
+  }
+
+  function operationFallbackRecoveryRecord(block, kind, owner, plan) {
+    if (!block || block.routes.length) return null;
+    const normalizedKind = keyOf(kind);
+    const frozenTarget = frozenSelectedOperationTarget(plan);
+    if (!owner || !frozenTarget || !textOf(frozenTarget.code).trim()) return null;
+    const frozenIds = frozenOperationEvidenceIds(plan, normalizedKind);
+    const evidenceField = operationFallbackSingleField(block.fields, "evidence");
+    if (block.fields.filter(field => field.label === "evidence").length > 1) return null;
+    let evidenceIds = evidenceField
+      ? operationFallbackEvidenceIds(evidenceField.value, frozenIds)
+      : [];
+    let inferredEvidence = false;
+    if (!evidenceIds.length && !evidenceField && frozenIds.size === 1) {
+      evidenceIds = [...frozenIds];
+      inferredEvidence = true;
+    }
+    if (!evidenceIds.length) return null;
+
+    const allowed = {
+      state: new Set(["evidence", "target", "operationcode", "trigger", "situation", "thought"]),
+      name: new Set(["evidence", "target", "operationcode", "alias", "transition", "use", "oldalias", "explanation"]),
+      relationship: new Set(["evidence", "target", "operationcode", "field", "event", "destination", "axisvalue", "explanation"]),
+      view: new Set(["evidence", "target", "operationcode", "destination", "severity", "explanation"])
+    }[normalizedKind];
+    if (!allowed || block.fields.some(field => !allowed.has(field.label))) return null;
+    const targetFields = block.fields.filter(field => field.label === "target");
+    if (targetFields.length > 1
+      || (targetFields.length === 1
+        && !operationFallbackTargetValid(targetFields[0].value, owner, frozenTarget))) return null;
+    const operationFields = block.fields.filter(field => field.label === "operationcode");
+    const expectedCode = authorizedOperationCodeFromKind(normalizedKind);
+    if (operationFields.length > 1
+      || (operationFields.length === 1
+        && operationFallbackScalar(operationFields[0].value).toUpperCase() !== expectedCode
+        && keyOf(operationFallbackScalar(operationFields[0].value)) !== normalizedKind)) return null;
+    const valueFor = label => {
+      const field = operationFallbackSingleField(block.fields, label);
+      return field ? operationFallbackRecordValue(field.value) : "";
+    };
+    const safeRecordValues = values => values.every(value =>
+      value && !/[{}|()*_`\r\n]/.test(value)
+    );
+    const targetCode = textOf(frozenTarget.code).trim().toUpperCase();
+    const evidence = evidenceIds.join(",");
+
+    if (normalizedKind === "state") {
+      const triggerField = operationFallbackSingleField(block.fields, "trigger");
+      const situation = valueFor("situation");
+      const thought = valueFor("thought");
+      if (!triggerField || !situation || !thought) return null;
+      const triggers = operationFallbackTriggerCodes(triggerField.value);
+      if (!triggers.length || !safeRecordValues([situation, thought])) return null;
+      const selected = plan && plan.selectedCandidate && typeof plan.selectedCandidate === "object"
+        ? plan.selectedCandidate
+        : {};
+      const confirmationSituation = situationPhrase(selected.confirmSituation);
+      const confirmation = keyOf(selected.stateMode) === "confirm"
+        && normalizedTargetKey(selected.targetKey) === normalizedTargetKey(frozenTarget.key)
+        && (keyOf(situation) === "keep"
+          || (!!confirmationSituation && keyOf(situation) === keyOf(confirmationSituation)));
+      const firstPersonThought = /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/i.test(thought);
+      if (!confirmation && !operationFallbackStateOwnerAnchored(owner, situation)) return null;
+      if (!firstPersonThought || !directPrivateThought(thought, owner)) return null;
+      return {
+        record: "(CCO|S|" + targetCode + "|" + evidence + "|" + triggers.join(",")
+          + "|" + situation + "|" + thought + ")",
+        inferredEvidence
+      };
+    }
+
+    if (normalizedKind === "name") {
+      const alias = valueFor("alias");
+      let transition = valueFor("transition");
+      const use = valueFor("use");
+      const explanation = valueFor("explanation");
+      const oldAlias = valueFor("oldalias");
+      if (keyOf(transition) === "replace" && oldAlias) transition = "Replace=" + oldAlias;
+      if (!safeRecordValues([alias, transition, use, explanation])) return null;
+      return {
+        record: "(CCO|N|" + targetCode + "|" + evidence + "|" + alias + "|"
+          + transition + "|" + use + "|" + explanation + ")",
+        inferredEvidence
+      };
+    }
+
+    if (normalizedKind === "relationship") {
+      const fieldEntry = operationFallbackSingleField(block.fields, "field");
+      const axisEntry = operationFallbackSingleField(block.fields, "axisvalue");
+      if (!!fieldEntry === !!axisEntry) return null;
+      const field = fieldEntry
+        ? RELATIONSHIP_FIELDS.find(item => keyOf(item) === keyOf(operationFallbackRecordValue(fieldEntry.value)))
+        : RELATIONSHIP_FIELDS.find(item => keyOf(item) === axisEntry.rawLabel);
+      const destinationSource = axisEntry
+        ? operationFallbackRecordValue(axisEntry.value)
+        : valueFor("destination");
+      const destination = field ? relationshipDestination(field, destinationSource) : null;
+      const rawEvent = valueFor("event");
+      const event = ({ a: "A", accumulated: "A", d: "D", direct: "D" })[keyOf(rawEvent)] || rawEvent.toUpperCase();
+      const explanation = valueFor("explanation");
+      if (!field || !destination || !["A", "D"].includes(event)
+        || !safeRecordValues([explanation])) return null;
+      return {
+        record: "(CCO|R|" + targetCode + "|" + evidence + "|" + field + "|"
+          + event + "|" + destination.label + "|" + explanation + ")",
+        inferredEvidence
+      };
+    }
+
+    if (normalizedKind === "view") {
+      const destinationSource = valueFor("destination");
+      const destination = canonicalViewDestination(destinationSource);
+      const rawSeverity = valueFor("severity");
+      const severity = ({ o: "O", ordinary: "O", m: "M", major: "M" })[keyOf(rawSeverity)]
+        || rawSeverity.toUpperCase();
+      const explanation = valueFor("explanation");
+      if (!destination || !["O", "M"].includes(severity)
+        || !safeRecordValues([explanation])) return null;
+      return {
+        record: "(CCO|V|" + targetCode + "|" + evidence + "|" + destination + "|"
+          + severity + "|" + explanation + ")",
+        inferredEvidence
+      };
+    }
+    return null;
+  }
+
+  function operationFallbackBlockSignature(block, kind, owner, plan) {
+    const fields = block.fields;
+    const labels = new Set(fields.map(field => field.label));
+    const frozenTarget = frozenSelectedOperationTarget(plan);
+    const operationFields = fields.filter(field => field.label === "operationcode");
+
+    if (keyOf(kind) === "state" && block.routes.length) {
+      if (!frozenTarget) return "";
+      const targetCode = textOf(frozenTarget.code).trim().toUpperCase();
+      if (!/^(?:S|P|N[1-5])$/.test(targetCode)
+        || block.routes.length < 2 || block.routes.length > 4) return "";
+      const permitted = new Set(["S", targetCode]);
+      const codes = block.routes.map(route => route.code);
+      const targetPresent = targetCode === "S"
+        ? codes.filter(code => code === "S").length >= 2
+        : codes.includes(targetCode);
+      if (!codes.includes("S") || !targetPresent
+        || codes.some(code => !permitted.has(code))) return "";
+      return "routing";
+    }
+    if (block.header && block.header.owner && operationFields.length) return "routing";
+
+    if (keyOf(kind) === "state") {
+      const completeCore = labels.has("situation") && labels.has("thought");
+      const partialCore = labels.has("situation") || labels.has("thought");
+      const strongAnchor = labels.has("trigger") || labels.has("evidence")
+        || labels.has("target") || labels.has("feeling") || labels.has("goal")
+        || labels.has("tension") || fields.length >= 4;
+      const ownerStructured = block.header && block.header.owner
+        && partialCore && fields.length >= 2;
+      const labeledStructured = completeCore && strongAnchor;
+      const anchoredPartial = partialCore && labels.has("trigger") && fields.length >= 2;
+      if (ownerStructured || labeledStructured || anchoredPartial) {
+        return block.header && block.header.owner ? "owner-fields" : "labeled";
+      }
+      return "";
+    }
+    if (keyOf(kind) === "name") {
+      const core = labels.has("alias") && labels.has("transition");
+      const supporting = labels.has("use") || labels.has("explanation") || labels.has("oldalias");
+      if (core && ((block.header && block.header.owner) || (supporting && fields.length >= 3))) {
+        return block.header && block.header.owner ? "owner-fields" : "labeled";
+      }
+      return "";
+    }
+    if (keyOf(kind) === "relationship") {
+      const explicit = labels.has("field") && labels.has("event") && labels.has("destination")
+        && (labels.has("explanation") || labels.has("evidence") || labels.has("target") || !!block.header);
+      const axis = labels.has("axisvalue")
+        && (labels.has("event") || labels.has("explanation"))
+        && (labels.has("target") || labels.has("evidence") || !!block.header);
+      const ownerStructured = block.header && block.header.owner
+        && (labels.has("field") || labels.has("axisvalue"))
+        && fields.length >= 2;
+      if (explicit || axis || ownerStructured) {
+        return block.header && block.header.owner ? "owner-fields" : "labeled";
+      }
+      return "";
+    }
+    if (keyOf(kind) === "view") {
+      const core = labels.has("destination")
+        && (labels.has("severity") || labels.has("explanation"))
+        && (labels.has("explanation") || labels.has("evidence") || labels.has("target") || !!block.header);
+      if (core && (block.header || fields.length >= 3)) {
+        return block.header && block.header.owner ? "owner-fields" : "labeled";
+      }
+    }
+    return "";
+  }
+
+  function operationFallbackLine(value, kind, owner) {
+    if (!textOf(value).trim()) return { blank: true };
+    if (operationFallbackWrapperLine(value)) return { wrapper: true };
+    const header = operationFallbackHeaderLine(value, kind, owner);
+    if (header) return { header };
+    const fields = operationFallbackFieldEntries(value, kind);
+    if (fields.length) return { fields };
+    const route = keyOf(kind) === "state" ? operationFallbackRouteLine(value) : null;
+    return route ? { route } : null;
+  }
+
+  function operationFallbackEdgeBlock(lines, edge, kind, owner, plan) {
+    const maxLines = 24;
+    let first = 0;
+    while (first < lines.length && !lines[first].trim()) first += 1;
+    let last = lines.length - 1;
+    while (last >= 0 && !lines[last].trim()) last -= 1;
+    if (first > last) return null;
+
+    if (edge === "leading" && ccoPresentation(lines[first]).record) {
+      first += 1;
+      while (first <= last && !lines[first].trim()) first += 1;
+    }
+    let start = first;
+    let end = last;
+    const parsedLines = new Map();
+    const parsedAt = index => {
+      if (!parsedLines.has(index)) {
+        parsedLines.set(index, operationFallbackLine(lines[index], kind, owner));
+      }
+      return parsedLines.get(index);
+    };
+    if (edge === "leading") {
+      end = first - 1;
+      for (let index = first; index <= last && index < first + maxLines; index += 1) {
+        if (!parsedAt(index)) break;
+        end = index;
+      }
+      if (end < start) return null;
+    } else {
+      start = last + 1;
+      for (let index = last; index >= first && index > last - maxLines; index -= 1) {
+        if (!parsedAt(index)) break;
+        start = index;
+      }
+      if (start > end) return null;
+    }
+
+    const block = { header: null, fields: [], routes: [] };
+    let nonblank = 0;
+    for (let index = start; index <= end; index += 1) {
+      const parsed = parsedAt(index);
+      if (!parsed) return null;
+      if (!parsed.blank) nonblank += 1;
+      if (parsed.header) {
+        if (block.header && block.header.owner && parsed.header.owner) return null;
+        block.header = {
+          owner: !!((block.header && block.header.owner) || parsed.header.owner),
+          generic: !!((block.header && block.header.generic) || parsed.header.generic)
+        };
+      }
+      if (parsed.fields) block.fields.push(...parsed.fields);
+      if (parsed.route) block.routes.push(parsed.route);
+    }
+    if (!nonblank || block.fields.length > 10) return null;
+    const signature = operationFallbackBlockSignature(block, kind, owner, plan);
+    if (!signature) return null;
+    return {
+      start,
+      end,
+      count: nonblank,
+      signature,
+      edge,
+      recovery: operationFallbackRecoveryRecord(block, kind, owner, plan)
+    };
+  }
+
+  function operationFallbackInlineCandidateLabel(value, owner) {
+    let source = controlPresentationText(value)
+      .replace(/\*\*|__|`/g, "")
+      .replace(/[‘’‛]/g, "'")
+      .trim();
+    if (source.startsWith("[") && source.endsWith("]")) {
+      source = source.slice(1, -1).trim();
+    }
+    const evidence = source.match(/^(?:(?:evidence|source)\s*)?#?\s*([ESXRV]\d+)$/i);
+    if (evidence) return { kind: "evidence", value: evidence[1].toUpperCase() };
+    const named = source.replace(/^(?:owner|character)\s*(?::|=|-)\s*/i, "").trim();
+    if (operationOwnerAliases(owner).some(alias => sameNameForm(named, alias))) {
+      return { kind: "owner", value: named };
+    }
+    return null;
+  }
+
+  function operationFallbackInlineTriggerTuple(value, explicit = false) {
+    let source = controlPresentationText(value).replace(/\*\*|__|`/g, "").trim();
+    const wrapped = source.length >= 2
+      && ((source.startsWith("(") && source.endsWith(")"))
+        || (source.startsWith("[") && source.endsWith("]"))
+        || (source.startsWith("{") && source.endsWith("}")));
+    if (wrapped) source = source.slice(1, -1).trim();
+    const labeled = /^(?:trigger|triggers|triggerlist|trigger list|trigger codes?)\s*(?::|=)\s*/i
+      .test(source);
+    source = source
+      .replace(/^(?:trigger|triggers|triggerlist|trigger list|trigger codes?)\s*(?::|=)\s*/i, "")
+      .trim();
+    if (!source || source.length > 300) return null;
+    const rawItems = source.split(/[,;/]/);
+    const items = rawItems.map(item => item.trim()).filter(Boolean);
+    if (!items.length || items.length > 16) return null;
+    const recognized = items.map(normalizeTriggerCode).filter(Boolean);
+    const hasUnderscore = items.some(item => item.includes("_"));
+    if (!recognized.length
+      || (!explicit && !labeled && items.length < 2 && !hasUnderscore)) return null;
+    const uniqueRecognized = new Set(recognized);
+    return {
+      items,
+      recognized,
+      hasUnderscore,
+      invalid: rawItems.some(item => !item.trim()) || recognized.length !== items.length,
+      duplicate: uniqueRecognized.size !== recognized.length,
+      tooMany: items.length > settings.MAX_STATE_TRIGGERS
+    };
+  }
+
+  function operationFallbackInlineCandidateLine(value, owner) {
+    if (!textOf(value).trim()) return { blank: true };
+    if (operationFallbackWrapperLine(value)) return { wrapper: true };
+    const source = controlPresentationText(value).replace(/\*\*|__|`/g, "").trim();
+    if (/^(?:(?:state|operation)\s+)?(?:candidate|candidates|option|options|draft|drafts|update|updates)(?:\s+packet)?\s*:?\s*$/i
+      .test(source)) {
+      return { wrapper: true };
+    }
+
+    const rawTable = textOf(value).replace(/\r/g, "").trim();
+    if (rawTable.startsWith("|") && rawTable.endsWith("|")) {
+      const cells = rawTable.slice(1, -1).split("|")
+        .map(cell => cell.replace(/\*\*|__|`/g, "").trim());
+      if (cells.length >= 2 && cells.every(cell => /^:?-{3,}:?$/.test(cell))) {
+        return { wrapper: true };
+      }
+      const headerKeys = cells.map(keyOf);
+      if (cells.length >= 3
+        && /^(?:owner|character|source|evidence|candidate)$/.test(headerKeys[0])
+        && /^(?:trigger|triggers|triggerlist|trigger codes?)$/.test(headerKeys[1])) {
+        return { wrapper: true };
+      }
+      if (cells.length >= 3) {
+        const label = operationFallbackInlineCandidateLabel(cells[0], owner);
+        const triggers = operationFallbackInlineTriggerTuple(cells[1], true);
+        const prose = cells.slice(2).join(" | ").trim();
+        if (label && triggers && prose) {
+          return {
+            candidate: {
+              label,
+              triggers,
+              prose,
+              firstPerson: /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/i.test(prose),
+              table: true
+            }
+          };
+        }
+      }
+      return null;
+    }
+
+    const tuplePattern = "(\\([^()\\r\\n]{1,300}\\)|\\[[^\\[\\]\\r\\n]{1,300}\\]|\\{[^{}\\r\\n]{1,300}\\})";
+    const bracketed = new RegExp(
+      "^\\[\\s*([^\\]\\r\\n]{1,160})\\s*\\]\\s*(?:(?::|=)|[-–—|])?\\s*"
+        + tuplePattern + "\\s*(?:(?::|=)|[-–—|])?\\s*(\\S[\\s\\S]*)$",
+      "i"
+    ).exec(source);
+    const plain = bracketed ? null : new RegExp(
+      "^(.{1,160}?)(?:\\s*:\\s*|\\s+[-–—=|]\\s+|\\s+)"
+        + tuplePattern + "\\s*(?:(?::|=)|[-–—|])?\\s*(\\S[\\s\\S]*)$",
+      "i"
+    ).exec(source);
+    const match = bracketed || plain;
+    if (!match) return null;
+    const label = operationFallbackInlineCandidateLabel(match[1], owner);
+    const triggers = operationFallbackInlineTriggerTuple(
+      match[2],
+      !!label && label.kind === "evidence"
+    );
+    const prose = textOf(match[3]).trim();
+    if (!label || !triggers || !prose) return null;
+    return {
+      candidate: {
+        label,
+        triggers,
+        prose,
+        firstPerson: /\b(?:I|me|my|mine|myself|we|us|our|ours|ourselves)\b/i.test(prose),
+        table: false
+      }
+    };
+  }
+
+  function operationFallbackInlineCandidateBlock(lines, edge, kind, owner) {
+    if (keyOf(kind) !== "state" || !owner) return null;
+    let first = 0;
+    while (first < lines.length && !lines[first].trim()) first += 1;
+    let last = lines.length - 1;
+    while (last >= 0 && !lines[last].trim()) last -= 1;
+    if (first > last) return null;
+
+    const maxLines = 20;
+    const parsedLines = new Map();
+    const parsedAt = index => {
+      if (!parsedLines.has(index)) {
+        parsedLines.set(index, operationFallbackInlineCandidateLine(lines[index], owner));
+      }
+      return parsedLines.get(index);
+    };
+    let start = first;
+    let end = last;
+    if (edge === "leading") {
+      end = first - 1;
+      for (let index = first; index <= last && index < first + maxLines; index += 1) {
+        if (!parsedAt(index)) break;
+        end = index;
+      }
+      if (end < start) return null;
+    } else {
+      start = last + 1;
+      for (let index = last; index >= first && index > last - maxLines; index -= 1) {
+        if (!parsedAt(index)) break;
+        start = index;
+      }
+      if (start > end) return null;
+    }
+
+    const candidates = [];
+    let nonblank = 0;
+    for (let index = start; index <= end; index += 1) {
+      const parsed = parsedAt(index);
+      if (!parsed) return null;
+      if (!parsed.blank) nonblank += 1;
+      if (parsed.candidate) candidates.push(parsed.candidate);
+    }
+    if (!candidates.length) return null;
+    const evidenceLabeled = candidates.some(candidate => candidate.label.kind === "evidence");
+    const operationalTuple = candidates.some(candidate =>
+      candidate.triggers.hasUnderscore
+        || candidate.triggers.invalid
+        || candidate.triggers.duplicate
+        || candidate.triggers.tooMany
+    );
+    const privateOwnerCandidate = candidates.some(candidate =>
+      candidate.label.kind === "owner"
+        && candidate.firstPerson
+        && candidate.triggers.recognized.length >= 2
+    );
+    const tablePacket = candidates.some(candidate => candidate.table);
+    if (!evidenceLabeled && candidates.length < 2
+      && !operationalTuple && !privateOwnerCandidate && !tablePacket) return null;
+    return {
+      start,
+      end,
+      count: nonblank,
+      signature: "inline-candidates",
+      edge,
+      recovery: null
+    };
+  }
+
+  function operationFallbackSplitProtocolBlock(lines, edge) {
+    let first = 0;
+    while (first < lines.length && !lines[first].trim()) first += 1;
+    let last = lines.length - 1;
+    while (last >= 0 && !lines[last].trim()) last -= 1;
+    if (first > last) return null;
+    const opener = value => {
+      const source = controlPresentationText(value)
+        .replace(/^(?:Record|State|Name|Relationship|View|CCO record)\s*:\s*/i, "")
+        .trim();
+      return /^(?:\(\s*)?(?:CCO\s*\||[SNRV]\s*\|)/i.test(source);
+    };
+    const closer = value => /\)\s*(?:[*_`}\]]*)\s*$/.test(textOf(value).trim());
+    const recoveryFor = (start, end) => {
+      const joined = lines.slice(start, end + 1)
+        .map(value => controlPresentationText(value).trim())
+        .join(" ")
+        .replace(/\s*\|\s*/g, "|")
+        .replace(/\(\s+/g, "(")
+        .replace(/\s+\)/g, ")")
+        .trim();
+      const presented = ccoPresentation(joined);
+      return presented.record && /^\(CCO\|/.test(presented.record)
+        ? { record: presented.record, inferredEvidence: false }
+        : null;
+    };
+    const maxLines = 12;
+    if (edge === "leading") {
+      if (!opener(lines[first]) || closer(lines[first])) return null;
+      const limit = Math.min(last, first + maxLines - 1);
+      for (let end = first + 1; end <= limit; end += 1) {
+        if (!closer(lines[end])) continue;
+        return {
+          start: first,
+          end,
+          count: lines.slice(first, end + 1).filter(lineValue => lineValue.trim()).length,
+          signature: "split-protocol",
+          edge,
+          recovery: recoveryFor(first, end)
+        };
+      }
+      return null;
+    }
+    if (!closer(lines[last])) return null;
+    const limit = Math.max(first, last - maxLines + 1);
+    for (let start = last - 1; start >= limit; start -= 1) {
+      if (!opener(lines[start]) || closer(lines[start])) continue;
+      return {
+        start,
+        end: last,
+        count: lines.slice(start, last + 1).filter(lineValue => lineValue.trim()).length,
+        signature: "split-protocol",
+        edge,
+        recovery: recoveryFor(start, last)
+      };
+    }
+    return null;
+  }
+
+  function stripOperationFallbackBlocks(value, plan, allowRecovery = true) {
+    let source = textOf(value).replace(/\r/g, "");
+    const unchanged = () => ({
+      text: source,
+      count: 0,
+      sample: "",
+      pattern: "",
+      kind: "",
+      recoveredRecord: "",
+      inferredEvidence: false
+    });
+    const kind = keyOf(plan && plan.selectedOperationKind);
+    if (!plan || plan.task !== "operation" || !plan.taskDelivered
+      || !MODEL_OPERATION_KINDS.includes(kind)) return unchanged();
+    const owner = characters.find(character => character.key === plan.ownerKey) || null;
+    if (!owner) return unchanged();
+
+    let total = 0;
+    let sample = "";
+    const patterns = [];
+    const recoveries = [];
+    ["leading", "terminal"].forEach(edge => {
+      for (let pass = 0; pass < 2; pass += 1) {
+        const lines = source.split("\n");
+        const block = operationFallbackSplitProtocolBlock(lines, edge)
+          || operationFallbackInlineCandidateBlock(lines, edge, kind, owner)
+          || operationFallbackEdgeBlock(lines, edge, kind, owner, plan);
+        if (!block) break;
+        const removed = lines.slice(block.start, block.end + 1);
+        if (!sample) sample = line(removed.join(" "), 300);
+        total += block.count;
+        patterns.push(edge + " " + block.signature);
+        if (allowRecovery && block.recovery && block.recovery.record) {
+          recoveries.push(block.recovery);
+        }
+        source = lines.slice(0, block.start).concat(lines.slice(block.end + 1))
+          .join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      }
+    });
+    return {
+      text: source,
+      count: total,
+      sample,
+      pattern: patterns.join(" and "),
+      kind,
+      recoveredRecord: recoveries.length === 1 ? recoveries[0].record : "",
+      inferredEvidence: recoveries.length === 1 && recoveries[0].inferredEvidence === true
     };
   }
 
@@ -10027,8 +11767,10 @@ function CharacterContinuity(hook, incomingText) {
     return { value: normalized, changed: normalized !== source };
   }
 
-  function parseTerminalCandidate(output, plan) {
-    const strippedSource = stripOperationInstructionEchoes(output, plan).text;
+  function parseTerminalCandidate(output, plan, preparedSource) {
+    const strippedSource = typeof preparedSource === "string"
+      ? preparedSource
+      : stripOperationInstructionEchoes(output, plan).text;
     const strippedLines = strippedSource.split("\n");
     const presentation = ccoPresentation(strippedLines[0] || "");
     let canonicalizedPresentedRecord = "";
@@ -12519,20 +14261,55 @@ function CharacterContinuity(hook, incomingText) {
       return " ";
     }
 
-    const instructionEcho = stripOperationInstructionEchoes(outputValue, plan);
-    const parsed = parseTerminalCandidate(outputValue, plan);
-    if (instructionEcho.count > 0 && !parsed.candidate && !parsed.unauthorized) {
+    const rawFallback = stripOperationFallbackBlocks(outputValue, plan, true);
+    const instructionEcho = stripOperationInstructionEchoes(rawFallback.text, plan);
+    const residualFallback = stripOperationFallbackBlocks(instructionEcho.text, plan, false);
+    const operationFallback = {
+      text: residualFallback.text,
+      count: rawFallback.count + residualFallback.count,
+      sample: rawFallback.sample || residualFallback.sample,
+      pattern: [rawFallback.pattern, residualFallback.pattern].filter(Boolean).join(" and "),
+      kind: rawFallback.kind || residualFallback.kind,
+      recoveredRecord: rawFallback.recoveredRecord,
+      inferredEvidence: rawFallback.inferredEvidence === true
+    };
+    const cleanedHasProtocol = operationFallback.text.split("\n").some(value => {
+      const presented = ccoPresentation(value);
+      return presented.protocolLike || /\(\s*CCO\b/i.test(value);
+    });
+    const recoveryApplied = !!(operationFallback.recoveredRecord && !cleanedHasProtocol);
+    const preparedOutput = recoveryApplied
+      ? operationFallback.recoveredRecord
+        + (operationFallback.text ? "\n" + operationFallback.text : "")
+      : operationFallback.text;
+    const parsed = parseTerminalCandidate(outputValue, plan, preparedOutput);
+    const normalizedCandidate = recoveryApplied && !!parsed.candidate;
+    const cleanupNotes = [];
+    if (instructionEcho.count > 0) {
+      cleanupNotes.push("CC control echo stripped (" + instructionEcho.count + " line"
+        + (instructionEcho.count === 1 ? "" : "s") + ").");
+    }
+    if (operationFallback.count > 0) {
+      cleanupNotes.push("Visible " + operationKindLabel(operationFallback.kind) + " "
+        + (operationFallback.pattern ? operationFallback.pattern + " " : "")
+        + "fallback block " + (recoveryApplied
+          ? "converted into a hidden CCO recovery candidate"
+            + (operationFallback.inferredEvidence ? " with the single frozen evidence source" : "")
+          : "stripped")
+        + " (" + operationFallback.count + " line"
+        + (operationFallback.count === 1 ? "" : "s") + ").");
+    }
+    if (cleanupNotes.length && !parsed.candidate && !parsed.unauthorized) {
       parsed.malformed = true;
-      parsed.reason = "CC control echo stripped (" + instructionEcho.count + " line"
-        + (instructionEcho.count === 1 ? "" : "s") + ")."
+      parsed.reason = cleanupNotes.join(" ")
         + (parsed.hadProtocol ? " " + parsed.reason : "");
-      parsed.raw = instructionEcho.sample;
+      parsed.raw = operationFallback.sample || instructionEcho.sample;
     }
     const protocolSummary = parsed.hadProtocol
       ? parsed.reason + (parsed.raw ? " Record: " + line(parsed.raw, 180) : "")
       : (parsed.reason || "No CCO record");
-    CC.last.protocol = instructionEcho.count > 0 && parsed.candidate
-      ? "CC control echo stripped (" + instructionEcho.count + "). " + protocolSummary
+    CC.last.protocol = cleanupNotes.length && parsed.candidate
+      ? cleanupNotes.join(" ") + " " + protocolSummary
       : protocolSummary;
     const story = parsed.story.trim();
     if (!hasCompleteStory(story)) {
@@ -12544,7 +14321,9 @@ function CharacterContinuity(hook, incomingText) {
         : (parsed.malformed
           ? "malformed stripped"
           : (parsed.candidate
-            ? "rejected: no complete story"
+            ? (normalizedCandidate
+              ? "normalized rejected: no complete story"
+              : "rejected: no complete story")
             : "absent: no complete story"));
 
       CC.last.operationOutcome = "None";
@@ -12704,12 +14483,14 @@ function CharacterContinuity(hook, incomingText) {
 
     if (result) {
       if (result.ok) {
-        CC.last.candidate = "accepted";
+        CC.last.candidate = normalizedCandidate ? "normalized accepted" : "accepted";
         CC.last.update = result.summary;
         CC.last.error = "";
         if (result.warning) CC.last.warning = result.warning;
       } else {
-        CC.last.candidate = result.unchanged ? "unchanged" : "rejected";
+        CC.last.candidate = result.unchanged
+          ? (normalizedCandidate ? "normalized unchanged" : "unchanged")
+          : (normalizedCandidate ? "normalized rejected" : "rejected");
         CC.last.error = result.unchanged ? "" : result.error;
       }
     }
@@ -12723,8 +14504,10 @@ function CharacterContinuity(hook, incomingText) {
             : (result && result.ok ? "success" : (result && result.unchanged ? "unchanged" : "rejected"))));
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
     }
-    if (instructionEcho.count > 0 && parsed.candidate) {
-      CC.last.warning = [CC.last.warning, "CC control echo was stripped before the valid CCO record and story were processed."]
+    if (cleanupNotes.length && parsed.candidate) {
+      CC.last.warning = [CC.last.warning, normalizedCandidate
+        ? "A structured output fallback was normalized and validated before its hidden operation and story were processed."
+        : "CC output residue was stripped before the valid CCO record and story were processed."]
         .filter(Boolean).join(" ");
     }
 
@@ -12744,7 +14527,8 @@ function CharacterContinuity(hook, incomingText) {
     const storyEvidence = addEvidence("story", story);
     if (storyTimeJump && storyEvidence) CC.lastTimeJumpEvidenceId = storyEvidence.id;
     CC.last.output = result && result.ok
-      ? "Complete story survived and the accepted " + parsed.candidate.kind + " operation committed transactionally."
+      ? "Complete story survived and the " + (normalizedCandidate ? "normalized " : "accepted ")
+        + parsed.candidate.kind + " operation committed transactionally."
       : result && result.unchanged
       ? "Complete story survived; the proposed operation already matched and was not refreshed."
       : "Complete story survived; " + (CC.last.candidate === "absent/no update"
@@ -13032,9 +14816,13 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function debugPageCards() {
-    return cards.map(card => ({ card, page: debugTitlePage(titleOf(card)) }))
+    return currentCardCatalog().records.map(record => ({
+      card: record.card,
+      page: debugTitlePage(record.title),
+      index: record.index
+    }))
       .filter(item => item.page > 0)
-      .sort((left, right) => left.page - right.page || cardIndex(left.card) - cardIndex(right.card));
+      .sort((left, right) => left.page - right.page || left.index - right.index);
   }
 
   function splitOversizeDebugText(value, maximum, continuationPrefix) {
@@ -13166,6 +14954,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function writeStatusCard() {
+    if (!runtime.debug) removeAllDebugPages();
     const rosterSlots = activeNpcRosterStatus();
     const activeNames = (CC.activeKeys || []).map(key => {
       const character = characters.find(item => item.key === key);
@@ -13174,10 +14963,20 @@ function CharacterContinuity(hook, incomingText) {
     }).filter(Boolean);
     const modelActiveNames = (CC.modelActiveKeys || []).map(key => characters.find(item => item.key === key)?.name || "").filter(Boolean);
     const focusName = characters.find(character => character.key === CC.focusKey)?.name || "None";
-    const warning = [runtime.warning, ...activeRosterDiagnostics, ...characterDiscoveryDiagnostics, CC.last.warning, CC.last.error]
+    const warning = [
+      runtime.warning,
+      ...titleMigrationDiagnostics,
+      ...activeRosterDiagnostics,
+      ...characterDiscoveryDiagnostics,
+      ...storeSessionWarnings(),
+      CC.last.warning,
+      CC.last.error
+    ]
       .filter(Boolean).join(" ") || "None";
     const entry = [
       "Active NPC slots: " + rosterSlots,
+      "Prepared / processed / dormant-skipped: " + preparedProfileCount + " / "
+        + characters.length + " / " + rosterSkippedProfileCount,
       "Scene / model / focus: " + (activeNames.join(" → ") || "None") + " / " + (modelActiveNames.join(" → ") || "None") + " / " + focusName,
       "Model omissions: " + ((CC.last.modelOmitted || []).join("; ") || "None"),
       "Cast: " + (characters.map(castStatus).join("; ") || "None") + " | Dynamic " + (runtime.dynamicCast ? "on" : "off"),
@@ -13213,6 +15012,7 @@ function CharacterContinuity(hook, incomingText) {
       "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
+      "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
       "Retry / Continue / fallback: " + (CC.last.retry ? "Yes" : "No") + " / " + (CC.last.continue ? "Yes" : "No") + " / " + (CC.last.gracefulFallback ? "Yes" : "No"),
       "Last context: " + CC.last.context,
@@ -13222,17 +15022,17 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
     upsertCard(settings.STATUS_TITLE, entry);
 
-    if (!runtime.debug) {
-      removeAllDebugPages();
-      return;
-    }
+    if (!runtime.debug) return;
     const debugRows = [
       "Last task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
+      "Prepared / processed / dormant-skipped: " + preparedProfileCount + " / "
+        + characters.length + " / " + rosterSkippedProfileCount,
       "Registered / roster / scene / model / focus: " + characters.length + " / "
         + activeNpcRosterCharacterSlots(false).length + " / " + (activeNames.join(", ") || "None")
         + " / " + (modelActiveNames.join(", ") || "None") + " / " + focusName,
       "Active NPC slots: " + rosterSlots,
       "Active NPC diagnostics: " + (activeRosterDiagnostics.join("; ") || "None"),
+      "Card title migration: " + (titleMigrationDiagnostics.join("; ") || "None"),
       "Identity discovery: " + (characterDiscoveryDiagnostics.join("; ") || "None"),
       "Outer: " + (characters.map(outerStatus).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),
@@ -13269,6 +15069,8 @@ function CharacterContinuity(hook, incomingText) {
       "Experiences: " + (characters.map(experiencesStatus).join("; ") || "None"),
       "Experiences pages: " + ((experiencesStore && experiencesStore.pageStats || []).join("; ") || "None"),
       "Experiences diagnostics: " + ((experiencesStore && experiencesStore.diagnostics || []).join("; ") || "None"),
+      "Experiences repair history: " + ((CC.experienceRepairDiagnostics || []).join("; ") || "None"),
+      "Experiences transaction history: " + ((CC.experienceTransactionDiagnostics || []).join("; ") || "None"),
       "Selected Experiences: " + ((CC.last.selectedExperiences || []).join("; ") || "None"),
       "Omitted Experiences: " + ((CC.last.omittedExperiences || []).join("; ") || "None"),
       "Cast: " + (characters.map(castStatus).join("; ") || "None") + " | Dynamic " + (runtime.dynamicCast ? "on" : "off"),
@@ -13302,6 +15104,7 @@ function CharacterContinuity(hook, incomingText) {
       "CCO parse: " + CC.last.protocol,
       "Components: rules " + CC.last.rulesTokens + ", Outer " + CC.last.outerTokens + ", Names " + CC.last.namesTokens + ", Inner " + CC.last.innerTokens + ", State " + CC.last.stateTokens + ", Relationships " + CC.last.relationshipsTokens + ", Views " + CC.last.viewsTokens + ", Experiences " + CC.last.experiencesTokens + ", evidence " + CC.last.evidenceTokens + ", source packet " + CC.last.sourcePacketTokens + ", task " + CC.last.taskTokens,
       "Budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
+      "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
       "Output anchor: " + (CC.lastVisibleOutputAnchor ? "Present" : "None"),
       "Version: " + settings.VERSION
