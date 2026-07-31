@@ -1,4 +1,4 @@
-# Character Continuity Stable v1.0.73
+# Character Continuity Stable
 
 Character Continuity, or **CC**, is an AI Dungeon companion script for keeping predetermined NPCs recognizable, emotionally continuous, and capable of gradual change.
 
