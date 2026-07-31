@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.73",
+  VERSION: "Character Continuity Stable v1.0.74",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -8898,19 +8898,74 @@ function CharacterContinuity(hook, incomingText) {
     return candidates;
   }
 
+  function operationPhraseIndex(values) {
+    const result = new Map();
+    const seen = new Set();
+    (Array.isArray(values) ? values : []).forEach(value => {
+      const normalized = keyOf(line(value, 160));
+      if (!normalized || seen.has(normalized)) return;
+      seen.add(normalized);
+      const words = normalized.split(" ");
+      const bucket = result.get(words[0]) || [];
+      bucket.push(words);
+      result.set(words[0], bucket);
+    });
+    return result;
+  }
+
+  function operationVerbForms(verbs) {
+    const result = new Set();
+    (Array.isArray(verbs) ? verbs : []).forEach(value => {
+      const source = textOf(value).trim().toLowerCase();
+      const optionalS = source.match(/^([a-z0-9]+)s\?$/);
+      if (optionalS) {
+        result.add(optionalS[1]);
+        result.add(optionalS[1] + "s");
+        return;
+      }
+      const normalized = keyOf(source);
+      if (normalized && !normalized.includes(" ")) result.add(normalized);
+    });
+    return result;
+  }
+
+  function operationWordsMatch(words, start, phrase) {
+    if (start < 0 || start + phrase.length > words.length) return false;
+    for (let index = 0; index < phrase.length; index++) {
+      if (words[start + index] !== phrase[index]) return false;
+    }
+    return true;
+  }
+
   function orderedOperationStatement(source, subjects, verbs, objects) {
     const normalized = keyOf(source);
     if (!normalized) return false;
-    const subjectList = unique(subjects, 160).map(keyOf).filter(Boolean);
-    const objectList = unique(objects, 160).map(keyOf).filter(Boolean);
-    return subjectList.some(subject => objectList.some(object => verbs.some(verb => {
-      const pattern = new RegExp(
-        "(?:^| )" + escapeRegExp(subject) + " (?:really |fully |completely |deeply )?"
-        + verb + " " + escapeRegExp(object) + "(?: |$)",
-        "i"
-      );
-      return pattern.test(normalized);
-    })));
+    const words = normalized.split(" ");
+    const subjectIndex = operationPhraseIndex(subjects);
+    const objectIndex = operationPhraseIndex(objects);
+    const verbForms = operationVerbForms(verbs);
+    if (!subjectIndex.size || !objectIndex.size || !verbForms.size) return false;
+    const emphases = new Set(["really", "fully", "completely", "deeply"]);
+
+    // Match the same subject → optional emphasis → verb → object order as the
+    // former dynamic regex, but scan the normalized words once. This avoids
+    // compiling and testing every subject/object/verb combination each turn.
+    for (let start = 0; start < words.length; start++) {
+      const subjectsAtStart = subjectIndex.get(words[start]);
+      if (!subjectsAtStart) continue;
+      for (const subject of subjectsAtStart) {
+        if (!operationWordsMatch(words, start, subject)) continue;
+        let verbIndex = start + subject.length;
+        if (emphases.has(words[verbIndex])) verbIndex += 1;
+        if (!verbForms.has(words[verbIndex])) continue;
+        const objectStart = verbIndex + 1;
+        const objectsAtStart = objectIndex.get(words[objectStart]);
+        if (objectsAtStart && objectsAtStart.some(object =>
+          operationWordsMatch(words, objectStart, object)
+        )) return true;
+      }
+    }
+    return false;
   }
 
   function nameSignal(owner, target, evidenceCandidate) {
