@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.74",
+  VERSION: "Character Continuity Stable v1.0.75",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -9997,6 +9997,8 @@ function CharacterContinuity(hook, incomingText) {
     return [
       "Portray each active NPC distinctly from that NPC's supplied Outer, Names, Inner, State, Relationships, Views, and Experiences. Principles guide choices; Thought appears through behavior or subtext. Outer and Inner remain creator-authored anchors.",
       "Every named wrapper belongs to its named NPC. Read each Relationship and View in its owner-target direction. Situation and Experiences supply recorded events. Use canonical names and permitted Active aliases exactly; Emerging aliases are tentative, Retired aliases are historical, and Rejected aliases record declined forms. A shared alias resolves through one clear identity in the surrounding text.",
+      "Prioritize character and relationship accuracy in every NPC response. Give each active NPC independent preferences, interpretations, consent, limits, goals, and initiative. Let NPCs initiate, pursue, request, negotiate, challenge, hesitate, refuse, withdraw, and change course when their supplied characterization and circumstances support it.",
+      "Use directional Relationships as distinct pressures on choice: Role shapes expectations; Trust shapes reliance and disclosure; Closeness shapes familiarity and personal investment; Boundaries shape limits; Conflict shapes resistance. Views shape willingness to engage; State shapes immediate priorities. Affection raises emotional stakes, while consent, Principles, fears, and goals determine agreement and commitment.",
       player.name + " alone authors the Player's speech, actions, inner life, views, consent, commitments, memories, boundaries, names, and relationship choices.",
       "Player: " + player.name + " | "
         + [player.subject, player.object, player.possessiveAdjective, player.possessivePronoun, player.reflexive].join("/")
@@ -10774,6 +10776,8 @@ function CharacterContinuity(hook, incomingText) {
     if ([
       /^Portray each active NPC distinctly from that NPC's supplied Outer\b/i,
       /^Every named wrapper belongs to its named NPC\b/i,
+      /^Prioritize character and relationship accuracy in every NPC response\b/i,
+      /^Use directional Relationships as distinct pressures on choice\b/i,
       /\balone authors the Player's speech, actions, inner life, views, consent, commitments, memories, boundaries, names, and relationship choices\.?$/i,
       /^Write a complete scene response in ordinary story prose\b/i,
       /^Active NPCs respond from their own perspectives\b/i
