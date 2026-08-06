@@ -1,5 +1,6 @@
+// @cache-compatible
 const modifier = (text) => ({
-  text: CharacterContinuity("context", text)
+  text: CharacterContinuity("contextAppend", text)
 });
 
 modifier(text);

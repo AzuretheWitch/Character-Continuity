@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Installation](INSTALLATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
+The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -11,7 +11,7 @@ Keep every setting on its own line. `true` and `false` are recommended for Boole
 | Setting | Default | Accepted values | What it does |
 | --- | ---: | --- | --- |
 | `Enabled` | `true` | `true` or `false` | Turns CC processing on or off without removing its Library code or cards. |
-| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Sets the approximate token budget for CC's normal model-facing packet. Values below 1,800 are raised to 1,800. A higher value may fit more relevant continuity but consumes more model context. |
+| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Sets the approximate token budget for CC's complete model-facing packet, including portrayal context and any operation task. Values below 1,800 are raised to 1,800. A higher value may fit more relevant continuity but consumes more model context. |
 | `State lifetime` | `3` | Whole number from `1` to `12` | Sets how many completed AI responses a temporary State field may survive without new evidence refreshing it. |
 | `Maximum active NPCs` | `5` | Whole number from `1` to `5` | Limits how many scene-relevant registered NPCs CC may treat as active at once. The roster itself still has five stable slots. |
 | `Dynamic cast` | `true` | `true` or `false` | Allows Side NPCs to become Main and inactive Main NPCs to become Side. `false` freezes those statuses. |
@@ -21,6 +21,7 @@ Keep every setting on its own line. `true` and `false` are recommended for Boole
 | `Custom accumulated event value` | `2` | Whole number from `0` to `50` | Sets the score for accumulated Relationship evidence when pace is `Custom`. |
 | `Custom direct event value` | `10` | Whole number from `0` to `50` | Sets the score for explicit direct Relationship events when pace is `Custom`. |
 | `Custom maximum stages per operation` | `1` | Whole number from `1` to `6` | Limits the Relationship stages one accepted operation may cross when pace is `Custom`. |
+| `Turning Point mode` | `Growth-only` | `Growth-only`, `All directions`, or `Disabled` | Selects which creator-authored Turning Point directions CC may update. It does not rewrite the creator-authored stage cards. |
 | `Debug` | `false` | `true` or `false` | Creates detailed `CC — Debug` diagnostics. Leave this off during ordinary play. |
 
 ## Relationship pace presets
@@ -38,11 +39,23 @@ An **accumulated event** is a smaller piece of evidence that builds a pattern. A
 
 If `Relationship pace` or its Custom values are invalid, CC falls back to `Balanced` and reports a warning.
 
+## Turning Point modes
+
+| Mode | Behavior |
+| --- | --- |
+| `Growth-only` | Updates only Turning Points whose creator-authored `Direction` is `Growth`. `Decline`, `Mixed`, and `Neutral` records remain available for stage routing and portrayal but do not receive progress operations. |
+| `All directions` | Allows progress operations for `Growth`, `Decline`, `Mixed`, and `Neutral` Turning Points. Direction describes the creator's intended arc; CC still requires completed evidence for any movement. |
+| `Disabled` | Disables Turning Point progress operations. Existing records, progress, active-card routing, and creator-authored stage cards are preserved. |
+
+If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` and reports a warning.
+
 ## How the main controls interact
 
 ### Continuity budget
 
-The budget controls CC's model-facing continuity packet, not the total amount of information saved in Story Cards. CC selects relevant records rather than inserting every record on every turn.
+The budget controls CC's complete model-facing continuity packet, not the total amount of information saved in Story Cards. The packet includes portrayal rules, selected character continuity, and an operation task when one is delivered. CC selects relevant records rather than inserting every record on every turn.
+
+An operation task may use at most 50% of the configured continuity budget. At the default 2,000-token budget, its ceiling is 1,000 tokens. The complete packet still has to fit both the configured budget and the smaller effective allowance available in the platform context that turn, so an operation may be deferred when the full packet cannot fit safely.
 
 If context is crowded, first keep Outer and Inner concise and remove redundant prose. Raising the budget can expose more continuity, but also leaves less room for story history and other Scenario instructions.
 
@@ -60,7 +73,7 @@ When enabled, qualifying interaction counts can promote Side NPCs to Main, and p
 
 ## Fixed safety limits
 
-These v1.0.73 limits are not editable through `CC — Settings`:
+These limits in the current cache-compatible build are not editable through `CC — Settings`:
 
 | Limit | Value |
 | --- | ---: |
@@ -69,6 +82,8 @@ These v1.0.73 limits are not editable through `CC — Settings`:
 | Inner card context copy | `2,000` characters per NPC |
 | Names card page | `1,000` characters |
 | Relationships card page | `1,000` characters |
+| Turning Points card page | `1,000` characters |
+| Turning Point stage card | `1,000` characters |
 | Views card page | `1,000` characters |
 | Experiences card page | `1,000` characters |
 | Imported Experience field | `5,000` characters before safe splitting |
@@ -77,8 +92,8 @@ These v1.0.73 limits are not editable through `CC — Settings`:
 | Individual State value | `120` characters |
 | State triggers | `3` |
 | Confirmations required for Experience promotion | `3` |
-| Operation-specific instruction | approximately `600` tokens |
-| Complete continuity operation turn | approximately `1,400` tokens |
+| Operation task ceiling | `50%` of the configured Continuity budget (`1,000` tokens at the default budget) |
+| Complete continuity packet | Bounded by both the configured Continuity budget and the effective context allowance for that turn |
 
 When a managed collection outgrows one page, CC can create numbered pages where supported. An oversized imported Experience can be divided at word boundaries into valid stored records before paging.
 
@@ -86,7 +101,7 @@ When a managed collection outgrows one page, CC can create numbered pages where 
 
 ### Default
 
-Keep the generated settings unchanged. This gives a three-response State lifetime, five active NPCs, dynamic cast management, and Balanced relationship development.
+Keep the generated settings unchanged. This gives a three-response State lifetime, five active NPCs, dynamic cast management, Balanced relationship development, and Growth-only Turning Points.
 
 ### Slower character development
 

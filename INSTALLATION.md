@@ -2,7 +2,9 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs **Character Continuity Stable v1.0.73** in an AI Dungeon Scenario. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs the cache-compatible release of Character Continuity in an AI Dungeon Scenario. The current package is **Character Continuity Stable v1.0.80 Cache-Compatible Beta 7**. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
+
+CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
 
 ## What you need
 
@@ -48,21 +50,22 @@ This is required for context injection, State-card updates, opening suppression,
 ### Input
 
 ```js
-const modifier = (text) => {
-  text = CharacterContinuity("input", text);
-  return { text };
-};
+const modifier = (text) => ({
+  text: CharacterContinuity("input", text)
+});
 
 modifier(text);
 ```
 
 ### Context
 
+The `// @cache-compatible` directive must be the first line of the Context tab.
+
 ```js
-const modifier = (text) => {
-  text = CharacterContinuity("context", text);
-  return { text };
-};
+// @cache-compatible
+const modifier = (text) => ({
+  text: CharacterContinuity("contextAppend", text)
+});
 
 modifier(text);
 ```
@@ -70,15 +73,14 @@ modifier(text);
 ### Output
 
 ```js
-const modifier = (text) => {
-  text = CharacterContinuity("output", text);
-  return { text };
-};
+const modifier = (text) => ({
+  text: CharacterContinuity("output", text)
+});
 
 modifier(text);
 ```
 
-> **Critical:** do not call `CharacterContinuity("input")`, `CharacterContinuity("context")`, or `CharacterContinuity("output")` without the second argument. Do not call CC and then return the original, unchanged `text`.
+> **Critical:** Input must call `CharacterContinuity("input", text)`, cache-compatible Context must call `CharacterContinuity("contextAppend", text)`, and Output must call `CharacterContinuity("output", text)`. Keep the first-line Context directive, pass the second argument, and return CC's replacement text.
 
 Save all four script areas.
 
@@ -164,8 +166,9 @@ Rules:
 - `Starting status` must be `Main` or `Side`.
 - Do not create a State card manually.
 - Optional Names, Views, Relationships, and Experiences baselines may also be added before play.
+- Optional creator-authored Turning Points may be added separately by following the [Turning Points guide](CREATOR-PLAYER-GUIDE.md#turning-points); they are not part of onboarding.
 
-v1.0.73 still reads older combined openings such as `{ Snow's Outer:` and normalizes them to the split form in place.
+The current build still reads legacy combined openings such as `{ Snow's Outer:` and normalizes them to the split form in place.
 
 When no `CC — Active NPCs` card exists yet, CC seeds its roster from completed Outer cards, up to the five-slot limit.
 
@@ -198,11 +201,13 @@ Look for:
 - `Player's Names`
 - `Name's State` for each activated NPC
 
-`CC — Status` should end with:
+`CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: Character Continuity Stable v1.0.73
+Version: Character Continuity Stable v1.0.80 Cache-Compatible Beta 7
 ```
+
+For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the Beta 7 text permanently.
 
 An initial State card may be empty. It fills only after CC accepts a supported, evidence-grounded State operation.
 
@@ -210,7 +215,7 @@ An initial State card may be empty. It fills only after CC accepts a supported, 
 
 Each Input, Context, and Output tab should contain only one final `modifier(text)` call. Multiple Library functions can run inside that modifier, with each function receiving the prior function's returned text.
 
-Example shape:
+Example Input shape:
 
 ```js
 const modifier = (text) => {
@@ -222,24 +227,37 @@ const modifier = (text) => {
 modifier(text);
 ```
 
+Context integration remains cache-compatible and must keep its directive on the first line. Combine CC only with another Context script that also supports AI Dungeon's cache-compatible mode; follow that script's documented hook name and ordering:
+
+```js
+// @cache-compatible
+const modifier = (text) => {
+  text = OtherScript("context", text);
+  text = CharacterContinuity("contextAppend", text);
+  return { text };
+};
+
+modifier(text);
+```
+
 Use the integration order recommended by the other script. Test the combined setup in a duplicate Scenario before publishing it.
 
 ## Installation checklist
 
-- [ ] The complete v1.0.73 `Library` file is in the Library script tab.
+- [ ] The complete current `Library` file is in the Library script tab.
 - [ ] Input calls and returns `CharacterContinuity("input", text)`.
-- [ ] Context calls and returns `CharacterContinuity("context", text)`.
+- [ ] Context begins with `// @cache-compatible` and calls and returns `CharacterContinuity("contextAppend", text)`.
 - [ ] Output calls and returns `CharacterContinuity("output", text)`.
 - [ ] Scripts are enabled in the Scenario and account Gameplay settings.
 - [ ] `Player's Identity` exists, or the generic fallback is acceptable.
 - [ ] Every directly authored starting NPC has completed Outer and Inner cards.
 - [ ] No State cards were created manually.
 - [ ] A fresh Adventure was started after saving.
-- [ ] `CC — Status` reports `Character Continuity Stable v1.0.73`.
+- [ ] `CC — Status` reports the same version as the installed Library's `VERSION` value.
 
 ## Quick installation troubleshooting
 
-If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above. v1.0.73 normally strips both accepted and malformed candidates before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
+If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above and confirm that Context begins with `// @cache-compatible`. The current build normally strips both accepted and malformed candidates before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
 
 Seeing a populated private State block in AI Dungeon's **Context Viewer**, with `{` followed by `Name's current private State:` on the next line, is expected; that is how CC supplies private continuity for portrayal. Seeing raw `(CCO|...)` data in the visible story is not expected.
 
