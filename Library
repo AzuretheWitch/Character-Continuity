@@ -3729,7 +3729,7 @@ function CharacterContinuity(hook, incomingText) {
         rulesTokens: 0, outerTokens: 0, innerTokens: 0, stateTokens: 0,
         namesTokens: 0, relationshipsTokens: 0, turningPointsTokens: 0, viewsTokens: 0, experiencesTokens: 0, evidenceTokens: 0, taskTokens: 0,
         injectedTokens: 0, effectiveBudget: 0, headroomTokens: 0, recentStoryChars: 0,
-        contextBaseChars: 0, contextMaxChars: 0, cacheOverflowDetected: false,
+        contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
         cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
         task: "none", owner: "", candidate: "not requested", update: "None",
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
@@ -10980,7 +10980,7 @@ function CharacterContinuity(hook, incomingText) {
         effectiveBudget: appendOnlyContext ? 0 : runtime.continuityBudget,
         baseChars: source.length,
         maxChars: 0,
-        cacheOverflowDetected: false,
+        cacheOverflowActive: false,
         cacheOverflowUsedTokens: 0,
         cacheOverflowRemainingTokens: 0
       };
@@ -10989,26 +10989,25 @@ function CharacterContinuity(hook, incomingText) {
     const normalizedMaximum = Math.max(1, Math.floor(suppliedMaximum));
     const ordinaryAvailableChars = Math.max(0, normalizedMaximum - source.length - 4);
     const ordinaryAvailableTokens = Math.max(0, Math.floor(ordinaryAvailableChars / 3.25));
-    // Optimized Context may intentionally exceed its configured length by up to 4,000 tokens.
-    // Only grant that buffer after the incoming immutable prefix proves the overflow is active;
-    // contextAppend is also used when optimization is disabled.
-    const cacheOverflowDetected = appendOnlyContext && source.length > normalizedMaximum;
-    const cacheOverflowUsedTokens = cacheOverflowDetected
+    // In this cache-compatible build, contextAppend explicitly selects Optimized Context.
+    // Optimized Context may exceed the configured length by up to 4,000 tokens before
+    // its periodic trim, so the allowance applies before the immutable prefix itself
+    // crosses info.maxChars. Use the strict context hook when that platform option is off.
+    const cacheOverflowActive = appendOnlyContext;
+    const cacheOverflowUsedTokens = cacheOverflowActive && source.length > normalizedMaximum
       ? estimateTokens(source.slice(normalizedMaximum))
       : 0;
-    const cacheOverflowRemainingTokens = cacheOverflowDetected
+    const cacheOverflowRemainingTokens = cacheOverflowActive
       ? Math.max(0, settings.CACHE_OVERFLOW_BUFFER_TOKENS
         - settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS
         - cacheOverflowUsedTokens)
       : 0;
-    const availableTokens = cacheOverflowDetected
-      ? cacheOverflowRemainingTokens
-      : ordinaryAvailableTokens;
+    const availableTokens = ordinaryAvailableTokens + cacheOverflowRemainingTokens;
     return {
       effectiveBudget: Math.min(runtime.continuityBudget, availableTokens),
       baseChars: source.length,
       maxChars: normalizedMaximum,
-      cacheOverflowDetected,
+      cacheOverflowActive,
       cacheOverflowUsedTokens,
       cacheOverflowRemainingTokens
     };
@@ -11025,7 +11024,7 @@ function CharacterContinuity(hook, incomingText) {
       .map(textOf);
     const joinedLength = parts.reduce((total, part) => total + part.length, 0)
       + Math.max(0, parts.length - 1) * 2;
-    const bufferedAppend = !!(appendOnlyContext && capacity && capacity.cacheOverflowDetected);
+    const bufferedAppend = !!(appendOnlyContext && capacity && capacity.cacheOverflowActive);
     if (!maxChars || joinedLength <= maxChars || bufferedAppend) {
       return {
         ok: true,
@@ -11703,7 +11702,15 @@ function CharacterContinuity(hook, incomingText) {
       effectiveBudget,
       headroom: Math.max(0, Math.min(effectiveBudget, configuredBudget) - final.tokens),
       recentChars: final.fitted.recentChars,
-      ...capacity
+      ...capacity,
+      cacheOverflowUsedTokens: capacity.cacheOverflowActive
+        ? estimateTokens(final.fitted.text.slice(capacity.maxChars))
+        : 0,
+      cacheOverflowRemainingTokens: capacity.cacheOverflowActive
+        ? Math.max(0, settings.CACHE_OVERFLOW_BUFFER_TOKENS
+          - settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS
+          - estimateTokens(final.fitted.text.slice(capacity.maxChars)))
+        : 0
     };
   }
 
@@ -15423,7 +15430,7 @@ function CharacterContinuity(hook, incomingText) {
       warning: "", error: "", rulesTokens: 0, outerTokens: 0, innerTokens: 0, stateTokens: 0,
       namesTokens: 0, relationshipsTokens: 0, turningPointsTokens: 0, viewsTokens: 0, experiencesTokens: 0, evidenceTokens: 0, taskTokens: 0,
       injectedTokens: 0, effectiveBudget: runtime.continuityBudget, headroomTokens: runtime.continuityBudget, recentStoryChars: 0,
-      contextBaseChars: 0, contextMaxChars: 0, cacheOverflowDetected: false,
+      contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
       cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
@@ -15540,7 +15547,7 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.recentStoryChars = Math.max(0, Number(attempt.recentChars) || 0);
       CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(originalText).length);
       CC.last.contextMaxChars = Math.max(0, Number(attempt.maxChars) || 0);
-      CC.last.cacheOverflowDetected = attempt.cacheOverflowDetected === true;
+      CC.last.cacheOverflowActive = attempt.cacheOverflowActive === true;
       CC.last.cacheOverflowUsedTokens = Math.max(0, Number(attempt.cacheOverflowUsedTokens) || 0);
       CC.last.cacheOverflowRemainingTokens = Math.max(0, Number(attempt.cacheOverflowRemainingTokens) || 0);
       if (appendOnlyContext) {
@@ -15670,7 +15677,7 @@ function CharacterContinuity(hook, incomingText) {
       recentStoryChars: attempt.recentChars,
       contextBaseChars: attempt.baseChars,
       contextMaxChars: attempt.maxChars,
-      cacheOverflowDetected: attempt.cacheOverflowDetected,
+      cacheOverflowActive: attempt.cacheOverflowActive,
       cacheOverflowUsedTokens: attempt.cacheOverflowUsedTokens,
       cacheOverflowRemainingTokens: attempt.cacheOverflowRemainingTokens,
       task: plan.task,
@@ -16696,7 +16703,7 @@ function CharacterContinuity(hook, incomingText) {
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
       "Append capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
-        + " | optimized overflow " + (CC.last.cacheOverflowDetected ? "detected" : "not detected")
+        + " | optimized overflow " + (CC.last.cacheOverflowActive ? "active" : "inactive")
         + " | overflow used/remaining/reserve " + CC.last.cacheOverflowUsedTokens + "/"
         + CC.last.cacheOverflowRemainingTokens + "/" + settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS + " tokens",
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
