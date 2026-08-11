@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.80 Cache-Compatible Beta 7",
+  VERSION: "Character Continuity Stable v1.0.81 Cache-Compatible Beta 8",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -52,6 +52,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
   OPERATION_TASK_BUDGET_PERCENT: 50,
+  CACHE_OVERFLOW_BUFFER_TOKENS: 4000,
+  CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS: 512,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   OPERATION_POINTS: {
     EXPLICIT_DIRECT_GAIN: 12,
@@ -3727,6 +3729,8 @@ function CharacterContinuity(hook, incomingText) {
         rulesTokens: 0, outerTokens: 0, innerTokens: 0, stateTokens: 0,
         namesTokens: 0, relationshipsTokens: 0, turningPointsTokens: 0, viewsTokens: 0, experiencesTokens: 0, evidenceTokens: 0, taskTokens: 0,
         injectedTokens: 0, effectiveBudget: 0, headroomTokens: 0, recentStoryChars: 0,
+        contextBaseChars: 0, contextMaxChars: 0, cacheOverflowDetected: false,
+        cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
         task: "none", owner: "", candidate: "not requested", update: "None",
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
         timeJumpReset: false, selectedNames: [], omittedNames: [],
@@ -6282,7 +6286,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function renderTurningPointRecord(record) {
     const values = record && record.values || {};
-    return [
+    const rows = [
       "Turning Point: " + textOf(values["Turning Point"] || record && record.title || ""),
       "ID: " + textOf(values.ID || record && record.id || ""),
       "Direction: " + textOf(values.Direction || record && record.direction || ""),
@@ -6290,7 +6294,10 @@ function CharacterContinuity(hook, incomingText) {
       "Stage cards: " + textOf(values["Stage cards"] || record && record.stageCardPrefix || ""),
       "Active card: " + textOf(values["Active card"] || ""),
       "Stage trigger: " + textOf(values["Stage trigger"] || "")
-    ].join("\n");
+    ];
+    const breakthrough = textOf(values.Breakthrough || record && record.breakthrough || "").trim();
+    if (breakthrough) rows.push("Breakthrough: " + breakthrough);
+    return rows.join("\n");
   }
 
   function renderTurningPointsPage(character, page, items) {
@@ -6305,10 +6312,12 @@ function CharacterContinuity(hook, incomingText) {
 
   function parseTurningPointRecord(character, raw, page, card, startLine) {
     const rows = textOf(raw).replace(/\r/g, "").split("\n").filter(row => row.trim());
-    const labels = ["Turning Point", "ID", "Direction", "Progress", "Stage cards", "Active card", "Stage trigger"];
-    if (rows.length !== labels.length) {
+    const requiredLabels = ["Turning Point", "ID", "Direction", "Progress", "Stage cards", "Active card", "Stage trigger"];
+    const hasBreakthrough = rows.length === requiredLabels.length + 1;
+    if (rows.length !== requiredLabels.length && !hasBreakthrough) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Turning Point record", oversize: false };
     }
+    const labels = hasBreakthrough ? requiredLabels.concat(["Breakthrough"]) : requiredLabels;
     const values = {};
     for (let index = 0; index < labels.length; index += 1) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
@@ -6322,8 +6331,13 @@ function CharacterContinuity(hook, incomingText) {
     const direction = canonicalTurningPointDirection(values.Direction);
     const progress = parseTurningPointProgress(values.Progress);
     const stageCardPrefix = wholeLine(values["Stage cards"], 180);
+    const suppliedBreakthrough = values.Breakthrough || "";
+    const breakthrough = suppliedBreakthrough
+      ? wholeLine(suppliedBreakthrough, settings.MAX_TURNING_POINT_STAGE_CARD_CHARS)
+      : "";
     if (!title || /[{}\[\]|]/.test(title) || !id || values.ID !== id || !direction || !progress.safe
-      || !stageCardPrefix || /[{}\[\]|]/.test(stageCardPrefix)) {
+      || !stageCardPrefix || /[{}\[\]|]/.test(stageCardPrefix)
+      || (suppliedBreakthrough && (!breakthrough || /[{}\[\]|]/.test(breakthrough)))) {
       return {
         kind: "raw",
         raw,
@@ -6332,7 +6346,13 @@ function CharacterContinuity(hook, incomingText) {
         line: startLine,
         reason: !id || values.ID !== id
           ? "invalid stable ID"
-          : (!direction ? "invalid Direction" : (!progress.safe ? progress.reason : "invalid title or Stage cards prefix")),
+          : (!direction
+            ? "invalid Direction"
+            : (!progress.safe
+              ? progress.reason
+              : (suppliedBreakthrough && !breakthrough
+                ? "invalid Breakthrough condition"
+                : "invalid title, Stage cards prefix, or Breakthrough condition"))),
         oversize: false
       };
     }
@@ -6341,7 +6361,18 @@ function CharacterContinuity(hook, incomingText) {
     const corrected = progress.corrected
       || values.Direction !== direction
       || values["Active card"] !== expectedActiveCard
-      || values["Stage trigger"] !== expectedTrigger;
+      || values["Stage trigger"] !== expectedTrigger
+      || suppliedBreakthrough !== breakthrough;
+    const normalizedValues = {
+      "Turning Point": title,
+      ID: id,
+      Direction: direction,
+      Progress: progress.normalized,
+      "Stage cards": stageCardPrefix,
+      "Active card": expectedActiveCard,
+      "Stage trigger": expectedTrigger
+    };
+    if (breakthrough) normalizedValues.Breakthrough = breakthrough;
     return {
       kind: "record",
       title,
@@ -6349,15 +6380,8 @@ function CharacterContinuity(hook, incomingText) {
       direction,
       progress,
       stageCardPrefix,
-      values: {
-        "Turning Point": title,
-        ID: id,
-        Direction: direction,
-        Progress: progress.normalized,
-        "Stage cards": stageCardPrefix,
-        "Active card": expectedActiveCard,
-        "Stage trigger": expectedTrigger
-      },
+      breakthrough,
+      values: normalizedValues,
       suppliedValues: values,
       corrected,
       page,
@@ -6535,7 +6559,8 @@ function CharacterContinuity(hook, incomingText) {
       record.progress.normalized,
       record.stageCardPrefix,
       record.values["Active card"],
-      record.values["Stage trigger"]
+      record.values["Stage trigger"],
+      record.values.Breakthrough || ""
     ]), 500);
   }
 
@@ -6582,6 +6607,14 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function turningPointBreakthroughCondition(record) {
+    const routerSupplied = record && record.values && record.values.Breakthrough || "";
+    const routerExplicit = wholeLine(routerSupplied, settings.MAX_TURNING_POINT_STAGE_CARD_CHARS);
+    if (routerSupplied && !routerExplicit) {
+      return { text: "", explicit: true, invalid: true, card: record && record.card || null };
+    }
+    if (routerExplicit) {
+      return { text: routerExplicit, explicit: true, invalid: false, card: record && record.card || null };
+    }
     const achievedCard = turningPointStageCard(record, TURNING_POINT_STAGES[3]);
     if (!achievedCard) {
       return { text: "", explicit: false, invalid: false, card: null };
@@ -10005,7 +10038,7 @@ function CharacterContinuity(hook, incomingText) {
     "into", "itself", "other", "their", "there", "these", "they", "this", "through", "toward", "with",
     "would", "stage", "turning", "point"
   ]);
-  const TURNING_POINT_COMPLETION_CUE = /\b(?:finally|successfully|master(?:s|ed)|learn(?:s|ed)?\s+how|gain(?:s|ed)?\s+control|(?:take(?:s|n)?|took)\s+control|manag(?:e|es|ed)\s+to|prov(?:e|es|ed)\s+able|breakthrough)\b/i;
+  const TURNING_POINT_COMPLETION_CUE = /\b(?:finally|successfully|master(?:s|ed)|learn(?:s|ed)?\s+how|gain(?:s|ed)?\s+control|(?:take(?:s|n)?|took)\s+control|manag(?:e|es|ed)\s+to|prov(?:e|es|ed)\s+able|breakthrough|(?:openly|directly|explicitly|clearly|deliberately)\s+(?:chooses?|commits?|declares?|offers?|accepts?|states?|tells?)|(?:makes?|made)\s+(?:a|the)\s+(?:(?:definitive|lasting|concrete|vulnerable)\s+)?(?:choice|commitment|offer))\b/i;
   const TURNING_POINT_MOVEMENT_CUE = /\b(?:begin(?:s|ning)?|start(?:s|ed)?|practi[cs](?:e|es|ed|ing)?|works? on|allows?|risks?|speaks?|uses?|faces?|admits?|recognizes?|reconsiders?)\b/i;
   const TURNING_POINT_INCOMPLETE_CUE = /\b(?:tries?|tried|attempts?|attempted|plans?|planned|hopes?|hoped|wants?|wanted|intends?|intended|almost|nearly|fails?|failed|cannot|can't|could not|by accident|accidentally|unintentionally|involuntarily|loses? control|lost control)\b/i;
   const TURNING_POINT_SUPPORT_SUCCESS_CUE = /\b(?:successfully|manages? to|proves? able|completes?|completed|finishes?|finished)\b/i;
@@ -10101,12 +10134,17 @@ function CharacterContinuity(hook, incomingText) {
         breakthroughCondition,
         false
       );
+      const strictBreakthroughSupport = breakthroughCondition.explicit
+        ? turningPointBreakthroughSupport(breakthroughSource, owner, breakthroughCondition, true)
+        : null;
+      const breakthroughCompleted = TURNING_POINT_COMPLETION_CUE.test(source)
+        || !!(strictBreakthroughSupport && strictBreakthroughSupport.ok);
       let mode = "";
       let gain = 0;
       let direct = false;
       let reason = "";
       if (record.progress.score < 30 && turningPointStageCardValid(record, owner, achievedStage)
-        && TURNING_POINT_COMPLETION_CUE.test(source) && achievedOverlap >= 2
+        && breakthroughCompleted && achievedOverlap >= 2
         && breakthroughSupport.ok) {
         mode = "Breakthrough";
         gain = settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN;
@@ -10933,10 +10971,47 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
   }
 
-  function availableContinuityBudget(base, maxChars) {
-    if (!maxChars) return runtime.continuityBudget;
-    const availableChars = Math.max(0, maxChars - textOf(base).length - 4);
-    return Math.min(runtime.continuityBudget, Math.floor(availableChars / 3.25));
+  function continuityCapacity(base, maxChars) {
+    const source = textOf(base);
+    const suppliedMaximum = Number(maxChars);
+    const validMaximum = Number.isFinite(suppliedMaximum) && suppliedMaximum > 0;
+    if (!validMaximum) {
+      return {
+        effectiveBudget: appendOnlyContext ? 0 : runtime.continuityBudget,
+        baseChars: source.length,
+        maxChars: 0,
+        cacheOverflowDetected: false,
+        cacheOverflowUsedTokens: 0,
+        cacheOverflowRemainingTokens: 0
+      };
+    }
+
+    const normalizedMaximum = Math.max(1, Math.floor(suppliedMaximum));
+    const ordinaryAvailableChars = Math.max(0, normalizedMaximum - source.length - 4);
+    const ordinaryAvailableTokens = Math.max(0, Math.floor(ordinaryAvailableChars / 3.25));
+    // Optimized Context may intentionally exceed its configured length by up to 4,000 tokens.
+    // Only grant that buffer after the incoming immutable prefix proves the overflow is active;
+    // contextAppend is also used when optimization is disabled.
+    const cacheOverflowDetected = appendOnlyContext && source.length > normalizedMaximum;
+    const cacheOverflowUsedTokens = cacheOverflowDetected
+      ? estimateTokens(source.slice(normalizedMaximum))
+      : 0;
+    const cacheOverflowRemainingTokens = cacheOverflowDetected
+      ? Math.max(0, settings.CACHE_OVERFLOW_BUFFER_TOKENS
+        - settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS
+        - cacheOverflowUsedTokens)
+      : 0;
+    const availableTokens = cacheOverflowDetected
+      ? cacheOverflowRemainingTokens
+      : ordinaryAvailableTokens;
+    return {
+      effectiveBudget: Math.min(runtime.continuityBudget, availableTokens),
+      baseChars: source.length,
+      maxChars: normalizedMaximum,
+      cacheOverflowDetected,
+      cacheOverflowUsedTokens,
+      cacheOverflowRemainingTokens
+    };
   }
 
   function renderPortrayalComponents(components) {
@@ -10944,13 +11019,14 @@ function CharacterContinuity(hook, incomingText) {
     return body ? "<SYSTEM>\n" + body + "\n</SYSTEM>" : "";
   }
 
-  function fitWithoutTrimming(base, prefix, tail, maxChars, recentChars, materialize) {
+  function fitWithoutTrimming(base, prefix, tail, maxChars, recentChars, materialize, capacity) {
     const parts = (appendOnlyContext ? [base, prefix, tail] : [prefix, base, tail])
       .filter(Boolean)
       .map(textOf);
     const joinedLength = parts.reduce((total, part) => total + part.length, 0)
       + Math.max(0, parts.length - 1) * 2;
-    if (!maxChars || joinedLength <= maxChars) {
+    const bufferedAppend = !!(appendOnlyContext && capacity && capacity.cacheOverflowDetected);
+    if (!maxChars || joinedLength <= maxChars || bufferedAppend) {
       return {
         ok: true,
         text: materialize ? parts.join("\n\n") : "",
@@ -10977,11 +11053,15 @@ function CharacterContinuity(hook, incomingText) {
     const selectedExperiences = [];
     const omittedExperiences = [];
     const modelActive = [];
-    const maxChars = Number(info.maxChars) || 0;
+    const maxChars = Number(typeof info !== "undefined" && info ? info.maxChars : 0) || 0;
     const configuredBudget = runtime.continuityBudget;
-    const effectiveBudget = availableContinuityBudget(base, maxChars);
+    const capacity = continuityCapacity(base, maxChars);
+    const effectiveBudget = capacity.effectiveBudget;
     const recentChars = textOf(recent).length;
-    let compactOperationCoreUsed = false;
+    let compactFocusCoreUsed = false;
+    let compactFocusRequiresTask = false;
+    let compactPortrayalFallbackUsed = false;
+    let cacheLimitedPortrayal = false;
     const operationCandidateReady = !!(
       plan && plan.opportunity && !CC.recoveryPending
       && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
@@ -10993,7 +11073,9 @@ function CharacterContinuity(hook, incomingText) {
       const tokens = estimateTokens([prefix, candidateTail].filter(Boolean).join("\n"));
       if (tokens > configuredBudget) return { ok: false, reason: "continuity turn budget" };
       if (tokens > effectiveBudget) return { ok: false, reason: "effective context allowance" };
-      const fitted = fitWithoutTrimming(base, prefix, candidateTail, maxChars, recentChars, materialize);
+      const fitted = fitWithoutTrimming(
+        base, prefix, candidateTail, maxChars, recentChars, materialize, capacity
+      );
       return fitted.ok ? { ok: true, tokens, fitted } : { ok: false, reason: fitted.reason };
     };
     const addGroup = group => {
@@ -11049,19 +11131,27 @@ function CharacterContinuity(hook, incomingText) {
         { text: compactOperationInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
       ].filter(component => component.text);
       const compactCore = core.concat(compactAnchors);
-      const compactFit = operationCandidateReady
+      const completeCompactPair = compactAnchors.length === 2;
+      const compactFit = completeCompactPair && (operationCandidateReady || appendOnlyContext)
         ? composition(compactCore, tail)
         : { ok: false };
       if (!compactFit.ok) {
         return {
           ok: false,
           reason: "Core rules plus the focused NPC's complete Outer and Inner could not fit safely.",
-          effectiveBudget
+          effectiveBudget,
+          recentChars,
+          ...capacity
         };
       }
       components.push(...compactCore);
-      compactOperationCoreUsed = true;
-      CC.last.modelOmitted.push(focus.name + " compact Outer/Inner reserved for the operation turn");
+      compactFocusCoreUsed = true;
+      compactFocusRequiresTask = !appendOnlyContext;
+      compactPortrayalFallbackUsed = appendOnlyContext;
+      cacheLimitedPortrayal = appendOnlyContext;
+      CC.last.modelOmitted.push(focus.name + (appendOnlyContext
+        ? " compact Outer/Inner used for cache-limited portrayal"
+        : " compact Outer/Inner reserved for the operation turn"));
     }
     modelActive.push(focus);
 
@@ -11343,11 +11433,15 @@ function CharacterContinuity(hook, incomingText) {
           });
         });
         if (compactFocus) {
-          if (!compactOperationCoreUsed) {
-            const label = focus.name + " compact Outer/Inner used for the operation turn";
+          if (!compactFocusCoreUsed) {
+            const label = focus.name + (appendOnlyContext
+              ? " compact Outer/Inner used for cache-limited portrayal"
+              : " compact Outer/Inner used for the operation turn");
             if (!CC.last.modelOmitted.includes(label)) CC.last.modelOmitted.push(label);
           }
-          compactOperationCoreUsed = true;
+          compactFocusCoreUsed = true;
+          if (!appendOnlyContext) compactFocusRequiresTask = true;
+          if (appendOnlyContext) cacheLimitedPortrayal = true;
         }
         components.splice(0, components.length, ...next);
       };
@@ -11368,7 +11462,9 @@ function CharacterContinuity(hook, incomingText) {
       const compactWorking = working.filter(component => !(
         component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)
       )).concat(compactPair);
-      fit = composition(compactWorking, proposedTail);
+      fit = compactPair.length === 2
+        ? composition(compactWorking, proposedTail)
+        : { ok: false, reason: "complete compact Outer/Inner pair" };
       if (fit.ok) {
         commitWorking(compactWorking, true);
         return fit;
@@ -11393,7 +11489,9 @@ function CharacterContinuity(hook, incomingText) {
         normalizedTargetKey(target.key) === normalizedTargetKey(plan.selectedCandidate.targetKey)
       )
     );
-    if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && retryTaskText) {
+    if (compactPortrayalFallbackUsed && plan.opportunity && !CC.recoveryPending) {
+      taskDeferredReason = "the complete compact focused portrayal was preserved";
+    } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && retryTaskText) {
       const retryEvidence = operationEvidence.slice();
       const retryWithinTaskBudget = estimateTokens(retryTaskText) <= operationTaskTokenBudget;
       if (!retryWithinTaskBudget) {
@@ -11533,11 +11631,13 @@ function CharacterContinuity(hook, incomingText) {
       if (!CC.last.modelOmitted.includes(label)) CC.last.modelOmitted.push(label);
     });
 
-    if (compactOperationCoreUsed && !taskDelivered) {
+    if (compactFocusRequiresTask && !taskDelivered) {
       return {
         ok: false,
         reason: taskDeferredReason || "The compact operation packet was unavailable.",
-        effectiveBudget
+        effectiveBudget,
+        recentChars,
+        ...capacity
       };
     }
 
@@ -11553,7 +11653,13 @@ function CharacterContinuity(hook, incomingText) {
           || left.insertionOrder - right.insertionOrder;
       });
     const final = composition(orderedComponents, tail, true);
-    if (!final.ok) return { ok: false, reason: final.reason, effectiveBudget };
+    if (!final.ok) return {
+      ok: false,
+      reason: final.reason,
+      effectiveBudget,
+      recentChars,
+      ...capacity
+    };
     const byType = type => estimateTokens(orderedComponents.filter(component => component.type === type)
       .map(component => component.text).join("\n"));
     return {
@@ -11561,6 +11667,8 @@ function CharacterContinuity(hook, incomingText) {
       text: final.fitted.text,
       taskDelivered,
       taskDeferredReason,
+      cacheLimitedPortrayal,
+      compactPortrayalFallbackUsed,
       targets,
       evidenceCandidates: selectedEvidence,
       evidenceIds: selectedEvidence.map(candidate => candidate.item.id),
@@ -11594,7 +11702,8 @@ function CharacterContinuity(hook, incomingText) {
         : "",
       effectiveBudget,
       headroom: Math.max(0, Math.min(effectiveBudget, configuredBudget) - final.tokens),
-      recentChars: final.fitted.recentChars
+      recentChars: final.fitted.recentChars,
+      ...capacity
     };
   }
 
@@ -15100,9 +15209,11 @@ function CharacterContinuity(hook, incomingText) {
     }
     if (mode === "Breakthrough" && (!breakthroughCondition || !breakthroughCondition.text
       || breakthroughCondition.invalid)) {
-      return { ok: false, error: "The Achieved stage lacked a usable definitive breakthrough condition." };
+      return { ok: false, error: "The Turning Point lacked a usable definitive breakthrough condition." };
     }
-    if (mode === "Breakthrough" && !(overlap >= 2 && TURNING_POINT_COMPLETION_CUE.test(source)
+    const breakthroughCompleted = mode === "Breakthrough"
+      && (TURNING_POINT_COMPLETION_CUE.test(source) || !!(breakthroughCondition && breakthroughCondition.explicit));
+    if (mode === "Breakthrough" && !(overlap >= 2 && breakthroughCompleted
       && breakthroughSupport && breakthroughSupport.ok)) {
       return { ok: false, error: "The cited evidence did not complete every part of the definitive breakthrough condition and establish Achieved." };
     }
@@ -15312,6 +15423,8 @@ function CharacterContinuity(hook, incomingText) {
       warning: "", error: "", rulesTokens: 0, outerTokens: 0, innerTokens: 0, stateTokens: 0,
       namesTokens: 0, relationshipsTokens: 0, turningPointsTokens: 0, viewsTokens: 0, experiencesTokens: 0, evidenceTokens: 0, taskTokens: 0,
       injectedTokens: 0, effectiveBudget: runtime.continuityBudget, headroomTokens: runtime.continuityBudget, recentStoryChars: 0,
+      contextBaseChars: 0, contextMaxChars: 0, cacheOverflowDetected: false,
+      cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
       selectedNames: [], omittedNames: [], selectedRelationships: [], omittedRelationships: [],
@@ -15422,10 +15535,38 @@ function CharacterContinuity(hook, incomingText) {
 
     const attempt = assembleContext(originalText, active, focus, currentInput, recent, plan);
     if (!attempt.ok) {
-      CC.last.context = "Distinct portrayal could not fit safely: " + attempt.reason;
-      CC.last.error = attempt.reason;
+      CC.last.effectiveBudget = Math.max(0, Number(attempt.effectiveBudget) || 0);
+      CC.last.headroomTokens = CC.last.effectiveBudget;
+      CC.last.recentStoryChars = Math.max(0, Number(attempt.recentChars) || 0);
+      CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(originalText).length);
+      CC.last.contextMaxChars = Math.max(0, Number(attempt.maxChars) || 0);
+      CC.last.cacheOverflowDetected = attempt.cacheOverflowDetected === true;
+      CC.last.cacheOverflowUsedTokens = Math.max(0, Number(attempt.cacheOverflowUsedTokens) || 0);
+      CC.last.cacheOverflowRemainingTokens = Math.max(0, Number(attempt.cacheOverflowRemainingTokens) || 0);
+      if (appendOnlyContext) {
+        CC.last.gracefulFallback = true;
+        CC.last.context = "Cache-compatible append capacity could not hold a complete continuity packet; injection was skipped this turn.";
+        CC.last.warning = "Cache-compatible append capacity was exhausted safely: " + attempt.reason;
+        CC.last.error = "";
+      } else {
+        CC.last.context = "Distinct portrayal could not fit safely: " + attempt.reason;
+        CC.last.error = attempt.reason;
+      }
+      plan.activeKeys = active.map(character => character.key);
+      plan.modelActiveKeys = [];
+      plan.focusKey = focus.key;
+      plan.recentStory = recent;
       plan.task = "none";
       plan.taskDelivered = false;
+      plan.ownerKey = "";
+      plan.targets = [];
+      plan.evidenceIds = [];
+      plan.operationTaskText = "";
+      plan.operationTaskKind = "";
+      plan.operationTaskTokens = 0;
+      plan.sourcePacket = [];
+      plan.sourcePacketText = "";
+      plan.sourcePacketTokens = 0;
       CC.modelActiveKeys = [];
       return originalText;
     }
@@ -15527,6 +15668,11 @@ function CharacterContinuity(hook, incomingText) {
       effectiveBudget: attempt.effectiveBudget,
       headroomTokens: attempt.headroom,
       recentStoryChars: attempt.recentChars,
+      contextBaseChars: attempt.baseChars,
+      contextMaxChars: attempt.maxChars,
+      cacheOverflowDetected: attempt.cacheOverflowDetected,
+      cacheOverflowUsedTokens: attempt.cacheOverflowUsedTokens,
+      cacheOverflowRemainingTokens: attempt.cacheOverflowRemainingTokens,
       task: plan.task,
       owner: attempt.taskDelivered ? focus.name : "",
       selectedNames: attempt.selectedNames,
@@ -15542,9 +15688,19 @@ function CharacterContinuity(hook, incomingText) {
       sourcePacketTokens: plan.sourcePacketTokens || 0,
       suppliedTargets: attempt.targets.map(target => target.code + "=" + target.name)
     });
+    if (attempt.cacheLimitedPortrayal) {
+      CC.last.gracefulFallback = true;
+      CC.last.warning = [
+        CC.last.warning,
+        "Cache-compatible context used the focused NPC's complete compact Outer/Inner pair."
+      ].filter(Boolean).join(" ");
+    }
     if (plan.opportunity && !attempt.taskDelivered) {
       CC.last.gracefulFallback = true;
-      CC.last.warning = "Operation deferred: " + (attempt.taskDeferredReason || "the complete packet was unavailable");
+      CC.last.warning = [
+        CC.last.warning,
+        "Operation deferred: " + (attempt.taskDeferredReason || "the complete packet was unavailable")
+      ].filter(Boolean).join(" ");
     }
     CC.last.context = "Scene-relevant " + active.map(character => character.name).join(", ")
       + "; model-facing " + attempt.modelActive.map(character => character.name).join(", ")
@@ -15904,7 +16060,9 @@ function CharacterContinuity(hook, incomingText) {
         CC.last.candidate = normalizedCandidate ? "normalized accepted" : "accepted";
         CC.last.update = result.summary;
         CC.last.error = "";
-        if (result.warning) CC.last.warning = result.warning;
+        if (result.warning) {
+          CC.last.warning = [CC.last.warning, result.warning].filter(Boolean).join(" ");
+        }
       } else {
         CC.last.candidate = result.unchanged
           ? (normalizedCandidate ? "normalized unchanged" : "unchanged")
@@ -15937,7 +16095,10 @@ function CharacterContinuity(hook, incomingText) {
       updateScenePresence(story, focus.key, nextGeneration);
       CC.focusLastServed[focus.key] = nextGeneration;
     }
-    const conversationSpeaker = inferredConversationSpeaker(story, (plan.modelActiveKeys || plan.activeKeys || [])
+    const conversationKeys = Array.isArray(plan.modelActiveKeys) && plan.modelActiveKeys.length
+      ? plan.modelActiveKeys
+      : (Array.isArray(plan.activeKeys) ? plan.activeKeys : []);
+    const conversationSpeaker = inferredConversationSpeaker(story, conversationKeys
       .map(key => characters.find(character => character.key === key)).filter(Boolean));
     CC.conversationKey = conversationSpeaker ? conversationSpeaker.key : "";
     plan.completed = true;
@@ -16534,6 +16695,10 @@ function CharacterContinuity(hook, incomingText) {
       "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
+      "Append capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
+        + " | optimized overflow " + (CC.last.cacheOverflowDetected ? "detected" : "not detected")
+        + " | overflow used/remaining/reserve " + CC.last.cacheOverflowUsedTokens + "/"
+        + CC.last.cacheOverflowRemainingTokens + "/" + settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS + " tokens",
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
