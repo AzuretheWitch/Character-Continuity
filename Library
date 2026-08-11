@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.81 Cache-Compatible Beta 8",
+  VERSION: "Character Continuity Stable v1.0.81 Cache-Compatible Beta 8 Tiered Fallback",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -52,8 +52,6 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
   OPERATION_TASK_BUDGET_PERCENT: 50,
-  CACHE_OVERFLOW_BUFFER_TOKENS: 4000,
-  CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS: 512,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   OPERATION_POINTS: {
     EXPLICIT_DIRECT_GAIN: 12,
@@ -3731,6 +3729,7 @@ function CharacterContinuity(hook, incomingText) {
         injectedTokens: 0, effectiveBudget: 0, headroomTokens: 0, recentStoryChars: 0,
         contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
         cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
+        portrayalTier: "none",
         task: "none", owner: "", candidate: "not requested", update: "None",
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
         timeJumpReset: false, selectedNames: [], omittedNames: [],
@@ -8522,6 +8521,30 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
   }
 
+  function emergencyPortrayalOuterAnchor(character) {
+    const source = character && character.outer ? character.outer : "";
+    const rows = [
+      compactOperationField(source, "Name, age, gender, pronouns", 100),
+      compactOperationField(source, "Race/Species", 50),
+      compactOperationField(source, "Physical attributes", 70)
+    ].filter(Boolean);
+    return rows.length
+      ? ["{", character.name + "'s emergency compact Outer:", ...rows, "}"].join("\n")
+      : "";
+  }
+
+  function emergencyPortrayalInnerAnchor(character) {
+    const source = character && character.inner ? character.inner : "";
+    const rows = [
+      compactOperationField(source, "Personality", 80),
+      compactOperationField(source, "Wants", 70),
+      compactOperationField(source, "Principles", 90)
+    ].filter(Boolean);
+    return rows.length
+      ? ["{", character.name + "'s emergency compact Inner:", ...rows, "}"].join("\n")
+      : "";
+  }
+
   function temporaryStateLine(character) {
     const state = normalizeState(CC.npcs[character.key] && CC.npcs[character.key].state, CC.stateClock);
     const parts = [];
@@ -10971,6 +10994,14 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
   }
 
+  function emergencyPortrayalRules() {
+    return [
+      "Focused NPC: use complete emergency Outer/Inner; preserve identity/traits/motives/limits/principles; choose independently.",
+      "Only the Player controls: words/actions; thoughts/feelings/memories; identity/attraction; consent/boundaries/commitments; names/relationships. Honor input; leave the next response open.",
+      "Player: " + player.name + " | " + player.subject + "/" + player.object + " | " + player.agreement
+    ].join("\n");
+  }
+
   function continuityCapacity(base, maxChars) {
     const source = textOf(base);
     const suppliedMaximum = Number(maxChars);
@@ -10989,20 +11020,14 @@ function CharacterContinuity(hook, incomingText) {
     const normalizedMaximum = Math.max(1, Math.floor(suppliedMaximum));
     const ordinaryAvailableChars = Math.max(0, normalizedMaximum - source.length - 4);
     const ordinaryAvailableTokens = Math.max(0, Math.floor(ordinaryAvailableChars / 3.25));
-    // In this cache-compatible build, contextAppend explicitly selects Optimized Context.
-    // Optimized Context may exceed the configured length by up to 4,000 tokens before
-    // its periodic trim, so the allowance applies before the immutable prefix itself
-    // crosses info.maxChars. Use the strict context hook when that platform option is off.
-    const cacheOverflowActive = appendOnlyContext;
-    const cacheOverflowUsedTokens = cacheOverflowActive && source.length > normalizedMaximum
-      ? estimateTokens(source.slice(normalizedMaximum))
-      : 0;
-    const cacheOverflowRemainingTokens = cacheOverflowActive
-      ? Math.max(0, settings.CACHE_OVERFLOW_BUFFER_TOKENS
-        - settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS
-        - cacheOverflowUsedTokens)
-      : 0;
-    const availableTokens = ordinaryAvailableTokens + cacheOverflowRemainingTokens;
+    // info.maxChars remains a hard ceiling for text returned by the context modifier.
+    // Optimized Context's internal overflow buffer is not safe append capacity: the
+    // server can cut a returned suffix at info.maxChars. Constrained append turns use
+    // complete compact portrayal tiers below rather than returning a partial packet.
+    const cacheOverflowActive = false;
+    const cacheOverflowUsedTokens = 0;
+    const cacheOverflowRemainingTokens = 0;
+    const availableTokens = ordinaryAvailableTokens;
     return {
       effectiveBudget: Math.min(runtime.continuityBudget, availableTokens),
       baseChars: source.length,
@@ -11024,8 +11049,7 @@ function CharacterContinuity(hook, incomingText) {
       .map(textOf);
     const joinedLength = parts.reduce((total, part) => total + part.length, 0)
       + Math.max(0, parts.length - 1) * 2;
-    const bufferedAppend = !!(appendOnlyContext && capacity && capacity.cacheOverflowActive);
-    if (!maxChars || joinedLength <= maxChars || bufferedAppend) {
+    if (!maxChars || joinedLength <= maxChars) {
       return {
         ok: true,
         text: materialize ? parts.join("\n\n") : "",
@@ -11060,7 +11084,9 @@ function CharacterContinuity(hook, incomingText) {
     let compactFocusCoreUsed = false;
     let compactFocusRequiresTask = false;
     let compactPortrayalFallbackUsed = false;
+    let emergencyPortrayalFallbackUsed = false;
     let cacheLimitedPortrayal = false;
+    let portrayalTier = "full";
     const operationCandidateReady = !!(
       plan && plan.opportunity && !CC.recoveryPending
       && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
@@ -11134,23 +11160,39 @@ function CharacterContinuity(hook, incomingText) {
       const compactFit = completeCompactPair && (operationCandidateReady || appendOnlyContext)
         ? composition(compactCore, tail)
         : { ok: false };
-      if (!compactFit.ok) {
+      const emergencyAnchors = appendOnlyContext ? [
+        { text: emergencyPortrayalOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
+        { text: emergencyPortrayalInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
+      ].filter(component => component.text) : [];
+      const emergencyCore = [
+        { text: emergencyPortrayalRules(), type: "rules", order: -1 }
+      ].concat(emergencyAnchors);
+      const completeEmergencyPair = emergencyAnchors.length === 2;
+      const emergencyFit = !compactFit.ok && appendOnlyContext && completeEmergencyPair
+        ? composition(emergencyCore, tail)
+        : { ok: false };
+      if (!compactFit.ok && !emergencyFit.ok) {
         return {
           ok: false,
-          reason: "Core rules plus the focused NPC's complete Outer and Inner could not fit safely.",
+          reason: "Neither the full nor a complete compact focused portrayal could fit safely.",
           effectiveBudget,
           recentChars,
           ...capacity
         };
       }
-      components.push(...compactCore);
+      const selectedCore = compactFit.ok ? compactCore : emergencyCore;
+      portrayalTier = compactFit.ok ? "compact" : "emergency";
+      components.push(...selectedCore);
       compactFocusCoreUsed = true;
       compactFocusRequiresTask = !appendOnlyContext;
-      compactPortrayalFallbackUsed = appendOnlyContext;
+      compactPortrayalFallbackUsed = appendOnlyContext && portrayalTier === "compact";
+      emergencyPortrayalFallbackUsed = appendOnlyContext && portrayalTier === "emergency";
       cacheLimitedPortrayal = appendOnlyContext;
-      CC.last.modelOmitted.push(focus.name + (appendOnlyContext
-        ? " compact Outer/Inner used for cache-limited portrayal"
-        : " compact Outer/Inner reserved for the operation turn"));
+      CC.last.modelOmitted.push(focus.name + (portrayalTier === "emergency"
+        ? " emergency portrayal core used for cache-limited portrayal"
+        : (appendOnlyContext
+          ? " compact Outer/Inner used for cache-limited portrayal"
+          : " compact Outer/Inner reserved for the operation turn")));
     }
     modelActive.push(focus);
 
@@ -11374,7 +11416,7 @@ function CharacterContinuity(hook, incomingText) {
         && !(component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)))
         .forEach(component => pushGroup([component]));
 
-      const commitWorking = (next, compactFocus) => {
+      const commitWorking = (next, focusTier) => {
         const kept = new Set(next);
         const removed = components.filter(component => !kept.has(component));
         const removedProfileKeys = new Set(removed
@@ -11431,14 +11473,19 @@ function CharacterContinuity(hook, incomingText) {
             if (!omittedExperiences.includes(label)) omittedExperiences.push(label);
           });
         });
-        if (compactFocus) {
+        if (focusTier) {
           if (!compactFocusCoreUsed) {
-            const label = focus.name + (appendOnlyContext
-              ? " compact Outer/Inner used for cache-limited portrayal"
-              : " compact Outer/Inner used for the operation turn");
+            const label = focus.name + (focusTier === "emergency"
+              ? " emergency portrayal core used for the operation turn"
+              : (appendOnlyContext
+                ? " compact Outer/Inner used for cache-limited portrayal"
+                : " compact Outer/Inner used for the operation turn"));
             if (!CC.last.modelOmitted.includes(label)) CC.last.modelOmitted.push(label);
           }
           compactFocusCoreUsed = true;
+          portrayalTier = focusTier;
+          compactPortrayalFallbackUsed = appendOnlyContext && focusTier === "compact";
+          emergencyPortrayalFallbackUsed = appendOnlyContext && focusTier === "emergency";
           if (!appendOnlyContext) compactFocusRequiresTask = true;
           if (appendOnlyContext) cacheLimitedPortrayal = true;
         }
@@ -11450,23 +11497,45 @@ function CharacterContinuity(hook, incomingText) {
         working = working.filter(component => !removable.has(component));
         fit = composition(working, proposedTail);
         if (!fit.ok) continue;
-        commitWorking(working, false);
+        commitWorking(working, "");
         return fit;
       }
 
-      const compactPair = [
-        { text: compactOperationOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
-        { text: compactOperationInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
-      ].filter(component => component.text);
-      const compactWorking = working.filter(component => !(
-        component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)
-      )).concat(compactPair);
-      fit = compactPair.length === 2
-        ? composition(compactWorking, proposedTail)
-        : { ok: false, reason: "complete compact Outer/Inner pair" };
-      if (fit.ok) {
-        commitWorking(compactWorking, true);
-        return fit;
+      if (portrayalTier !== "emergency") {
+        const compactPair = [
+          { text: compactOperationOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
+          { text: compactOperationInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
+        ].filter(component => component.text);
+        const compactWorking = working.filter(component => !(
+          component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)
+        )).concat(compactPair);
+        fit = compactPair.length === 2
+          ? composition(compactWorking, proposedTail)
+          : { ok: false, reason: "complete compact Outer/Inner pair" };
+        if (fit.ok) {
+          commitWorking(compactWorking, "compact");
+          return fit;
+        }
+      }
+
+      if (appendOnlyContext) {
+        const emergencyPair = [
+          { text: emergencyPortrayalOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
+          { text: emergencyPortrayalInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
+        ].filter(component => component.text);
+        const emergencyWorking = working.filter(component => component.type !== "rules" && !(
+          component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)
+        )).concat(
+          { text: emergencyPortrayalRules(), type: "rules", order: -1 },
+          ...emergencyPair
+        );
+        fit = emergencyPair.length === 2
+          ? composition(emergencyWorking, proposedTail)
+          : { ok: false, reason: "complete emergency Outer/Inner pair" };
+        if (fit.ok) {
+          commitWorking(emergencyWorking, "emergency");
+          return fit;
+        }
       }
       return fit;
     };
@@ -11488,9 +11557,7 @@ function CharacterContinuity(hook, incomingText) {
         normalizedTargetKey(target.key) === normalizedTargetKey(plan.selectedCandidate.targetKey)
       )
     );
-    if (compactPortrayalFallbackUsed && plan.opportunity && !CC.recoveryPending) {
-      taskDeferredReason = "the complete compact focused portrayal was preserved";
-    } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && retryTaskText) {
+    if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && retryTaskText) {
       const retryEvidence = operationEvidence.slice();
       const retryWithinTaskBudget = estimateTokens(retryTaskText) <= operationTaskTokenBudget;
       if (!retryWithinTaskBudget) {
@@ -11668,6 +11735,8 @@ function CharacterContinuity(hook, incomingText) {
       taskDeferredReason,
       cacheLimitedPortrayal,
       compactPortrayalFallbackUsed,
+      emergencyPortrayalFallbackUsed,
+      portrayalTier,
       targets,
       evidenceCandidates: selectedEvidence,
       evidenceIds: selectedEvidence.map(candidate => candidate.item.id),
@@ -11702,15 +11771,7 @@ function CharacterContinuity(hook, incomingText) {
       effectiveBudget,
       headroom: Math.max(0, Math.min(effectiveBudget, configuredBudget) - final.tokens),
       recentChars: final.fitted.recentChars,
-      ...capacity,
-      cacheOverflowUsedTokens: capacity.cacheOverflowActive
-        ? estimateTokens(final.fitted.text.slice(capacity.maxChars))
-        : 0,
-      cacheOverflowRemainingTokens: capacity.cacheOverflowActive
-        ? Math.max(0, settings.CACHE_OVERFLOW_BUFFER_TOKENS
-          - settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS
-          - estimateTokens(final.fitted.text.slice(capacity.maxChars)))
-        : 0
+      ...capacity
     };
   }
 
@@ -15432,6 +15493,7 @@ function CharacterContinuity(hook, incomingText) {
       injectedTokens: 0, effectiveBudget: runtime.continuityBudget, headroomTokens: runtime.continuityBudget, recentStoryChars: 0,
       contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
       cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
+      portrayalTier: "none",
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
       selectedNames: [], omittedNames: [], selectedRelationships: [], omittedRelationships: [],
@@ -15680,6 +15742,7 @@ function CharacterContinuity(hook, incomingText) {
       cacheOverflowActive: attempt.cacheOverflowActive,
       cacheOverflowUsedTokens: attempt.cacheOverflowUsedTokens,
       cacheOverflowRemainingTokens: attempt.cacheOverflowRemainingTokens,
+      portrayalTier: attempt.portrayalTier || "full",
       task: plan.task,
       owner: attempt.taskDelivered ? focus.name : "",
       selectedNames: attempt.selectedNames,
@@ -15697,9 +15760,14 @@ function CharacterContinuity(hook, incomingText) {
     });
     if (attempt.cacheLimitedPortrayal) {
       CC.last.gracefulFallback = true;
+      const fallbackMessage = attempt.portrayalTier === "emergency"
+        ? (attempt.taskDelivered
+          ? "Cache-compatible context used the focused NPC's complete emergency portrayal core so the complete operation packet could be preserved."
+          : "Cache-compatible context used the focused NPC's complete emergency portrayal core.")
+        : "Cache-compatible context used the focused NPC's complete compact Outer/Inner pair.";
       CC.last.warning = [
         CC.last.warning,
-        "Cache-compatible context used the focused NPC's complete compact Outer/Inner pair."
+        fallbackMessage
       ].filter(Boolean).join(" ");
     }
     if (plan.opportunity && !attempt.taskDelivered) {
@@ -16702,10 +16770,9 @@ function CharacterContinuity(hook, incomingText) {
       "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
+      "Portrayal packet: " + (CC.last.portrayalTier || "none"),
       "Append capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
-        + " | optimized overflow " + (CC.last.cacheOverflowActive ? "active" : "inactive")
-        + " | overflow used/remaining/reserve " + CC.last.cacheOverflowUsedTokens + "/"
-        + CC.last.cacheOverflowRemainingTokens + "/" + settings.CACHE_OVERFLOW_SAFETY_RESERVE_TOKENS + " tokens",
+        + " | context-modifier overflow unavailable; returned text is capped at max chars",
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
