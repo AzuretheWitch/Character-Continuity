@@ -3783,6 +3783,7 @@ function CharacterContinuity(hook, incomingText) {
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
         timeJumpReset: false, selectedNames: [], omittedNames: [],
         selectedRelationships: [], omittedRelationships: [],
+        selectedTurningPoints: [], omittedTurningPoints: [],
         selectedViews: [], omittedViews: [], selectedExperiences: [], omittedExperiences: [],
         suppliedEvidence: [], suppliedSources: [], suppliedTargets: [],
         sourcePacketTokens: 0,
@@ -6655,25 +6656,30 @@ function CharacterContinuity(hook, incomingText) {
           if (record.corrected) {
             store.diagnostics.push(page.title + " " + record.id + " requires deterministic score, stage-card, or trigger correction.");
           }
-          const stageCard = findCard(record.values["Active card"]);
-          if (!stageCard) {
-            store.diagnostics.push(record.values["Active card"] + " is missing; " + record.id + " cannot route its active stage.");
-          } else {
-            const keyList = textOf(stageCard.keys).split(",").map(value => value.trim());
-            if (!keyList.includes(record.values["Stage trigger"])) {
-              store.diagnostics.push(record.values["Active card"] + " is missing its private Stage trigger key.");
-            }
+          const activeResolution = turningPointStageCardResolution(
+            record, character, record.progress.stageRecord
+          );
+          if (!activeResolution.ok) {
+            const activeProblem = {
+              missing: "is missing",
+              ambiguous: "has multiple physical Story Cards",
+              empty: "has an empty Entry",
+              oversize: "exceeds the stage-card character limit",
+              "ambiguous private trigger": "has multiple private Turning Point trigger keys",
+              "private trigger mismatch": "is missing its exact private Stage trigger key"
+            }[activeResolution.reason] || "is invalid";
+            store.diagnostics.push(activeResolution.title + " " + activeProblem + "; "
+              + record.id + " cannot route its active stage.");
           }
           TURNING_POINT_STAGES.forEach(stage => {
-            const routedTitle = turningPointStageCardTitle(record.stageCardPrefix, stage);
-            const routedCard = turningPointStageCard(record, stage);
-            const stageStatus = routedCard
-              ? routedTitle + " " + entryOf(routedCard).length + "/"
+            const resolution = turningPointStageCardResolution(record, character, stage);
+            const stageStatus = resolution.ok
+              ? resolution.title + " " + entryOf(resolution.card).length + "/"
                 + settings.MAX_TURNING_POINT_STAGE_CARD_CHARS + " chars"
-              : routedTitle + " missing";
+              : resolution.title + " " + resolution.reason;
             if (!store.stageStats.includes(stageStatus)) store.stageStats.push(stageStatus);
-            if (routedCard && entryOf(routedCard).length > settings.MAX_TURNING_POINT_STAGE_CARD_CHARS) {
-              store.diagnostics.push(titleOf(routedCard) + " is " + entryOf(routedCard).length + "/"
+            if (resolution.reason === "oversize" && resolution.card) {
+              store.diagnostics.push(resolution.title + " is " + entryOf(resolution.card).length + "/"
                 + settings.MAX_TURNING_POINT_STAGE_CARD_CHARS
                 + " characters; routing through that stage is disabled.");
             }
@@ -6756,16 +6762,58 @@ function CharacterContinuity(hook, incomingText) {
     return restored;
   }
 
+  function turningPointStageCardMatches(record, stage) {
+    if (!record) return [];
+    const title = turningPointStageCardTitle(record.stageCardPrefix, stage);
+    if (!title) return [];
+    const managedKey = managedCardKey(title);
+    const matches = catalogRecordsByTitle(title)
+      .concat(managedKey ? catalogRecordsByRawKey(managedKey) : []);
+    const seen = new Set();
+    return matches.filter(item => {
+      if (!item || !item.card || seen.has(item.card)) return false;
+      seen.add(item.card);
+      return true;
+    });
+  }
+
   function turningPointStageCard(record, stage) {
-    if (!record) return null;
-    return findCard(turningPointStageCardTitle(record.stageCardPrefix, stage));
+    const matches = turningPointStageCardMatches(record, stage);
+    return matches.length === 1 ? matches[0].card : null;
+  }
+
+  function turningPointStageCardResolution(record, owner, stage) {
+    const title = record ? turningPointStageCardTitle(record.stageCardPrefix, stage) : "";
+    const trigger = record ? turningPointStageTrigger(owner, record.id, stage) : "";
+    const matches = turningPointStageCardMatches(record, stage);
+    if (!title || !trigger || !matches.length) {
+      return { ok: false, card: null, title, trigger, entry: "", reason: "missing" };
+    }
+    if (matches.length !== 1) {
+      return { ok: false, card: null, title, trigger, entry: "", reason: "ambiguous" };
+    }
+    const card = matches[0].card;
+    const rawEntry = entryOf(card).replace(/\r/g, "");
+    const entry = rawEntry.trim();
+    if (!entry) {
+      return { ok: false, card, title, trigger, entry: "", reason: "empty" };
+    }
+    if (rawEntry.length > settings.MAX_TURNING_POINT_STAGE_CARD_CHARS) {
+      return { ok: false, card, title, trigger, entry: "", reason: "oversize" };
+    }
+    const keys = textOf(card.keys).split(",").map(value => value.trim()).filter(Boolean);
+    const privateTriggers = keys.filter(value => /^__CC_TP_[A-Z0-9_]+__$/.test(value));
+    if (privateTriggers.length > 1) {
+      return { ok: false, card, title, trigger, entry: "", reason: "ambiguous private trigger" };
+    }
+    if (!keys.includes(trigger)) {
+      return { ok: false, card, title, trigger, entry: "", reason: "private trigger mismatch" };
+    }
+    return { ok: true, card, title, trigger, entry, reason: "" };
   }
 
   function turningPointStageCardValid(record, owner, stage) {
-    const card = turningPointStageCard(record, stage);
-    if (!card || entryOf(card).length > settings.MAX_TURNING_POINT_STAGE_CARD_CHARS) return false;
-    const trigger = turningPointStageTrigger(owner, record.id, stage);
-    return textOf(card.keys).split(",").map(value => value.trim()).includes(trigger);
+    return turningPointStageCardResolution(record, owner, stage).ok;
   }
 
   function turningPointBreakthroughCondition(record) {
@@ -11053,9 +11101,11 @@ function CharacterContinuity(hook, incomingText) {
     const comparisonStage = mode === "Breakthrough"
       ? TURNING_POINT_STAGES[3]
       : (mode === "Integration" ? TURNING_POINT_STAGES[4] : turningPointNextStage(record));
-    const currentCard = turningPointStageCard(record, record.progress.stageRecord);
-    const comparisonCard = turningPointStageCard(record, comparisonStage);
-    if (!currentCard || !comparisonCard) return "";
+    const currentResolution = turningPointStageCardResolution(record, owner, record.progress.stageRecord);
+    const comparisonResolution = turningPointStageCardResolution(record, owner, comparisonStage);
+    if (!currentResolution.ok || !comparisonResolution.ok) return "";
+    const currentCard = currentResolution.card;
+    const comparisonCard = comparisonResolution.card;
     const breakthrough = mode === "Breakthrough"
       ? turningPointBreakthroughCondition(record)
       : null;
@@ -11242,7 +11292,7 @@ function CharacterContinuity(hook, incomingText) {
       "State supplies temporary pressure. Thought may remain wholly private; Feeling colors perception; Goal guides intention; Tension preserves competing pulls; Situation grounds the present concern. Let the NPC choose what to express, conceal, pursue, postpone, revise, or release.",
       "Relationships and Views establish directional baselines. Apply the few relevant parts in proportion to the scene, with Inner, State, established events, and present circumstances shaping how those baselines appear.",
       "Give each active NPC an independent perspective, limits, and initiative. Let the NPC act, refrain, disclose, evade, persist, or change course according to what they would actually choose in the moment.",
-      "A creator-triggered Turning Point stage card establishes that NPC's current durable stage. Keep portrayal within that stage while allowing uneven expression, setbacks, and ordinary variation.",
+      "A supplied Turning Point stage card establishes that NPC's current durable stage. Keep portrayal within that stage while allowing uneven expression, setbacks, and ordinary variation.",
       "The Player defines their speech, actions, thoughts, feelings, memories, identity, attraction, consent, boundaries, commitments, names, and relationships through input. Treat player-entered speech, actions, choices, permissions, refusals, and boundaries as established current story facts. Continue from that established point through NPC choices and world consequences, leaving the Player's next response open.",
       "Player: " + player.name + " | "
         + [player.subject, player.object, player.possessiveAdjective, player.possessivePronoun, player.reflexive].join("/")
@@ -11327,6 +11377,8 @@ function CharacterContinuity(hook, incomingText) {
     const omittedNames = [];
     const selectedRelationships = [];
     const omittedRelationships = [];
+    const selectedTurningPoints = [];
+    const omittedTurningPoints = [];
     const selectedViews = [];
     const omittedViews = [];
     const selectedExperiences = [];
@@ -11367,6 +11419,62 @@ function CharacterContinuity(hook, incomingText) {
       if (!fit.ok) return false;
       components.push(...usable);
       return true;
+    };
+    const turningPointComponentsByEntry = new Map();
+    const normalizedBaseBlocks = "\n" + textOf(base).replace(/\r/g, "") + "\n";
+    const turningPointEntryAlreadyPresent = entry => {
+      const block = textOf(entry).replace(/\r/g, "").trim();
+      return !!(block && normalizedBaseBlocks.includes("\n" + block + "\n"));
+    };
+    const addSelectedTurningPoint = label => {
+      if (label && !selectedTurningPoints.includes(label)) selectedTurningPoints.push(label);
+    };
+    const addOmittedTurningPoint = (label, reason = "", reserved = false) => {
+      const omission = label + (reason ? " (" + reason + ")" : "");
+      if (label && !omittedTurningPoints.includes(omission)) omittedTurningPoints.push(omission);
+      const diagnostic = omission + (reserved ? " (reserved operation packet)" : "");
+      if (label && !CC.last.modelOmitted.includes(diagnostic)) CC.last.modelOmitted.push(diagnostic);
+    };
+    const addTurningPointStages = owner => {
+      const ownerData = turningPointsForOwner(owner && owner.key);
+      const records = ownerData && Array.isArray(ownerData.contextRecords)
+        ? ownerData.contextRecords
+        : [];
+      records.forEach(record => {
+        const resolution = turningPointStageCardResolution(record, owner, record.progress.stageRecord);
+        const title = resolution.title || turningPointStageCardTitle(
+          record.stageCardPrefix, record.progress.stageRecord
+        );
+        const label = owner.name + "→" + title + " Turning Point stage";
+        if (!resolution.ok) {
+          addOmittedTurningPoint(label, resolution.reason || "invalid");
+          return;
+        }
+        if (turningPointEntryAlreadyPresent(resolution.entry)) {
+          addSelectedTurningPoint(label);
+          return;
+        }
+        const componentKey = resolution.entry;
+        const prior = turningPointComponentsByEntry.get(componentKey);
+        if (prior) {
+          if (!prior.turningPointLabels.includes(label)) prior.turningPointLabels.push(label);
+          addSelectedTurningPoint(label);
+          return;
+        }
+        const component = {
+          text: resolution.entry,
+          type: "turningPoints",
+          ownerKey: owner.key,
+          order: 2.5,
+          turningPointLabels: [label]
+        };
+        if (addGroup([component])) {
+          turningPointComponentsByEntry.set(componentKey, component);
+          addSelectedTurningPoint(label);
+        } else {
+          addOmittedTurningPoint(label);
+        }
+      });
     };
     const addNamesProjection = (identity, ownerKey, limit, marker) => {
       const relevant = relevantNameRecords(identity, currentInput, recent, modelActive);
@@ -11451,14 +11559,17 @@ function CharacterContinuity(hook, incomingText) {
           : " compact Outer/Inner reserved for the operation turn")));
     }
     modelActive.push(focus);
+    addTurningPointStages(focus);
 
     active.filter(character => character.key !== focus.key).forEach(character => {
       const pair = [
         { text: outerAnchor(character), type: "outer", ownerKey: character.key, order: 0 },
         { text: innerAnchor(character), type: "inner", ownerKey: character.key, order: 2 }
       ];
-      if (addGroup(pair)) modelActive.push(character);
-      else CC.last.modelOmitted.push(character.name + " Outer/Inner pair");
+      if (addGroup(pair)) {
+        modelActive.push(character);
+        addTurningPointStages(character);
+      } else CC.last.modelOmitted.push(character.name + " Outer/Inner pair");
     });
 
     const playerNamesIdentity = nameIdentityForKey("player");
@@ -11652,7 +11763,7 @@ function CharacterContinuity(hook, incomingText) {
       };
       modelActive.filter(character => character.key !== focus.key).slice().reverse().forEach(character => {
         pushGroup(working.filter(component => component.ownerKey === character.key
-          && (component.type === "outer" || component.type === "inner")));
+          && (component.type === "outer" || component.type === "inner" || component.type === "turningPoints")));
       });
       const namesComponents = working.filter(component => component.type === "names");
       const componentAliases = component => (textOf(component.text).match(/^Alias:\s*(.+)$/gmi) || [])
@@ -11683,6 +11794,12 @@ function CharacterContinuity(hook, incomingText) {
           if (!character || character.key === focus.key) return;
           const index = modelActive.indexOf(character);
           if (index >= 0) modelActive.splice(index, 1);
+          const turningPointPrefix = character.name + "→";
+          selectedTurningPoints.slice().filter(label => label.startsWith(turningPointPrefix)).forEach(label => {
+            const selectedIndex = selectedTurningPoints.indexOf(label);
+            if (selectedIndex >= 0) selectedTurningPoints.splice(selectedIndex, 1);
+            addOmittedTurningPoint(label, "", true);
+          });
           const label = character.name + " Outer/Inner pair (reserved operation packet)";
           if (!CC.last.modelOmitted.includes(label)) CC.last.modelOmitted.push(label);
         });
@@ -11701,6 +11818,13 @@ function CharacterContinuity(hook, incomingText) {
           const label = (character ? character.name : component.ownerKey)
             + " current State (reserved operation packet)";
           if (!CC.last.modelOmitted.includes(label)) CC.last.modelOmitted.push(label);
+        });
+        removed.filter(component => component.type === "turningPoints").forEach(component => {
+          (Array.isArray(component.turningPointLabels) ? component.turningPointLabels : []).forEach(label => {
+            const index = selectedTurningPoints.indexOf(label);
+            if (index >= 0) selectedTurningPoints.splice(index, 1);
+            addOmittedTurningPoint(label, "", true);
+          });
         });
         const moveOwnerLabels = (type, selectedList, omittedList, suffix) => {
           const ownerKeys = new Set(removed.filter(component => component.type === type)
@@ -12001,6 +12125,8 @@ function CharacterContinuity(hook, incomingText) {
       omittedNames,
       selectedRelationships,
       omittedRelationships,
+      selectedTurningPoints,
+      omittedTurningPoints,
       selectedViews,
       omittedViews,
       selectedExperiences,
@@ -12319,7 +12445,7 @@ function CharacterContinuity(hook, incomingText) {
       /^State supplies temporary pressure\b/i,
       /^Relationships and Views establish directional baselines\b/i,
       /^Give each active NPC an independent perspective\b/i,
-      /^A creator-triggered Turning Point stage card establishes that NPC's current durable stage\b/i,
+      /^A (?:creator-triggered|supplied) Turning Point stage card establishes that NPC's current durable stage\b/i,
       /^The Player defines their speech, actions, thoughts, feelings, memories, identity, attraction, consent, boundaries, commitments, names, and relationships through input\b/i,
       /^Treat player-entered speech, actions, choices, permissions, refusals, and boundaries as established current story facts\b/i,
       /^Continue from that established point through NPC choices and world consequences\b/i,
@@ -16050,6 +16176,7 @@ function CharacterContinuity(hook, incomingText) {
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
       selectedNames: [], omittedNames: [], selectedRelationships: [], omittedRelationships: [],
+      selectedTurningPoints: [], omittedTurningPoints: [],
       selectedViews: [], omittedViews: [], selectedExperiences: [], omittedExperiences: [],
       suppliedEvidence: [], suppliedTargets: [],
       operationDecay: "None",
@@ -16302,6 +16429,8 @@ function CharacterContinuity(hook, incomingText) {
       omittedNames: attempt.omittedNames,
       selectedRelationships: attempt.selectedRelationships,
       omittedRelationships: attempt.omittedRelationships,
+      selectedTurningPoints: attempt.selectedTurningPoints,
+      omittedTurningPoints: attempt.omittedTurningPoints,
       selectedViews: attempt.selectedViews,
       omittedViews: attempt.omittedViews,
       selectedExperiences: attempt.selectedExperiences,
@@ -17423,6 +17552,8 @@ function CharacterContinuity(hook, incomingText) {
       "Turning Point pages: " + ((turningPointsStore && turningPointsStore.pageStats || []).join("; ") || "None"),
       "Turning Point stage cards: " + ((turningPointsStore && turningPointsStore.stageStats || []).join("; ") || "None"),
       "Turning Point diagnostics: " + ((turningPointsStore && turningPointsStore.diagnostics || []).join("; ") || "None"),
+      "Selected Turning Point stages: " + ((CC.last.selectedTurningPoints || []).join("; ") || "None"),
+      "Omitted Turning Point stages: " + ((CC.last.omittedTurningPoints || []).join("; ") || "None"),
       "Last Turning Point / change: " + (CC.last.lastTurningPoint || "None") + " / " + (CC.last.turningPointChange || "None"),
       "Views: " + (characters.map(viewsStatus).join("; ") || "None"),
       "Views pages: " + ((viewsStore && viewsStore.pageStats || []).join("; ") || "None"),
