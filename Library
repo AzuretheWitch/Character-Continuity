@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "Character Continuity Stable v1.0.81 Cache-Compatible Beta 8 Tiered Fallback",
+  VERSION: "Character Continuity Stable v1.82",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -53,6 +53,12 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   OPERATION_DRAIN_CAP: 12,
   OPERATION_TASK_BUDGET_PERCENT: 50,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
+  MODEL_STATE_VALUE_CHARS: 100,
+  MODEL_OPERATION_EXPLANATION_CHARS: 150,
+  MODEL_RELATIONSHIP_EXPLANATION_CHARS: 90,
+  MAX_OPERATION_EXPLANATION_CHARS: 180,
+  MAX_RELATIONSHIP_EXPLANATION_CHARS: 120,
+  MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS: 120,
   OPERATION_POINTS: {
     EXPLICIT_DIRECT_GAIN: 12,
     STRONG_STATE_GAIN: 10,
@@ -70,7 +76,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 1,
+  MAINTENANCE_SCHEMA_VERSION: 2,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -140,19 +146,21 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function clean(value, limit) {
-    return textOf(value)
+    const result = textOf(value)
       .replace(/\r/g, "")
       .replace(/[ \t]+/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim()
       .slice(0, Math.max(1, Number(limit) || 10000));
+    return /[\uD800-\uDBFF]$/.test(result) ? result.slice(0, -1) : result;
   }
 
   function line(value, limit) {
-    return clean(value, Math.max(limit * 3, limit))
+    const result = clean(value, Math.max(limit * 3, limit))
       .replace(/\s*\n\s*/g, " ")
       .trim()
       .slice(0, Math.max(1, Number(limit) || 500));
+    return /[\uD800-\uDBFF]$/.test(result) ? result.slice(0, -1) : result;
   }
 
   function wrappedLine(value, limit) {
@@ -172,6 +180,46 @@ function CharacterContinuity(hook, incomingText) {
     if (!result) return "";
     const limit = Math.max(0, Number(max) || 0);
     return limit > 0 && result.length > limit ? "" : result;
+  }
+
+  function compactLineAtBoundary(value, limit) {
+    const supplied = Math.floor(Number(limit) || 0);
+    if (supplied <= 0) return "";
+    const maximum = Math.max(1, supplied);
+    const source = clean(value, 20000).replace(/\s*\n\s*/g, " ").trim();
+    if (!source || source.length <= maximum) return source;
+    if (maximum === 1) return "…";
+    const contentLimit = maximum - 1;
+    let clipped = "";
+    let segmenterUsed = false;
+    try {
+      if (typeof Intl === "object" && typeof Intl.Segmenter === "function") {
+        segmenterUsed = true;
+        const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+        for (const item of segmenter.segment(source)) {
+          if (clipped.length + item.segment.length > contentLimit) break;
+          clipped += item.segment;
+        }
+      }
+    } catch { segmenterUsed = false; }
+    if (!clipped && !segmenterUsed) {
+      for (const point of Array.from(source)) {
+        if (clipped.length + point.length > contentLimit) break;
+        clipped += point;
+      }
+    }
+    if (!clipped) return "…";
+    const minimumBoundary = Math.max(1, Math.floor(contentLimit * 0.55));
+    let boundary = -1;
+    for (let index = clipped.length - 1; index >= minimumBoundary; index -= 1) {
+      if (/\s/.test(clipped[index])) {
+        boundary = index;
+        break;
+      }
+    }
+    if (boundary > 0) clipped = clipped.slice(0, boundary);
+    clipped = clipped.replace(/[\s,;:–—-]+$/g, "").trim();
+    return clipped + "…";
   }
 
   function keyOf(value) {
@@ -3724,6 +3772,7 @@ function CharacterContinuity(hook, incomingText) {
       cardHashes: {}, cardsInitialized: false,
       last: {
         context: "Not built", output: "No output yet", warning: "", error: "",
+        outputRawChars: 0, outputStoryChars: 0, outputRecordChars: 0, outputRecordPosition: "none",
         rulesTokens: 0, outerTokens: 0, innerTokens: 0, stateTokens: 0,
         namesTokens: 0, relationshipsTokens: 0, turningPointsTokens: 0, viewsTokens: 0, experiencesTokens: 0, evidenceTokens: 0, taskTokens: 0,
         injectedTokens: 0, effectiveBudget: 0, headroomTokens: 0, recentStoryChars: 0,
@@ -5923,21 +5972,30 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function plannedRelationshipsPages(ownerData) {
-    return ownerData.pages.map(page => ({
-      card: page.card,
-      page: page.page,
-      title: page.title,
-      safe: page.safe && !page.duplicatePage,
-      movable: page.safe && !page.duplicatePage && !page.items.some(item => item.oversize),
-      needsCanonicalization: page.needsCanonicalization === true,
-      inferredPlayerAbout: page.inferredPlayerAbout === true,
-      canonicalWrapper: page.canonicalWrapper === true,
-      dirty: false,
-      created: false,
-      remove: false,
-      items: page.items.map(copyRelationshipItem)
-    }));
+  function plannedRelationshipsPages(ownerData, options = {}) {
+    const repairOversize = options.repairOversize === true;
+    return ownerData.pages.map(page => {
+      const safe = page.safe && !page.duplicatePage;
+      const hasOversize = page.items.some(item => item.oversize);
+      const repairableOversize = repairOversize && safe && hasOversize
+        && page.items.every(item => item.kind === "record" && !item.conflict
+          && !Object.keys(item.fieldUnsafe || {}).length);
+      return {
+        card: page.card,
+        page: page.page,
+        title: page.title,
+        safe,
+        movable: safe && (!hasOversize || repairableOversize),
+        repairableOversize,
+        needsCanonicalization: page.needsCanonicalization === true,
+        inferredPlayerAbout: page.inferredPlayerAbout === true,
+        canonicalWrapper: page.canonicalWrapper === true,
+        dirty: false,
+        created: false,
+        remove: false,
+        items: page.items.map(copyRelationshipItem)
+      };
+    });
   }
 
   function nextRelationshipsPageNumber(pages) {
@@ -5976,6 +6034,74 @@ function CharacterContinuity(hook, incomingText) {
       if (!parsed.safe) record.fieldUnsafe[field] = parsed.reason || "unsafe field";
     });
     return record;
+  }
+
+  function compactLegacyRelationshipRecord(character, record) {
+    if (!record || record.kind !== "record" || record.conflict
+      || Object.keys(record.fieldUnsafe || {}).length) {
+      return { ok: false, error: "The oversized Relationship record was not structurally safe." };
+    }
+    const originalValues = { ...record.values };
+    const changedFields = new Set();
+    const restore = error => {
+      record.values = originalValues;
+      reparsePlannedRelationshipRecord(record);
+      return { ok: false, error };
+    };
+    RELATIONSHIP_FIELDS.forEach(field => {
+      const parsed = record.parsedFields[field];
+      if (!parsed || !parsed.safe || parsed.blank || !parsed.description
+        || parsed.description.length <= settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS) return;
+      const description = compactLineAtBoundary(
+        parsed.description,
+        settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS
+      );
+      record.values[field] = relationshipStoredValue(
+        field,
+        parsed.special || parsed.stage,
+        parsed.score,
+        description
+      );
+      changedFields.add(field);
+      reparsePlannedRelationshipRecord(record);
+    });
+    let guard = 0;
+    while (renderRelationshipsPage(character, 1, [record]).length
+      > settings.MAX_RELATIONSHIPS_CARD_CHARS && guard < 100) {
+      guard += 1;
+      const excess = renderRelationshipsPage(character, 1, [record]).length
+        - settings.MAX_RELATIONSHIPS_CARD_CHARS;
+      const choices = RELATIONSHIP_FIELDS.map(field => ({
+        field,
+        parsed: record.parsedFields[field]
+      })).filter(item => item.parsed && item.parsed.safe && item.parsed.description)
+        .sort((left, right) => right.parsed.description.length - left.parsed.description.length);
+      if (!choices.length) return restore("Its fixed fields alone exceeded the 1,000-character page limit.");
+      const selected = choices[0];
+      const priorDescription = selected.parsed.description;
+      const targetLength = Math.max(0, priorDescription.length - Math.max(1, excess));
+      const nextDescription = compactLineAtBoundary(priorDescription, targetLength);
+      if (nextDescription.length >= priorDescription.length) {
+        return restore("Its longest description could not be compacted safely.");
+      }
+      record.values[selected.field] = relationshipStoredValue(
+        selected.field,
+        selected.parsed.special || selected.parsed.stage,
+        selected.parsed.score,
+        nextDescription
+      );
+      changedFields.add(selected.field);
+      reparsePlannedRelationshipRecord(record);
+      if (Object.keys(record.fieldUnsafe).length) {
+        return restore("Compaction made a Relationship field structurally unsafe.");
+      }
+    }
+    const finalChars = renderRelationshipsPage(character, 1, [record]).length;
+    if (finalChars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+      return restore("It remained " + finalChars + "/" + settings.MAX_RELATIONSHIPS_CARD_CHARS + " characters.");
+    }
+    record.oversize = false;
+    return { ok: true, changedFields: Array.from(changedFields), finalChars };
   }
 
   function plannedRelationshipTarget(pages, targetKey) {
@@ -6096,43 +6222,48 @@ function CharacterContinuity(hook, incomingText) {
     characters.forEach(character => {
       const ownerData = relationshipsForOwner(character.key);
       if (!ownerData) return;
-      const pages = plannedRelationshipsPages(ownerData);
+      const pages = plannedRelationshipsPages(ownerData, { repairOversize: true });
       const provenanceRepairs = [];
       let changed = false;
       pages.forEach(page => {
         if (!page.movable) return;
+        const originalItems = page.items.map(copyRelationshipItem);
+        const pageRepairs = [];
+        const pageMessages = [];
+        let pageChanged = false;
+        let pageFailure = "";
         if (page.needsCanonicalization) {
           page.dirty = true;
-          changed = true;
+          pageChanged = true;
           if (page.inferredPlayerAbout) {
-            repairMessages.push(
+            pageMessages.push(
               "Restored the omitted About: Player field in " + character.name + "'s legacy Relationship record."
             );
           }
           if (!page.canonicalWrapper) {
-            repairMessages.push(
+            pageMessages.push(
               "Separated the legacy wrapper from " + character.name + "'s Relationships header."
             );
           }
         }
         page.items.slice().forEach(item => {
-          if (item.kind !== "record") return;
+          if (pageFailure || item.kind !== "record") return;
           if (item.duplicate && !item.conflict) {
             removePlannedRelationshipItem(page, item);
-            repairMessages.push("Collapsed an exact duplicate " + character.name + "→" + item.targetName + " Relationship record.");
-            changed = true;
+            pageMessages.push("Collapsed an exact duplicate " + character.name + "→" + item.targetName + " Relationship record.");
+            pageChanged = true;
             return;
           }
-          if (item.conflict || item.oversize) return;
+          if (item.conflict || Object.keys(item.fieldUnsafe || {}).length) return;
+          const priorValues = { ...item.values };
           if (item.targetCorrected) {
             item.targetCorrected = false;
-            repairMessages.push("Canonicalized " + character.name + "→" + item.targetName + " Relationship target.");
-            changed = true;
+            pageMessages.push("Canonicalized " + character.name + "→" + item.targetName + " Relationship target.");
+            pageChanged = true;
           }
           RELATIONSHIP_FIELDS.forEach(field => {
             const parsed = item.parsedFields[field];
             if (!parsed || !parsed.safe) return;
-            const priorValue = item.values[field];
             let repairedValue = parsed.corrected ? parsed.normalized : item.values[field];
             const repairedParsed = parsed.corrected
               ? parseRelationshipField(field, repairedValue)
@@ -6141,7 +6272,7 @@ function CharacterContinuity(hook, incomingText) {
             const repairedExplanation = repairedParsed.description && actualStage
               ? correctedRelationshipExplanation(repairedParsed.description, actualStage)
               : repairedParsed.description;
-            const explanationChanged = keyOf(repairedExplanation) !== keyOf(repairedParsed.description);
+            const explanationChanged = textOf(repairedExplanation) !== textOf(repairedParsed.description);
             if (explanationChanged) {
               repairedValue = relationshipStoredValue(
                 field,
@@ -6151,46 +6282,78 @@ function CharacterContinuity(hook, incomingText) {
               );
             }
             if (repairedValue === item.values[field]) return;
-            if (explanationChanged) {
-              const priorManagedSignature = relationshipManagedSignature(
-                character.key,
-                item.targetKey,
-                field,
-                priorValue
-              );
-              const nextManagedSignature = relationshipManagedSignature(
-                character.key,
-                item.targetKey,
-                field,
-                repairedValue
-              );
-              if (priorManagedSignature && nextManagedSignature
-                && priorManagedSignature !== nextManagedSignature) {
-                provenanceRepairs.push({
-                  targetKey: item.targetKey,
-                  field,
-                  priorManagedSignature,
-                  nextManagedSignature,
-                  actualStage,
-                  correctedExplanation: repairedExplanation
-                });
-              }
-            }
             item.values[field] = repairedValue;
             if (parsed.corrected) {
-              repairMessages.push("Corrected " + character.name + "→" + item.targetName + " " + field
+              pageMessages.push("Corrected " + character.name + "→" + item.targetName + " " + field
                 + " to its canonical score-stage form.");
             }
             if (explanationChanged) {
-              repairMessages.push("Aligned " + character.name + "→" + item.targetName + " " + field
+              pageMessages.push("Aligned " + character.name + "→" + item.targetName + " " + field
                 + " description with the managed " + actualStage + " stage.");
             }
-            changed = true;
+            pageChanged = true;
           });
-          if (changed) reparsePlannedRelationshipRecord(item);
+          reparsePlannedRelationshipRecord(item);
+          if (item.oversize || renderRelationshipsPage(character, 1, [item]).length
+            > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+            const compacted = compactLegacyRelationshipRecord(character, item);
+            if (!compacted.ok) {
+              pageFailure = character.name + "→" + item.targetName
+                + " could not be compacted safely: " + compacted.error;
+              return;
+            }
+            if (compacted.changedFields.length) {
+              pageMessages.push("Compacted " + character.name + "→" + item.targetName
+                + " legacy Relationship descriptions to restore a complete writable record.");
+              pageChanged = true;
+            }
+          }
+          reparsePlannedRelationshipRecord(item);
+          RELATIONSHIP_FIELDS.forEach(field => {
+            const priorValue = priorValues[field];
+            const nextValue = item.values[field];
+            if (priorValue === nextValue) return;
+            const nextParsed = item.parsedFields[field];
+            const priorManagedSignature = relationshipManagedSignature(
+              character.key,
+              item.targetKey,
+              field,
+              priorValue
+            );
+            const nextManagedSignature = relationshipManagedSignature(
+              character.key,
+              item.targetKey,
+              field,
+              nextValue
+            );
+            if (priorManagedSignature && nextManagedSignature
+              && priorManagedSignature !== nextManagedSignature) {
+              pageRepairs.push({
+                targetKey: item.targetKey,
+                field,
+                priorManagedSignature,
+                nextManagedSignature,
+                actualStage: nextParsed.special || nextParsed.stage || "",
+                correctedExplanation: nextParsed.description || ""
+              });
+            }
+          });
         });
+        if (pageFailure) {
+          page.items = originalItems;
+          page.dirty = false;
+          page.movable = false;
+          repairMessages.push("Preserved " + page.title + " unchanged because " + pageFailure);
+          return;
+        }
         if (page.items.length && renderRelationshipsPage(character, page.page, page.items).length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+          pageChanged = true;
+        }
+        if (pageChanged) {
           changed = true;
+          page.dirty = true;
+          provenanceRepairs.push(...pageRepairs);
+          repairMessages.push(...pageMessages);
         }
       });
       if (!changed) return;
@@ -7918,10 +8081,96 @@ function CharacterContinuity(hook, incomingText) {
     return !CC.openingSeen && CC.inputCount === 0 && CC.visibleGenerationCount === 0 && hasOpeningHistoryShape(inputValue);
   }
 
-  function hasCompleteStory(value) {
-    const source = clean(value, 20000);
-    const words = source.split(/\s+/).filter(token => /[A-Za-z0-9\u00C0-\u024F]/.test(token));
-    return words.length >= 1 && /[.!?…]["'’”)*_`\]}]*$/.test(source);
+  function hasTerminallyPunctuatedStory(value) {
+    const source = textOf(value).replace(/\r/g, "").trim();
+    const hasContent = typeof RegExp === "function" && (() => {
+      try { return /[\p{L}\p{N}]/u.test(source); } catch { return /[A-Za-z0-9\u00C0-\u024F]/.test(source); }
+    })();
+    let terminal = false;
+    try {
+      terminal = /(?:\p{Sentence_Terminal}|…)["'’”»›)*_`\]}]*$/u.test(source);
+    } catch {
+      terminal = /[.!?…。！？؟।॥።။։]["'’”»›)*_`\]}]*$/.test(source);
+    }
+    return hasContent && terminal;
+  }
+
+  function outputProtocolMetrics(rawValue, preparedValue, storyValue) {
+    const raw = textOf(rawValue).replace(/\r/g, "").trim();
+    const prepared = textOf(preparedValue).replace(/\r/g, "").trim();
+    const rawPartialPrefix = terminalPartialCcoPresentation(raw);
+    const lines = prepared.split("\n");
+    const nonblank = lines.map((value, index) => value.trim() ? index : -1)
+      .filter(index => index >= 0);
+    const first = nonblank.length ? nonblank[0] : -1;
+    const last = nonblank.length ? nonblank[nonblank.length - 1] : -1;
+    const protocolLines = lines.map((value, index) => {
+      const presented = ccoPresentation(value);
+      const markers = (value.match(/\(\s*(?:CCO\b|[SNRVT]\s*\|)/gi) || []).length;
+      const bareIndex = bareCcoIndex(value);
+      const protocol = presented.protocolLike || markers > 0 || bareIndex >= 0;
+      if (!protocol) return null;
+      const exact = !!presented.record;
+      const recordChars = exact ? (presented.bare ? presented.source.length : presented.record.length)
+        : (bareIndex >= 0 && markers === 0 ? value.slice(bareIndex).trim().length : 0);
+      return { index, chars: recordChars, exact, markers, bare: bareIndex >= 0 && markers === 0 };
+    }).filter(Boolean);
+    const spans = ccoProtocolSpans(prepared);
+    const openerCount = (prepared.match(/\(\s*(?:CCO\b|[SNRVT]\s*\|)/gi) || []).length;
+    const bareOccurrences = bareCcoOccurrences(prepared);
+    const bareChars = bareOccurrences.reduce((total, occurrence, occurrenceIndex) => {
+      const lineStart = prepared.lastIndexOf("\n", Math.max(0, occurrence - 1)) + 1;
+      const nextLineBreak = prepared.indexOf("\n", occurrence);
+      const lineEnd = nextLineBreak < 0 ? prepared.length : nextLineBreak;
+      const fullLine = prepared.slice(lineStart, lineEnd);
+      const presented = ccoPresentation(fullLine);
+      if (bareOccurrences.length === 1 && presented.bare) return total + presented.source.length;
+      const nextBare = bareOccurrences[occurrenceIndex + 1];
+      const nextParenthesized = spans.map(span => span.start)
+        .find(start => start > occurrence && start < lineEnd);
+      const boundaries = [lineEnd]
+        .concat(nextBare > occurrence && nextBare < lineEnd ? [nextBare] : [])
+        .concat(nextParenthesized ? [nextParenthesized] : []);
+      return total + prepared.slice(occurrence, Math.min(...boundaries)).trim().length;
+    }, 0);
+    const partialPrefix = terminalPartialCcoPrefix(prepared)
+      || terminalPartialCcoPresentation(prepared) || rawPartialPrefix;
+    const markerCount = openerCount + bareOccurrences.length
+      + (partialPrefix && openerCount === 0 && !bareOccurrences.length ? 1 : 0);
+    const spanChars = spans.reduce((total, span) => total + span.text.length, 0);
+    let position = "none";
+    if (markerCount > 1) position = "multiple";
+    else if (partialPrefix) position = "cutoff";
+    else if (markerCount === 1 && spans.length === 1) {
+      const span = spans[0];
+      const lineStart = prepared.lastIndexOf("\n", Math.max(0, span.start - 1)) + 1;
+      const nextLineBreak = prepared.indexOf("\n", span.end);
+      const lineEnd = nextLineBreak < 0 ? prepared.length : nextLineBreak;
+      const fullLine = prepared.slice(lineStart, lineEnd);
+      const openingPrefix = prepared.slice(lineStart, span.start).trim();
+      const closingSuffix = prepared.slice(span.end, lineEnd).trim();
+      const labelPrefix = /^(?:Record|(?:Optional\s+)?Final record|Exact final-line State record|(?:State|Name|Relationship|View|Turning Point) record shape|State|Name|Relationship|View|Turning Point|CCO record)\s*:$/i;
+      const ownLine = !!ccoPresentation(fullLine).record
+        || ((!openingPrefix || labelPrefix.test(controlPresentationText(openingPrefix))) && !closingSuffix);
+      const before = prepared.slice(0, lineStart).trim();
+      const after = prepared.slice(lineEnd).trim();
+      if (!span.complete && terminalProtocolCutoff(prepared)) position = "cutoff";
+      else if (span.complete && ownLine && !after) position = "terminal";
+      else if (span.complete && ownLine && !before) position = "leading";
+      else position = ownLine ? "interior" : "inline";
+    } else if (markerCount === 1 && protocolLines.length === 1) {
+      const item = protocolLines[0];
+      position = item.exact && item.index === last
+        ? "terminal"
+        : (item.exact && item.index === first ? "leading" : "inline");
+    }
+    return {
+      rawChars: raw.length,
+      storyChars: textOf(storyValue).trim().length,
+      recordChars: spanChars + bareChars || (partialPrefix ? partialPrefix.length
+        : protocolLines.reduce((total, item) => total + item.chars, 0)),
+      position
+    };
   }
 
   function aliasMentioned(source, alias) {
@@ -10842,8 +11091,10 @@ function CharacterContinuity(hook, incomingText) {
     const evidence = evidencePacketForKind(owner, normalized, evidenceCandidates, currentInputId, recent, target);
     const targetMap = targetPacketForKind(owner, normalized, targets);
     const commonEnding = [
-      "Ground every record field and Explanation in the supplied evidence.",
-      "Continuity change: place one exact CCO record first, then write complete story prose. Stable continuity: begin immediately with complete narrative paragraphs and dialogue."
+      "Write complete story prose first.",
+      "If supplied evidence warrants the change, end with exactly one completed parenthesized CCO record on its own unlabeled final line and ground every field in that evidence; otherwise omit the record entirely.",
+      "Inside the record, no completed field may contain |, (, ), {, }, [, or ].",
+      "Do not expose other maintenance text."
     ];
     let rules = [];
     if (normalized === "state") {
@@ -10877,13 +11128,15 @@ function CharacterContinuity(hook, incomingText) {
         targetMap,
         evidenceChoice,
         ...stateContinuityRules,
-        "Exact first-line State record: (CCO|S|" + target.code + "|" + evidenceField + "|TriggerList|" + situationField
+        "State record shape: (CCO|S|" + target.code + "|" + evidenceField + "|TriggerList|" + situationField
           + "|Thought). Preserve all 7 fields and all 6 | delimiters. TriggerList, "
           + (frozenConfirmation ? "KEEP" : "Situation")
           + ", and Thought are three separate mandatory fields; never merge or omit one, and values contain no |. Complete these bare-value fields: "
           + stateOpenFields.join(", ") + ". TriggerList uses 1-3 choices: "
           + TRIGGER_CODES.join(", ")
-          + ". Situation is a character-voiced clause of at most 100 characters. Thought is direct first-person inner speech.",
+          + ". Situation is a character-voiced clause of at most " + settings.MODEL_STATE_VALUE_CHARS
+          + " characters. Thought is direct first-person inner speech of at most "
+          + settings.MODEL_STATE_VALUE_CHARS + " characters.",
         ...commonEnding
       ];
     } else if (normalized === "name") {
@@ -10892,7 +11145,7 @@ function CharacterContinuity(hook, incomingText) {
         evidence,
         targetMap,
         evidenceChoice,
-        "Record: (CCO|N|" + target.code + "|" + evidenceField + "|Alias|Transition|Use|Explanation). The two routing fields immediately after CCO are the literal pair N|" + target.code + ". Copy the evidenced Alias exactly. Transitions: Observed, Adopted, Retired, Rejected, Reactivated, Replace=Old Alias. Use: General, None, or supplied S/P/N codes. Each Observed record captures one distinct use; three distinct events establish the alias. Identity-owner evidence supports lifecycle transitions, Player evidence supports Player aliases, and canonical names remain stable.",
+        "Name record shape: (CCO|N|" + target.code + "|" + evidenceField + "|Alias|Transition|Use|Explanation). Keep routing N|" + target.code + ". Copy the evidenced Alias exactly. Transitions: Observed, Adopted, Retired, Rejected, Reactivated, Replace=Old Alias. Use: General, None, or supplied S/P/N codes. Explanation is one factual clause of at most " + settings.MODEL_OPERATION_EXPLANATION_CHARS + " characters. Each Observed record captures one distinct use; three distinct events establish the alias.",
         ...commonEnding
       ];
     } else if (normalized === "relationship") {
@@ -10908,10 +11161,11 @@ function CharacterContinuity(hook, incomingText) {
         evidence,
         targetMap,
         evidenceChoice,
-        "Record: (CCO|R|" + target.code + "|" + evidenceField + "|" + field + "|"
+        "Relationship record shape: (CCO|R|" + target.code + "|" + evidenceField + "|" + field + "|"
           + (direct ? "D" : "A") + "|" + destinationField + "|Explanation). The two routing fields immediately after CCO are the literal pair R|"
           + target.code + ". Complete "
-          + (destinationField === "Destination" ? "Destination and Explanation." : "Explanation."),
+          + (destinationField === "Destination" ? "Destination and Explanation. " : "Explanation. ")
+          + "Explanation is one factual clause of at most " + settings.MODEL_RELATIONSHIP_EXPLANATION_CHARS + " characters.",
         "Destinations: " + destinations.join(", ") + ". Frozen " + pace.name + " pace: "
           + (direct ? "D " + pace.direct : "A " + pace.accumulated) + " per event, maximum "
           + pace.maxStages + " stage" + (pace.maxStages === 1 ? "" : "s") + "; the script assigns the score.",
@@ -10935,11 +11189,12 @@ function CharacterContinuity(hook, incomingText) {
         evidence,
         targetMap,
         evidenceChoice,
-        "Record: (CCO|V|" + target.code + "|" + evidenceField + "|" + destinationField + "|"
+        "View record shape: (CCO|V|" + target.code + "|" + evidenceField + "|" + destinationField + "|"
           + modeField + "|Explanation). The two routing fields immediately after CCO are the literal pair V|" + target.code + ". Complete "
           + openViewFields.join(", ") + ". Destinations: "
           + destinations.join(", ") + ". Modes: " + (modes.length ? modes.join(", ") : "O, M")
-          + ". O keeps the category or moves one adjacent step; M represents a major event and supports a larger jump.",
+          + ". Explanation is one factual clause of at most " + settings.MODEL_OPERATION_EXPLANATION_CHARS
+          + " characters. O keeps the category or moves one adjacent step; M represents a major event and supports a larger jump.",
         "View expresses durable judgement. Supplied derived evidence guides the listed choices. Buried stores established forgetting, Recovered restores it, and a category reconciles a recovering View.",
         "Explanation describes the cited durable judgement and its evidence; the managed heading supplies the resulting View category.",
         ...commonEnding
@@ -10956,15 +11211,16 @@ function CharacterContinuity(hook, incomingText) {
         evidence,
         turningPacket,
         evidenceChoice,
-        "Optional record: (CCO|T|" + target.code + "|" + evidenceField + "|" + id + "|" + mode
+        "Turning Point record shape: (CCO|T|" + target.code + "|" + evidenceField + "|" + id + "|" + mode
           + "|Explanation). Use the literal routing pair T|" + target.code + ".",
         mode === "Support"
           ? "Support records a completed, durable step toward the comparison stage while progress remains below Achieved."
           : (mode === "Breakthrough"
             ? "Breakthrough requires cited completed evidence satisfying every part of the definitive condition and establishing Achieved as the owner's new baseline. A single event or connected completed sequence may qualify; repetition and ease belong to Integration."
             : "Integration records completed evidence that the achieved change is sustained, habitual, or part of ordinary life."),
-        "Explanation states only the cited completed evidence and its Turning Point meaning; the script assigns the number and routing fields.",
-        "If this exact " + mode + " movement is unwarranted, omit the record. Otherwise put it first. Then write complete story prose; never expose maintenance metadata."
+        "Explanation is one factual clause of at most " + settings.MODEL_OPERATION_EXPLANATION_CHARS
+          + " characters stating only the cited completed evidence and its Turning Point meaning; the script assigns the number and routing fields.",
+        ...commonEnding
       ];
     }
     return ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
@@ -11801,7 +12057,7 @@ function CharacterContinuity(hook, incomingText) {
     const original = textOf(value).replace(/\r/g, "").trim();
     let source = controlPresentationText(original);
     let changed = source !== original;
-    const label = source.match(/^(?:Record|State|Name|Relationship|View|Turning Point|CCO record)\s*:\s*(.+)$/i);
+    const label = source.match(/^(?:Record|(?:Optional\s+)?Final record|Exact final-line State record|(?:State|Name|Relationship|View|Turning Point) record shape|State|Name|Relationship|View|Turning Point|CCO record)\s*:\s*(.+)$/i);
     if (label) {
       source = label[1].trim();
       changed = true;
@@ -11853,6 +12109,155 @@ function CharacterContinuity(hook, incomingText) {
       match = pattern.exec(source);
     }
     return -1;
+  }
+
+  function bareCcoOccurrences(value) {
+    const source = textOf(value);
+    const occurrences = [];
+    const pattern = /CCO\s*\|/gi;
+    let match = pattern.exec(source);
+    while (match) {
+      let prior = match.index - 1;
+      while (prior >= 0 && /\s/.test(source[prior])) prior -= 1;
+      if (prior < 0 || source[prior] !== "(") occurrences.push(match.index);
+      match = pattern.exec(source);
+    }
+    return occurrences;
+  }
+
+  function protocolFragmentStart(value) {
+    const source = textOf(value);
+    const patterns = [
+      /\(\s*CCO(?:\s*\||\b)/i,
+      /\(\s*[SNRVT]\s*\|/i,
+      /(?:^|[^A-Za-z0-9])CCO\s*\|/i
+    ];
+    let found = -1;
+    patterns.forEach(pattern => {
+      const match = pattern.exec(source);
+      if (match && (found < 0 || match.index < found)) found = match.index;
+    });
+    return found;
+  }
+
+  function terminalPartialCcoPrefix(value) {
+    const source = textOf(value).replace(/\r/g, "").trimEnd();
+    if (!source) return "";
+    const lineStart = source.lastIndexOf("\n") + 1;
+    const terminalLine = source.slice(lineStart).trim();
+    if (!terminalLine || terminalLine.includes(")")) return "";
+    return /^\(\s*(?:C(?:C(?:O(?:\s*(?:\|[^)\r\n]*)?)?)?)?)?$/i.test(terminalLine)
+      ? terminalLine
+      : "";
+  }
+
+  function terminalPartialCcoPresentation(value) {
+    const source = textOf(value).replace(/\r/g, "").trimEnd();
+    if (!source) return "";
+    const lineStart = source.lastIndexOf("\n") + 1;
+    const terminalLine = source.slice(lineStart).trim();
+    const labels = [
+      "Exact final-line State record:", "Optional final record:", "Final record:",
+      "State record shape:", "Name record shape:", "Relationship record shape:",
+      "View record shape:", "Turning Point record shape:"
+    ];
+    return labels.some(label => terminalLine.toLowerCase() === label.toLowerCase()
+      || (terminalLine.toLowerCase().startsWith(label.toLowerCase())
+        && terminalPartialCcoPrefix(terminalLine.slice(label.length).trim())))
+      ? terminalLine
+      : "";
+  }
+
+  function ccoProtocolSpans(value) {
+    const source = textOf(value).replace(/\r/g, "");
+    const opener = /\(\s*(?:CCO\b|[SNRVT]\s*\|)/gi;
+    const spans = [];
+    let match = opener.exec(source);
+    while (match) {
+      const start = match.index;
+      let depth = 0;
+      let complete = false;
+      let end = source.length;
+      for (let index = start; index < source.length; index += 1) {
+        if (source[index] === "(") depth += 1;
+        else if (source[index] === ")") {
+          depth -= 1;
+          if (depth <= 0) {
+            complete = true;
+            end = index + 1;
+            break;
+          }
+        }
+      }
+      spans.push({ start, end, complete, text: source.slice(start, end) });
+      if (!complete) break;
+      opener.lastIndex = end;
+      match = opener.exec(source);
+    }
+    return spans;
+  }
+
+  function stripCcoProtocolSpans(value) {
+    const source = textOf(value).replace(/\r/g, "").split("\n").map(rawLine => {
+      const presented = ccoPresentation(rawLine);
+      return presented.record ? presented.record : rawLine;
+    }).join("\n");
+    const spans = ccoProtocolSpans(source);
+    let cursor = 0;
+    let stripped = "";
+    spans.forEach(span => {
+      stripped += source.slice(cursor, span.start);
+      cursor = span.end;
+    });
+    stripped += source.slice(cursor);
+    if (!spans.length && (terminalPartialCcoPrefix(source) || terminalPartialCcoPresentation(source))) {
+      const lineStart = stripped.lastIndexOf("\n") + 1;
+      stripped = stripped.slice(0, lineStart);
+    }
+    const labelOnly = /^(?:Record|(?:Optional\s+)?Final record|Exact final-line State record|(?:State|Name|Relationship|View|Turning Point) record shape|State|Name|Relationship|View|Turning Point|CCO record)\s*:\s*$/i;
+    return stripped.split("\n").map(rawLine => {
+      let result = rawLine;
+      const bareIndex = bareCcoIndex(result);
+      if (bareIndex >= 0) result = result.slice(0, bareIndex);
+      if (labelOnly.test(controlPresentationText(result))) result = "";
+      return result.replace(/[ \t]{2,}/g, " ").trimEnd();
+    }).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function terminalProtocolCutoff(value) {
+    const source = textOf(value).replace(/\r/g, "").trim();
+    if (!source) return false;
+    if (terminalPartialCcoPrefix(source) || terminalPartialCcoPresentation(source)) return true;
+    const openers = source.match(/\(\s*(?:CCO\b|[SNRVT]\s*\|)/gi) || [];
+    const spans = ccoProtocolSpans(source);
+    return openers.length === 1 && spans.length === 1 && !spans[0].complete
+      && spans[0].end === source.length;
+  }
+
+  function operationFallbackTerminalProtocolStart(lines, last) {
+    if (!Array.isArray(lines) || last < 0) return -1;
+    const source = lines.slice(0, last + 1).map(rawLine => {
+      const presented = ccoPresentation(rawLine);
+      return presented.record ? presented.record : rawLine;
+    }).join("\n");
+    const spans = ccoProtocolSpans(source);
+    if (spans.length) {
+      const finalSpan = spans[spans.length - 1];
+      const reachesTail = finalSpan.complete
+        ? !source.slice(finalSpan.end).trim()
+        : finalSpan.end === source.length;
+      if (reachesTail) {
+        let suffixStart = spans.length - 1;
+        while (suffixStart > 0
+          && !source.slice(spans[suffixStart - 1].end, spans[suffixStart].start).trim()) {
+          suffixStart -= 1;
+        }
+        return source.slice(0, spans[suffixStart].start).split("\n").length - 1;
+      }
+    }
+    return terminalPartialCcoPrefix(source) || terminalPartialCcoPresentation(source)
+      ? last
+      : -1;
   }
 
   function injectedControlReferenceLines(plan) {
@@ -11980,6 +12385,12 @@ function CharacterContinuity(hook, incomingText) {
       /^(?:When the evidence does not warrant|If this exact)\b/i,
       /^Explanation states only the cited completed evidence\b/i,
       /^Ground every record field and Explanation in the supplied evidence\.?$/i,
+      /^Write complete story prose first\.?$/i,
+      /^If the cited evidence warrants this continuity change\b/i,
+      /^If supplied evidence warrants the change\b/i,
+      /^Never expose maintenance metadata or explain the record\.?$/i,
+      /^Do not expose other maintenance text\.?$/i,
+      /^(?:State|Name|Relationship|View|Turning Point) record shape:\s*\(CCO\|/i,
       /^For a continuity change, place one exact CCO record first\b/i,
       /^The Player authors the Player's inner life, choices, consent, commitments, memories, boundaries, names, and relationships\.?$/i,
       /^Priority:\s*completed direct Name or Relationship fact\b/i,
@@ -12666,7 +13077,11 @@ function CharacterContinuity(hook, incomingText) {
     if (edge === "leading" && ccoPresentation(lines[first]).record) {
       first += 1;
       while (first <= last && !lines[first].trim()) first += 1;
+    } else if (edge === "terminal" && operationFallbackTerminalProtocolStart(lines, last) >= first) {
+      last = operationFallbackTerminalProtocolStart(lines, last) - 1;
+      while (last >= first && !lines[last].trim()) last -= 1;
     }
+    if (first > last) return null;
     let start = first;
     let end = last;
     const parsedLines = new Map();
@@ -12849,6 +13264,15 @@ function CharacterContinuity(hook, incomingText) {
     while (last >= 0 && !lines[last].trim()) last -= 1;
     if (first > last) return null;
 
+    if (edge === "leading" && ccoPresentation(lines[first]).record) {
+      first += 1;
+      while (first <= last && !lines[first].trim()) first += 1;
+    } else if (edge === "terminal" && operationFallbackTerminalProtocolStart(lines, last) >= first) {
+      last = operationFallbackTerminalProtocolStart(lines, last) - 1;
+      while (last >= first && !lines[last].trim()) last -= 1;
+    }
+    if (first > last) return null;
+
     const maxLines = 20;
     const parsedLines = new Map();
     const parsedAt = index => {
@@ -12954,17 +13378,31 @@ function CharacterContinuity(hook, incomingText) {
     }
     if (!closer(lines[last])) return null;
     const limit = Math.max(first, last - maxLines + 1);
+    let fallbackStart = -1;
     for (let start = last - 1; start >= limit; start -= 1) {
       if (!opener(lines[start]) || closer(lines[start])) continue;
+      const recovery = recoveryFor(start, last);
+      if (!recovery) {
+        if (fallbackStart < 0) fallbackStart = start;
+        continue;
+      }
       return {
         start,
         end: last,
         count: lines.slice(start, last + 1).filter(lineValue => lineValue.trim()).length,
         signature: "split-protocol",
         edge,
-        recovery: recoveryFor(start, last)
+        recovery
       };
     }
+    if (fallbackStart >= 0) return {
+      start: fallbackStart,
+      end: last,
+      count: lines.slice(fallbackStart, last + 1).filter(lineValue => lineValue.trim()).length,
+      signature: "split-protocol",
+      edge,
+      recovery: null
+    };
     return null;
   }
 
@@ -13194,19 +13632,34 @@ function CharacterContinuity(hook, incomingText) {
     const strippedSource = typeof preparedSource === "string"
       ? preparedSource
       : stripOperationInstructionEchoes(output, plan).text;
+    const rawCutoffPresentation = terminalPartialCcoPresentation(output);
     const strippedLines = strippedSource.split("\n");
-    const presentation = ccoPresentation(strippedLines[0] || "");
+    const nonblankIndices = strippedLines.map((value, index) => value.trim() ? index : -1)
+      .filter(index => index >= 0);
+    const firstNonblankIndex = nonblankIndices.length ? nonblankIndices[0] : -1;
+    const lastNonblankIndex = nonblankIndices.length ? nonblankIndices[nonblankIndices.length - 1] : -1;
+    const terminalPresentation = ccoPresentation(lastNonblankIndex >= 0 ? strippedLines[lastNonblankIndex] : "");
+    const leadingPresentation = firstNonblankIndex >= 0 && firstNonblankIndex !== lastNonblankIndex
+      ? ccoPresentation(strippedLines[firstNonblankIndex])
+      : terminalPresentation;
+    const presentedIndex = terminalPresentation.record
+      ? lastNonblankIndex
+      : (leadingPresentation.record ? firstNonblankIndex : -1);
+    const presentation = presentedIndex === firstNonblankIndex && presentedIndex !== lastNonblankIndex
+      ? leadingPresentation
+      : terminalPresentation;
     let canonicalizedPresentedRecord = "";
     let source = strippedSource;
-    if (presentation.record && presentation.changed) {
-      canonicalizedPresentedRecord = strippedLines[0];
-      source = presentation.record
-        + (strippedLines.length > 1 ? "\n" + strippedLines.slice(1).join("\n") : "");
+    if (presentedIndex >= 0 && presentation.record && presentation.changed) {
+      canonicalizedPresentedRecord = strippedLines[presentedIndex];
+      const normalizedLines = strippedLines.slice();
+      normalizedLines[presentedIndex] = presentation.record;
+      source = normalizedLines.join("\n");
     }
     const presentationNormalizationNote = canonicalizedPresentedRecord
       ? (presentation.bare
-        ? " Exact bare first-line CCO delimiters were canonicalized."
-        : " Harmless first-line CCO presentation wrappers were removed.")
+        ? " Exact bare edge-line CCO delimiters were canonicalized."
+        : " Harmless edge-line CCO presentation wrappers were removed.")
         + (presentation.numericAnnotation
           ? " The terminal signed numeric annotation " + presentation.numericAnnotation
             + " was removed before validation; managed code owns numerical changes."
@@ -13222,23 +13675,38 @@ function CharacterContinuity(hook, incomingText) {
     const inlineBareCcoLines = source.split("\n").filter(value =>
       bareCcoIndex(value) >= 0 && !bareProtocolLines.includes(value)
     );
+    const partialCcoPrefix = terminalPartialCcoPrefix(source) || terminalPartialCcoPresentation(source);
     const protocolLikeCount = ccoMarkers.length + shorthandMarkers.length
-      + bareProtocolLines.length + inlineBareCcoLines.length;
-    const stripLine = value => {
-      if (ccoPresentation(value).protocolLike) return "";
-      let result = value.replace(/\(\s*(?:CCO\b|[SNRVT]\s*\|)[^()\r\n]*\)/gi, "");
-      const leftover = result.search(/\(\s*(?:CCO\b|[SNRVT]\s*\|)/i);
-      if (leftover >= 0) result = result.slice(0, leftover);
-      const bareIndex = bareCcoIndex(result);
-      if (bareIndex >= 0) result = result.slice(0, bareIndex);
-      return result.replace(/[ \t]{2,}/g, " ").trimEnd();
-    };
-    const story = source.split("\n").map(stripLine).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+      + bareProtocolLines.length + inlineBareCcoLines.length + (partialCcoPrefix ? 1 : 0);
+    const story = stripCcoProtocolSpans(source);
+    const cutoffFragment = terminalProtocolCutoff(source);
     if (!protocolLikeCount) {
+      if (rawCutoffPresentation) {
+        return {
+          story, candidate: null, malformed: false, cutoff: true, hadProtocol: true,
+          reason: "An incomplete labeled terminal CCO fragment was stripped and treated as output cutoff, not model malformation.",
+          raw: line(rawCutoffPresentation, 300)
+        };
+      }
       return { story, candidate: null, malformed: false, hadProtocol: false, reason: "No CCO record", raw: "" };
+    }
+    if (partialCcoPrefix && !ccoMarkers.length && !shorthandMarkers.length
+      && !bareProtocolLines.length && !inlineBareCcoLines.length) {
+      return {
+        story, candidate: null, malformed: false, cutoff: true, hadProtocol: true,
+        reason: "An incomplete terminal CCO opener was stripped and treated as output cutoff, not model malformation.",
+        raw: line(partialCcoPrefix, 300)
+      };
     }
     if (bareProtocolLines.length || inlineBareCcoLines.length) {
       const bareRecord = bareProtocolLines[0] || inlineBareCcoLines[0];
+      if (cutoffFragment && ccoMarkers.length === 1 && !shorthandMarkers.length) {
+        return {
+          story, candidate: null, malformed: false, cutoff: true, hadProtocol: true,
+          reason: "An incomplete multiline terminal CCO fragment was stripped and treated as output cutoff, not model malformation.",
+          raw: line(bareRecord.trim(), 300)
+        };
+      }
       return {
         story, candidate: null, malformed: true, hadProtocol: true,
         reason: "A bare protocol-like record was stripped; a complete record begins with (CCO| and ends with ).",
@@ -13255,19 +13723,48 @@ function CharacterContinuity(hook, incomingText) {
     if (ccoMarkers.length !== 1) {
       return {
         story, candidate: null, malformed: true, hadProtocol: true,
-        reason: "Exactly one CCO record was allowed, but " + ccoMarkers.length + " were found.", raw: "multiple CCO records"
+        reason: "Exactly one CCO record was allowed, but multiple records were found ("
+          + ccoMarkers.length + " total).", raw: "multiple CCO records"
       };
     }
-    const firstLineEnd = source.indexOf("\n");
-    const firstLine = (firstLineEnd >= 0 ? source.slice(0, firstLineEnd) : source);
-    const raw = firstLine.trim();
+    const sourceLines = source.split("\n");
+    const sourceNonblankIndices = sourceLines.map((value, index) => value.trim() ? index : -1)
+      .filter(index => index >= 0);
+    const sourceFirstIndex = sourceNonblankIndices.length ? sourceNonblankIndices[0] : -1;
+    const sourceLastIndex = sourceNonblankIndices.length ? sourceNonblankIndices[sourceNonblankIndices.length - 1] : -1;
+    const terminalLine = sourceLastIndex >= 0 ? sourceLines[sourceLastIndex] : "";
+    const leadingLine = sourceFirstIndex >= 0 ? sourceLines[sourceFirstIndex] : "";
+    let recordLine = "";
+    let recordPosition = "";
+    if (terminalLine === terminalLine.trim() && /^\(CCO\|[^()\r\n]*\)$/.test(terminalLine)) {
+      recordLine = terminalLine;
+      recordPosition = "terminal";
+    } else if (sourceFirstIndex !== sourceLastIndex
+      && leadingLine === leadingLine.trim() && /^\(CCO\|[^()\r\n]*\)$/.test(leadingLine)) {
+      recordLine = leadingLine;
+      recordPosition = "leading";
+    }
+    const raw = recordLine.trim();
     const reportedRaw = line(canonicalizedPresentedRecord || raw, 300);
-    if (firstLine !== raw || !/^\(CCO\|[^()\r\n]*\)$/.test(raw)) {
+    if (!raw) {
+      const protocolLine = sourceLines.find(value => /\(\s*CCO\b/i.test(value)) || "";
+      if (cutoffFragment) {
+        return {
+          story, candidate: null, malformed: false, cutoff: true, hadProtocol: true,
+          reason: "An incomplete terminal CCO fragment was stripped and treated as output cutoff, not model malformation.",
+          raw: line(protocolLine.trim(), 300)
+        };
+      }
       return {
         story, candidate: null, malformed: true, hadProtocol: true,
-        reason: "The CCO record was not the exact first line or had malformed delimiters.", raw: line(raw, 300)
+        reason: "The CCO record was not an exact final line or accepted legacy leading line, or had malformed delimiters.",
+        raw: line(protocolLine.trim(), 300)
       };
     }
+    const protocolPresentationNote = presentationNormalizationNote
+      + (recordPosition === "terminal"
+        ? " Exact terminal CCO position confirmed."
+        : " Legacy leading CCO position accepted; final-line form is preferred.");
     if (!plan || !plan.taskDelivered || plan.task !== "operation" || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) {
       return {
         story, candidate: null, malformed: false, unauthorized: true, hadProtocol: true,
@@ -13332,7 +13829,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       const stateLabelNormalized = triggerField.changed || situationField.changed || thoughtField.changed;
       const stateReason = parsedCcoReason("CCO State record parsed.", routing)
-        + presentationNormalizationNote
+        + protocolPresentationNote
         + stateRepair.note
         + (stateLabelNormalized
           ? " Exact position-matched State field labels were normalized to bare values."
@@ -13358,15 +13855,15 @@ function CharacterContinuity(hook, incomingText) {
       const replacedAliasSource = replacement ? wholeLine(replacement[1], 0) : "";
       const replacedAlias = line(replacedAliasSource, 160);
       const useField = wholeLine(parts[6], 0);
-      const explanation = wholeLine(parts[7], 0);
+      const explanation = wholeLine(parts[7], settings.MAX_OPERATION_EXPLANATION_CHARS);
       if (!subjectCode || !alias || alias !== aliasSource || replacedAlias !== replacedAliasSource
         || !transition || !useField || !explanation
         || /[{}\[\]|()\r\n]/.test(alias + useField + explanation + replacedAlias)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Name CCO record used an invalid subject, alias, transition, permission, explanation, or reserved character.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Name CCO record used an invalid subject, alias, transition, permission, overlong explanation, or reserved character.", raw: line(raw, 300) };
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO Name record parsed.", routing) + presentationNormalizationNote,
+        reason: parsedCcoReason("CCO Name record parsed.", routing) + protocolPresentationNote,
         raw: reportedRaw,
         candidate: { kind: "name", subjectCode, evidenceIds, alias, transition, replacedAlias, useField, explanation }
       };
@@ -13380,16 +13877,16 @@ function CharacterContinuity(hook, incomingText) {
       const eventKind = textOf(parts[5]).trim().toUpperCase();
       const destinationSource = textOf(parts[6]).trim();
       const destination = field ? relationshipDestination(field, destinationSource) : null;
-      const explanation = wholeLine(parts[7], 0);
+      const explanation = wholeLine(parts[7], settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
       if (!targetCode || !field || !["A", "D"].includes(eventKind) || !destination) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship CCO record used an invalid target, field, A/D flag, or destination.", raw: line(raw, 300) };
       }
       if (!explanation || /[{}\[\]|()\r\n]/.test(explanation)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship explanation was empty or used reserved record characters.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship explanation was empty, over " + settings.MAX_RELATIONSHIP_EXPLANATION_CHARS + " characters, or used reserved record characters.", raw: line(raw, 300) };
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO Relationship record parsed.", routing) + presentationNormalizationNote,
+        reason: parsedCcoReason("CCO Relationship record parsed.", routing) + protocolPresentationNote,
         raw: reportedRaw,
         candidate: {
           kind: "relationship", targetCode, evidenceIds, field, eventKind,
@@ -13408,16 +13905,16 @@ function CharacterContinuity(hook, incomingText) {
           ? keyOf(destinationSource).replace(/^./, value => value.toUpperCase())
           : "");
       const severity = textOf(parts[5]).trim().toUpperCase();
-      const explanation = wholeLine(parts[6], 0);
+      const explanation = wholeLine(parts[6], settings.MAX_OPERATION_EXPLANATION_CHARS);
       if (!targetField || !destination || !["O", "M"].includes(severity)) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View CCO record used an invalid target, destination, or O/M flag.", raw: line(raw, 300) };
       }
       if (!explanation || /[{}|\r\n]/.test(explanation)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View explanation was empty or used reserved wrapper characters.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View explanation was empty, over " + settings.MAX_OPERATION_EXPLANATION_CHARS + " characters, or used reserved wrapper characters.", raw: line(raw, 300) };
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO View record parsed.", routing) + presentationNormalizationNote,
+        reason: parsedCcoReason("CCO View record parsed.", routing) + protocolPresentationNote,
         raw: reportedRaw,
         candidate: { kind: "view", targetField, evidenceIds, destination, severity, explanation }
       };
@@ -13429,7 +13926,7 @@ function CharacterContinuity(hook, incomingText) {
       const targetCode = textOf(parts[2]).trim().toUpperCase();
       const turningPointId = canonicalTurningPointId(parts[4]);
       const mode = ["Support", "Breakthrough", "Integration"].find(value => keyOf(value) === keyOf(parts[5])) || "";
-      const explanation = wholeLine(parts[6], 420);
+      const explanation = wholeLine(parts[6], settings.MAX_OPERATION_EXPLANATION_CHARS);
       if (!targetCode || !turningPointId || turningPointId !== textOf(parts[4]).trim() || !mode) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Turning Point CCO record used an invalid target, stable ID, or movement mode.", raw: line(raw, 300) };
       }
@@ -13438,7 +13935,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       return {
         story, malformed: false, hadProtocol: true,
-        reason: parsedCcoReason("CCO Turning Point record parsed.", routing) + presentationNormalizationNote,
+        reason: parsedCcoReason("CCO Turning Point record parsed.", routing) + protocolPresentationNote,
         raw: reportedRaw,
         candidate: { kind: "turning", targetCode, evidenceIds, turningPointId, mode, explanation }
       };
@@ -14184,6 +14681,7 @@ function CharacterContinuity(hook, incomingText) {
     const actualKey = keyOf(actualStage);
     const stageLabels = relationshipStageLabels();
     const stageAlternation = stageLabels.map(escapeRegExp).join("|");
+    const actualMarker = "\uE000CCACTUAL\uE001";
     const neutral = {
       "severe distrust": "distrust", "distrust": "distrust", "guarded": "trust",
       "unproven": "trust", "cautious trust": "trust", "trust": "trust", "deep trust": "trust",
@@ -14195,15 +14693,20 @@ function CharacterContinuity(hook, incomingText) {
     };
     if (stageAlternation) {
       const transitionClaim = new RegExp(
-        "\\b(?:moving|moves?|moved|movement|advancing|advances?|advanced|advance|shifting|shifts?|shifted|shift|transitioning|transitions?|transitioned|transition|changing|changes?|changed|change)"
-          + "[^.!?…\\n]{0,60}\\bfrom\\s+(?:the\\s+)?(" + stageAlternation + ")(?:\\s+stage)?"
+        "\\b(moving|moves?|moved|movement|advancing|advances?|advanced|advance|shifting|shifts?|shifted|shift|transitioning|transitions?|transitioned|transition|changing|changes?|changed|change)"
+          + "\\b[^.!?…\\n]{0,60}\\bfrom\\s+(?:the\\s+)?(" + stageAlternation + ")(?:\\s+stage)?"
           + "\\s+to\\s+(?:the\\s+)?(" + stageAlternation + ")(?:\\s+stage)?\\b",
         "gi"
       );
-      result = result.replace(transitionClaim, (match, fromStage, toStage) =>
+      result = result.replace(transitionClaim, (match, motion, fromStage, toStage) =>
         keyOf(toStage) === actualKey
           ? match
-          : "moving the relationship within the " + actualStage + " stage"
+          : motion + " within the " + actualMarker + " stage"
+      );
+    }
+    if (actualStage && stageAlternation) {
+      result = result.replace(new RegExp("\\b(" + stageAlternation + ")\\b", "gi"), match =>
+        keyOf(match) === actualKey ? actualMarker : match
       );
     }
     stageLabels.forEach(labelValue => {
@@ -14216,24 +14719,25 @@ function CharacterContinuity(hook, incomingText) {
         "gi"
       );
       result = result.replace(levelClaim, (match, measure, dimension) =>
-        "the " + actualStage + " " + measure + " of " + dimension
+        "the " + actualMarker + " " + measure + " of " + dimension
       );
       const labelledStage = new RegExp(
         "\\b((?:relationship|trust|closeness|boundary|boundaries|conflict|role)\\s+stage\\s+(?:is|was|became|reached|remains|at)?\\s*)"
           + escaped + "\\b",
         "gi"
       );
-      result = result.replace(labelledStage, (match, prefix) => prefix + actualStage);
+      result = result.replace(labelledStage, (match, prefix) => prefix + actualMarker);
       const stageCue = "(?:reached|became|is|was|now|remains|moved\\s+to|advanced\\s+to|fell\\s+to|returned\\s+to|at|into|has|holds|shows|demonstrates|indicates?|marks|signals)";
       const contextualClaim = new RegExp(
         "(\\b" + stageCue + "\\s+(?:the\\s+)?)" + escaped + "(\\s+stage)?\\b",
         "gi"
       );
       result = result.replace(contextualClaim, (match, prefix, stageWord) =>
-        prefix + (stageWord ? actualStage + stageWord : neutralWord)
+        prefix + (stageWord ? actualMarker + stageWord : neutralWord)
       );
-      result = result.replace(new RegExp("\\b" + escaped + "\\s+stage\\b", "gi"), actualStage + " stage");
+      result = result.replace(new RegExp("\\b" + escaped + "\\s+stage\\b", "gi"), actualMarker + " stage");
     });
+    result = result.split(actualMarker).join(actualStage);
     result = result.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
     return line(result || ("The cited completed evidence changed the Relationship within the actual " + actualStage + " stage."), 2000);
   }
@@ -14631,13 +15135,32 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function relationshipStoredValue(field, destination, score, description) {
-    const safeDescription = line(description, 2000);
+    const safeDescription = wholeLine(description, 0);
     if (field === "Role" && destination === "Former") {
       return "Former" + (safeDescription ? " — " + safeDescription : "");
     }
     const stage = relationshipStage(field, score);
     if (!stage) return "";
     return score + " (" + stage.label + ")" + (safeDescription ? " — " + safeDescription : "");
+  }
+
+  function fitRelationshipDescription(owner, record, field, destination, score, description) {
+    const probe = copyRelationshipItem(record);
+    probe.values[field] = relationshipStoredValue(field, destination, score, "");
+    reparsePlannedRelationshipRecord(probe);
+    const baseChars = renderRelationshipsPage(owner, 1, [probe]).length;
+    if (baseChars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+      return { ok: false, description: "", error: "The Relationship record's fixed fields exceeded the 1,000-character page limit." };
+    }
+    const capacity = Math.min(
+      settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS,
+      Math.max(0, settings.MAX_RELATIONSHIPS_CARD_CHARS - baseChars - 3)
+    );
+    const compacted = compactLineAtBoundary(description, capacity);
+    if (description && !compacted) {
+      return { ok: false, description: "", error: "No complete Relationship Explanation could fit the remaining page capacity." };
+    }
+    return { ok: true, description: compacted };
   }
 
   function relationshipScoreLabel(parsed) {
@@ -14731,6 +15254,9 @@ function CharacterContinuity(hook, incomingText) {
       } else if (candidate.field === "Role" && destination.special === "Former") {
         nextStage = "Former";
         nextDescription = correctedRelationshipExplanation(candidate.explanation, nextStage);
+        const fitted = fitRelationshipDescription(owner, record, "Role", "Former", null, nextDescription);
+        if (!fitted.ok) return fitted;
+        nextDescription = fitted.description;
         nextValue = relationshipStoredValue("Role", "Former", null, nextDescription);
         stageChanged = oldStage !== nextStage;
         descriptionChanged = keyOf(prior.description) !== keyOf(nextDescription);
@@ -14757,6 +15283,9 @@ function CharacterContinuity(hook, incomingText) {
           if (!stage) return { ok: false, error: "The initialized Relationship score had no valid fixed stage." };
           nextStage = stage.label;
           nextDescription = correctedRelationshipExplanation(candidate.explanation, nextStage);
+          const fitted = fitRelationshipDescription(owner, record, candidate.field, nextStage, nextScore, nextDescription);
+          if (!fitted.ok) return fitted;
+          nextDescription = fitted.description;
           nextValue = relationshipStoredValue(candidate.field, nextStage, nextScore, nextDescription);
           stageChanged = oldStage !== nextStage;
           descriptionChanged = true;
@@ -14764,6 +15293,9 @@ function CharacterContinuity(hook, incomingText) {
           nextScore = targetScore;
           nextStage = destination.label;
           nextDescription = correctedRelationshipExplanation(candidate.explanation, nextStage);
+          const fitted = fitRelationshipDescription(owner, record, candidate.field, destination.label, nextScore, nextDescription);
+          if (!fitted.ok) return fitted;
+          nextDescription = fitted.description;
           nextValue = relationshipStoredValue(candidate.field, destination.label, nextScore, nextDescription);
           stageChanged = oldStage !== nextStage;
           descriptionChanged = keyOf(prior.description) !== keyOf(nextDescription);
@@ -14784,17 +15316,30 @@ function CharacterContinuity(hook, incomingText) {
           nextDescription = stageChanged
             ? correctedRelationshipExplanation(candidate.explanation, nextStage)
             : prior.description;
-          descriptionChanged = keyOf(prior.description) !== keyOf(nextDescription);
+          if (stageChanged) {
+            const fitted = fitRelationshipDescription(owner, record, candidate.field, nextStage, nextScore, nextDescription);
+            if (!fitted.ok) return fitted;
+            nextDescription = fitted.description;
+          }
           nextValue = relationshipStoredValue(candidate.field, nextStage, nextScore, nextDescription);
         }
       }
 
-      if (keyOf(record.values[candidate.field]) === keyOf(nextValue)) {
+      if (record.values[candidate.field] === nextValue) {
         if (!targetResult.found) removePlannedRelationshipItem(found.page, record);
         return { ok: false, unchanged: true, error: "" };
       }
       record.values[candidate.field] = nextValue;
       reparsePlannedRelationshipRecord(record);
+      const compactRecordChars = renderRelationshipsPage(owner, 1, [record]).length;
+      if (compactRecordChars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+        return {
+          ok: false,
+          error: "The Relationship record remained " + compactRecordChars + "/"
+            + settings.MAX_RELATIONSHIPS_CARD_CHARS
+            + " characters after applying the compact Explanation limit; no Relationship change was written."
+        };
+      }
       found.page.dirty = true;
       const recordRemoved = RELATIONSHIP_FIELDS.every(field => !textOf(record.values[field]).trim());
       if (recordRemoved) removePlannedRelationshipItem(found.page, record);
@@ -14806,7 +15351,10 @@ function CharacterContinuity(hook, incomingText) {
         : relationshipScoreLabel(nextParsed);
       const evidenceLabel = (candidate.evidenceIds || []).join(",");
       const stageLabel = recordRemoved ? "Released" : (nextParsed.special || nextParsed.stage || nextStage);
-      const correctedExplanation = recordRemoved ? "" : line(nextParsed.description || nextDescription, 2000);
+      const correctedExplanation = recordRemoved ? "" : wholeLine(nextParsed.description || nextDescription, 0);
+      descriptionChanged = recordRemoved
+        ? !!textOf(prior.description)
+        : textOf(prior.description) !== textOf(nextParsed.description);
       const resultingStoredValue = recordRemoved
         ? ""
         : canonicalRelationshipManagedValue(candidate.field, record.values[candidate.field]);
@@ -14880,7 +15428,8 @@ function CharacterContinuity(hook, incomingText) {
       provenanceCreated: CC.last.provenanceCreated,
       provenanceDiagnostics: clone(CC.last.provenanceDiagnostics || []),
       sourceDiagnostics: clone(CC.last.relationshipSourceDiagnostics || []),
-      useDiagnostics: clone(CC.last.relationshipUseDiagnostics || [])
+      useDiagnostics: clone(CC.last.relationshipUseDiagnostics || []),
+      transactionDiagnostics: clone(CC.relationshipTransactionDiagnostics || [])
     };
   }
 
@@ -14894,6 +15443,10 @@ function CharacterContinuity(hook, incomingText) {
     CC.last.relationshipUseDiagnostics = unique((snapshot.useDiagnostics || []).concat(
       "Relationship provenance/use rollback: " + reason
     ), 500).slice(-40);
+    CC.relationshipTransactionDiagnostics = unique((snapshot.transactionDiagnostics || []).concat(
+      "Rolled back Relationship cards, provenance, counters, and narrow uses: " + reason
+        + (cardsRestored ? "" : " (managed-card rollback was incomplete)")
+    ), 500).slice(-30);
     refreshRelationshipsStore();
     refreshProvenanceActivity();
     return cardsRestored;
@@ -15832,6 +16385,7 @@ function CharacterContinuity(hook, incomingText) {
   function applyOperationOutcomeDrain(owner, plan, parsedCandidate, result, outcome) {
     const normalizedOutcome = keyOf(outcome);
     const points = {
+      cutoff: 0,
       success: settings.OPERATION_POINTS.SUCCESS_DRAIN,
       unchanged: settings.OPERATION_POINTS.UNCHANGED_DRAIN,
       rejected: settings.OPERATION_POINTS.REJECTED_DRAIN,
@@ -15847,8 +16401,27 @@ function CharacterContinuity(hook, incomingText) {
       .map(normalizeOperationDrainRecord)
       .find(item => item && item.key === key) || null;
     const priorValue = record ? effectiveOperationDrainValue(record, opportunity) : 0;
-    const repeated = priorValue > 0 ? settings.OPERATION_POINTS.REPEATED_SIGNATURE_DRAIN : 0;
+    const repeated = normalizedOutcome === "cutoff"
+      ? 0
+      : (priorValue > 0 ? settings.OPERATION_POINTS.REPEATED_SIGNATURE_DRAIN : 0);
     const added = Math.max(0, Number(points) || 0) + Math.max(0, Number(repeated) || 0);
+    if (normalizedOutcome === "cutoff") {
+      if (!CC.operationState.owners[owner.key]) CC.operationState.owners[owner.key] = blankOwnerOperationState();
+      const meter = CC.operationState.owners[owner.key][identity.kind] || blankOperationMeter();
+      meter.gain = Math.max(0, Number(plan.selectedGain) || 0);
+      meter.drain = priorValue;
+      meter.lastServedOpportunity = opportunity;
+      meter.lastResult = normalizedOutcome;
+      meter.lastSignature = identity.evidenceSignature;
+      meter.lastTargetKey = identity.targetKey;
+      meter.lastField = identity.field;
+      CC.operationState.owners[owner.key][identity.kind] = normalizeOperationMeter(meter);
+      const summary = operationKindLabel(identity.kind) + " cutoff added no drain; existing drain remains "
+        + priorValue + " at owner opportunity " + opportunity + ".";
+      CC.last.operationOutcome = operationKindLabel(identity.kind) + " cutoff";
+      CC.last.operationDrainChange = summary;
+      return { record, priorValue, base: 0, repeated: 0, summary };
+    }
     if (!record) {
       record = normalizeOperationDrainRecord({ ...identity, value: 0, updatedOpportunity: opportunity, attempts: 0 });
     }
@@ -15888,6 +16461,10 @@ function CharacterContinuity(hook, incomingText) {
   function processOutput(outputValue) {
     const plan = CC.currentPlan || { task: "none", taskDelivered: false, activeKeys: CC.activeKeys || [] };
     if (plan.opening) {
+      CC.last.outputRawChars = textOf(outputValue).replace(/\r/g, "").trim().length;
+      CC.last.outputStoryChars = 0;
+      CC.last.outputRecordChars = 0;
+      CC.last.outputRecordPosition = "none";
       CC.last.output = "Suppressed only the automatic output immediately following the retained opening prompt.";
       CC.last.candidate = "not requested";
       plan.completed = true;
@@ -15910,12 +16487,18 @@ function CharacterContinuity(hook, incomingText) {
       const presented = ccoPresentation(value);
       return presented.protocolLike || /\(\s*CCO\b/i.test(value);
     });
-    const recoveryApplied = !!(operationFallback.recoveredRecord && !cleanedHasProtocol);
+    const recoveryApplied = !!(operationFallback.recoveredRecord
+      && (!cleanedHasProtocol || operationFallback.pattern.includes("split-protocol")));
     const preparedOutput = recoveryApplied
-      ? operationFallback.recoveredRecord
-        + (operationFallback.text ? "\n" + operationFallback.text : "")
+      ? (operationFallback.text ? operationFallback.text + "\n" : "")
+        + operationFallback.recoveredRecord
       : operationFallback.text;
     const parsed = parseTerminalCandidate(outputValue, plan, preparedOutput);
+    const outputMetrics = outputProtocolMetrics(outputValue, preparedOutput, parsed.story);
+    CC.last.outputRawChars = outputMetrics.rawChars;
+    CC.last.outputStoryChars = outputMetrics.storyChars;
+    CC.last.outputRecordChars = outputMetrics.recordChars;
+    CC.last.outputRecordPosition = outputMetrics.position;
     const normalizedCandidate = recoveryApplied && !!parsed.candidate;
     const cleanupNotes = [];
     if (instructionEcho.count > 0) {
@@ -15932,7 +16515,7 @@ function CharacterContinuity(hook, incomingText) {
         + " (" + operationFallback.count + " line"
         + (operationFallback.count === 1 ? "" : "s") + ").");
     }
-    if (cleanupNotes.length && !parsed.candidate && !parsed.unauthorized) {
+    if (cleanupNotes.length && !parsed.candidate && !parsed.unauthorized && !parsed.cutoff) {
       parsed.malformed = true;
       parsed.reason = cleanupNotes.join(" ")
         + (parsed.hadProtocol ? " " + parsed.reason : "");
@@ -15945,7 +16528,7 @@ function CharacterContinuity(hook, incomingText) {
       ? cleanupNotes.join(" ") + " " + protocolSummary
       : protocolSummary;
     const story = parsed.story.trim();
-    if (!hasCompleteStory(story)) {
+    if (!hasTerminallyPunctuatedStory(story)) {
       const owner = characters.find(character => character.key === plan.ownerKey) || null;
 
       CC.recoveryPending = true;
@@ -15953,23 +16536,27 @@ function CharacterContinuity(hook, incomingText) {
         ? "unauthorized stripped"
         : (parsed.malformed
           ? "malformed stripped"
+          : (parsed.cutoff
+            ? "cutoff stripped"
           : (parsed.candidate
             ? (normalizedCandidate
-              ? "normalized rejected: no complete story"
-              : "rejected: no complete story")
-            : "absent: no complete story"));
+              ? "normalized rejected: no punctuated story"
+              : "rejected: no punctuated story")
+            : "absent: no punctuated story")));
 
       CC.last.operationOutcome = "None";
       CC.last.operationDrainChange = "No drain change";
       if (owner && plan.taskDelivered) {
-        const outcome = parsed.malformed
+        const outcome = parsed.cutoff
+          ? "cutoff"
+          : (parsed.malformed
           ? "malformed"
-          : (parsed.unauthorized || parsed.candidate ? "rejected" : "unchanged");
+          : (parsed.unauthorized || parsed.candidate ? "rejected" : "unchanged"));
         applyOperationOutcomeDrain(owner, plan, parsed.candidate, null, outcome);
       }
 
-      CC.last.output = "No complete story survived; no operation was applied and prose-only recovery remains pending.";
-      CC.last.error = "The response did not finish complete story prose.";
+      CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
+      CC.last.error = "The response did not finish terminally punctuated story prose.";
       return " ";
     }
 
@@ -15984,10 +16571,14 @@ function CharacterContinuity(hook, incomingText) {
 
     if (parsed.unauthorized) {
       CC.last.candidate = "unauthorized stripped";
-      CC.last.error = parsed.reason || "An unauthorized CCO record was stripped while complete story survived.";
+      CC.last.error = parsed.reason || "An unauthorized CCO record was stripped while punctuated story prose survived.";
     } else if (parsed.malformed) {
       CC.last.candidate = "malformed stripped";
-      CC.last.error = parsed.reason || "A malformed CCO record was stripped while complete story survived.";
+      CC.last.error = parsed.reason || "A malformed CCO record was stripped while punctuated story prose survived.";
+    } else if (parsed.cutoff) {
+      CC.last.candidate = "cutoff stripped";
+      CC.last.warning = [CC.last.warning, parsed.reason].filter(Boolean).join(" ");
+      CC.last.error = "";
     } else if (!parsed.candidate) {
       CC.last.candidate = plan.taskDelivered ? "absent/no update" : "not requested";
     } else if (!owner || plan.task !== "operation" || !plan.taskDelivered) {
@@ -16146,13 +16737,15 @@ function CharacterContinuity(hook, incomingText) {
       }
     }
     if (owner && plan.taskDelivered) {
-      const outcome = parsed.malformed
+      const outcome = parsed.cutoff
+        ? "cutoff"
+        : (parsed.malformed
         ? "malformed"
         : (parsed.unauthorized
           ? "rejected"
           : (!parsed.candidate
             ? "unchanged"
-            : (result && result.ok ? "success" : (result && result.unchanged ? "unchanged" : "rejected"))));
+            : (result && result.ok ? "success" : (result && result.unchanged ? "unchanged" : "rejected")))));
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
     }
     if (cleanupNotes.length && parsed.candidate) {
@@ -16181,11 +16774,11 @@ function CharacterContinuity(hook, incomingText) {
     const storyEvidence = addEvidence("story", story);
     if (storyTimeJump && storyEvidence) CC.lastTimeJumpEvidenceId = storyEvidence.id;
     CC.last.output = result && result.ok
-      ? "Complete story survived and the " + (normalizedCandidate ? "normalized " : "accepted ")
+      ? "Punctuated story prose survived and the " + (normalizedCandidate ? "normalized " : "accepted ")
         + parsed.candidate.kind + " operation committed transactionally."
       : result && result.unchanged
-      ? "Complete story survived; the proposed operation already matched and was not refreshed."
-      : "Complete story survived; " + (CC.last.candidate === "absent/no update"
+      ? "Punctuated story prose survived; the proposed operation already matched and was not refreshed."
+      : "Punctuated story prose survived; " + (CC.last.candidate === "absent/no update"
         ? "Names, State, Relationships, Views, and Experiences remained unchanged."
         : (CC.last.candidate === "not requested" ? "no operation was scheduled." : "no continuity operation was applied."));
     return story;
@@ -16779,6 +17372,9 @@ function CharacterContinuity(hook, incomingText) {
       "Retry / Continue / fallback: " + (CC.last.retry ? "Yes" : "No") + " / " + (CC.last.continue ? "Yes" : "No") + " / " + (CC.last.gracefulFallback ? "Yes" : "No"),
       "Last context: " + CC.last.context,
       "Last output: " + CC.last.output,
+      "Output chars raw/prose/CCO: " + (CC.last.outputRawChars || 0) + " / "
+        + (CC.last.outputStoryChars || 0) + " / " + (CC.last.outputRecordChars || 0)
+        + " | CCO position " + (CC.last.outputRecordPosition || "none"),
       "Warning: " + warning,
       "Version: " + settings.VERSION
     ].join("\n");
@@ -16879,6 +17475,9 @@ function CharacterContinuity(hook, incomingText) {
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
+      "Output chars raw/prose/CCO: " + (CC.last.outputRawChars || 0) + " / "
+        + (CC.last.outputStoryChars || 0) + " / " + (CC.last.outputRecordChars || 0)
+        + " | CCO position " + (CC.last.outputRecordPosition || "none"),
       "Output anchor: " + (CC.lastVisibleOutputAnchor ? "Present" : "None"),
       "Version: " + settings.VERSION
     ];
