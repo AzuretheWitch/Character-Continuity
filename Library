@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v1.82",
+  VERSION: "v1.83",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -69,6 +69,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
     SUPPORTING_EVIDENCE_GAIN: 2,
     SUCCESS_DRAIN: 2,
     UNCHANGED_DRAIN: 3,
+    OMITTED_DRAIN: 0,
+    DECLINED_DRAIN: 3,
     REJECTED_DRAIN: 5,
     MALFORMED_DRAIN: 7,
     REPEATED_SIGNATURE_DRAIN: 3,
@@ -398,6 +400,10 @@ function CharacterContinuity(hook, incomingText) {
   function visibleTitleOf(card) {
     if (!card) return "";
     return line(typeof card.title === "string" ? card.title : "", 220);
+  }
+
+  function rawVisibleTitleOf(card) {
+    return card && typeof card.title === "string" ? card.title : "";
   }
 
   function entryOf(card) {
@@ -738,11 +744,250 @@ function CharacterContinuity(hook, incomingText) {
     return card;
   }
 
+  function restoreRawVisibleCardTitle(card, intendedTitle) {
+    if (!card) return card;
+    const exactTitle = textOf(intendedTitle);
+    try {
+      const priorTitle = rawVisibleTitleOf(card);
+      card.title = exactTitle;
+      if (priorTitle !== rawVisibleTitleOf(card)) invalidateCardCatalog();
+    } catch (error) {
+      debug("Could not restore the exact visible Story Card title: " + error.message);
+    }
+    return card;
+  }
+
   function managedCardIdentityMatches(card, intendedTitle) {
     const logicalTitle = line(intendedTitle || titleOf(card), 220);
     return !!(card && logicalTitle
       && textOf(card.keys).trim() === managedCardKey(logicalTitle)
       && keyOf(visibleTitleOf(card)) === keyOf(logicalTitle));
+  }
+
+  function exactCardFieldsMatch(card, keys, entry, type, intendedTitle, exactVisibleTitle = false) {
+    const suppliedTitle = textOf(intendedTitle);
+    const logicalTitle = line(suppliedTitle, 220);
+    return !!(card
+      && textOf(card.keys) === textOf(keys)
+      && entryOf(card) === textOf(entry)
+      && textOf(card.type) === textOf(type)
+      && (exactVisibleTitle
+        ? rawVisibleTitleOf(card) === suppliedTitle
+        : (!logicalTitle || keyOf(visibleTitleOf(card)) === keyOf(logicalTitle))));
+  }
+
+  function physicalCardPresent(card) {
+    if (!card) return false;
+    if (cards.includes(card)) return true;
+    const id = card.id === null || card.id === undefined ? "" : textOf(card.id);
+    return !!(id && cards.some(candidate => candidate
+      && candidate.id !== null && candidate.id !== undefined
+      && textOf(candidate.id) === id));
+  }
+
+  function uniqueCards(values) {
+    const result = [];
+    (Array.isArray(values) ? values : []).forEach(card => {
+      if (card && !result.includes(card)) result.push(card);
+    });
+    return result;
+  }
+
+  function physicalCardId(card) {
+    return card && card.id !== null && card.id !== undefined
+      ? textOf(card.id)
+      : "";
+  }
+
+  function exactCardImage(card, index, idOccurrence, imageOccurrence) {
+    return {
+      card,
+      index,
+      id: physicalCardId(card),
+      idOccurrence,
+      imageOccurrence,
+      visibleTitle: rawVisibleTitleOf(card),
+      keys: textOf(card && card.keys),
+      entry: entryOf(card),
+      type: textOf(card && card.type)
+    };
+  }
+
+  function exactCardImageKey(value) {
+    const card = value && value.card ? value.card : value;
+    return JSON.stringify([
+      physicalCardId(card),
+      rawVisibleTitleOf(card),
+      textOf(card && card.keys),
+      entryOf(card),
+      textOf(card && card.type)
+    ]);
+  }
+
+  function capturePhysicalCardDeck() {
+    const idCounts = {};
+    const imageCounts = {};
+    return cards.map((card, index) => {
+      const id = physicalCardId(card);
+      const imageKey = exactCardImageKey(card);
+      const idOccurrence = idCounts[id] || 0;
+      const imageOccurrence = imageCounts[imageKey] || 0;
+      idCounts[id] = idOccurrence + 1;
+      imageCounts[imageKey] = imageOccurrence + 1;
+      return exactCardImage(card, index, idOccurrence, imageOccurrence);
+    });
+  }
+
+  function exactCardMatchesImage(card, image) {
+    return !!(card && image
+      && physicalCardId(card) === image.id
+      && rawVisibleTitleOf(card) === image.visibleTitle
+      && textOf(card.keys) === image.keys
+      && entryOf(card) === image.entry
+      && textOf(card.type) === image.type);
+  }
+
+  function resolvePhysicalCardImage(image, used, allowIndexFallback = false) {
+    if (!image) return null;
+    const unavailable = used instanceof Set ? used : new Set();
+    if (image.card && cards.includes(image.card) && !unavailable.has(image.card)) {
+      return image.card;
+    }
+    if (image.id) {
+      const matches = cards.filter(card => physicalCardId(card) === image.id
+        && !unavailable.has(card));
+      if (matches.length === 1) return matches[0];
+      const exactMatches = matches.filter(card => exactCardMatchesImage(card, image));
+      if (exactMatches.length === 1) return exactMatches[0];
+      if (exactMatches[image.idOccurrence]) return exactMatches[image.idOccurrence];
+      return null;
+    }
+    const imageKey = JSON.stringify([
+      image.id, image.visibleTitle, image.keys, image.entry, image.type
+    ]);
+    const exactMatches = cards.filter(card => exactCardImageKey(card) === imageKey
+      && !unavailable.has(card));
+    if (exactMatches[image.imageOccurrence]) return exactMatches[image.imageOccurrence];
+    if (exactMatches.length === 1) return exactMatches[0];
+    if (allowIndexFallback) {
+      const indexed = cards[image.index] || null;
+      if (indexed && !unavailable.has(indexed)) return indexed;
+    }
+    return null;
+  }
+
+  function mapPhysicalCardImages(images, allowIndexFallback = false) {
+    const used = new Set();
+    const mapped = (Array.isArray(images) ? images : []).map(image => {
+      const card = resolvePhysicalCardImage(image, used, allowIndexFallback);
+      if (card) used.add(card);
+      return { image, card };
+    });
+    const unresolvedById = {};
+    mapped.forEach(item => {
+      if (item.card) return;
+      const id = item.image.id;
+      if (!unresolvedById[id]) unresolvedById[id] = [];
+      unresolvedById[id].push(item);
+    });
+    Object.keys(unresolvedById).forEach(id => {
+      const desired = unresolvedById[id];
+      const candidates = cards.filter(card => physicalCardId(card) === id && !used.has(card));
+      if (desired.length !== candidates.length) return;
+      desired.sort((left, right) => left.image.index - right.image.index);
+      candidates.sort((left, right) => cards.indexOf(left) - cards.indexOf(right));
+      desired.forEach((item, index) => {
+        item.card = candidates[index];
+        used.add(candidates[index]);
+      });
+    });
+    return { mapped, used, complete: mapped.every(item => !!item.card) };
+  }
+
+  function physicalDeckImageMultisetMatches(images) {
+    const expected = (Array.isArray(images) ? images : []).map(image => JSON.stringify([
+      image.id, image.visibleTitle, image.keys, image.entry, image.type
+    ])).sort();
+    const actual = cards.map(card => exactCardImageKey(card)).sort();
+    return expected.length === actual.length
+      && expected.every((value, index) => value === actual[index]);
+  }
+
+  function createExactCardImage(image) {
+    const prior = capturePhysicalCardDeck();
+    const cleanup = () => {
+      const mapping = mapPhysicalCardImages(prior, false);
+      if (!mapping.complete) return false;
+      const additions = cards.filter(card => !mapping.used.has(card));
+      additions.slice().sort((left, right) => cardIndex(right) - cardIndex(left))
+        .forEach(card => { removeCard(card); });
+      return physicalDeckImageMultisetMatches(prior);
+    };
+    try {
+      addStoryCard(image.keys, image.entry, image.type);
+      invalidateCardCatalog();
+      const mapping = mapPhysicalCardImages(prior, true);
+      if (!mapping.complete) {
+        cleanup();
+        return null;
+      }
+      const additions = cards.filter(card => !mapping.used.has(card));
+      if (cards.length !== prior.length + 1 || additions.length !== 1) {
+        cleanup();
+        return null;
+      }
+      const created = restoreRawVisibleCardTitle(additions[0], image.visibleTitle);
+      if (exactCardMatchesImage(created, image)) return created;
+      cleanup();
+      return null;
+    } catch (error) {
+      debug("Could not recreate an exact Story Card image: " + error.message);
+      cleanup();
+      return null;
+    }
+  }
+
+  function restorePhysicalCardDeck(images) {
+    const desired = Array.isArray(images) ? images : [];
+    let mapping = mapPhysicalCardImages(desired, false);
+    let extras = cards.filter(card => !mapping.used.has(card));
+    if (mapping.complete) {
+      extras.slice().sort((left, right) => cardIndex(right) - cardIndex(left))
+        .forEach(card => { removeCard(card); });
+    }
+    mapping = mapPhysicalCardImages(desired, false);
+    for (const item of mapping.mapped) {
+      let card = item.card;
+      if (!card) {
+        if (item.image.id) continue;
+        card = createExactCardImage(item.image);
+        if (!card) continue;
+      }
+      if (!exactCardMatchesImage(card, item.image)) {
+        const index = cardIndex(card);
+        if (index < 0) continue;
+        try {
+          updateStoryCard(index, item.image.keys, item.image.entry, item.image.type);
+          invalidateCardCatalog();
+        } catch (error) {
+          debug("Could not restore an exact Story Card image: " + error.message);
+        }
+        const used = new Set();
+        card = resolvePhysicalCardImage(item.image, used, false) || card;
+      }
+      restoreRawVisibleCardTitle(card, item.image.visibleTitle);
+    }
+    invalidateCardCatalog();
+    return physicalDeckImageMultisetMatches(desired);
+  }
+
+  function managedCardMatches(title) {
+    const logicalTitle = line(title, 220);
+    const wantedKey = managedCardKey(logicalTitle);
+    return uniqueCards(
+      catalogRecordsByTitle(logicalTitle).map(record => record.card)
+        .concat(wantedKey ? catalogRecordsByRawKey(wantedKey).map(record => record.card) : [])
+    );
   }
 
   function findCard(title) {
@@ -758,7 +1003,11 @@ function CharacterContinuity(hook, incomingText) {
     const direct = catalog.indexByCard.get(card);
     if (Number.isInteger(direct)) return direct;
     const id = card.id === null || card.id === undefined ? "" : textOf(card.id);
-    const match = id ? firstCatalogCard(catalog.byId.get(id) || []) : null;
+    const idMatches = id ? (catalog.byId.get(id) || []) : [];
+    const candidate = idMatches.length === 1 ? firstCatalogCard(idMatches) : null;
+    const match = candidate && exactCardImageKey(candidate) === exactCardImageKey(card)
+      ? candidate
+      : null;
     return match ? catalog.indexByCard.get(match) : -1;
   }
 
@@ -774,6 +1023,8 @@ function CharacterContinuity(hook, incomingText) {
   function updateCardAt(index, keys, entry, type, intendedTitle, preserveExactFields = false) {
     if (!Number.isInteger(index) || index < 0 || index >= cards.length) return null;
     const current = cards[index];
+    const priorDeck = capturePhysicalCardDeck();
+    const targetImage = priorDeck[index];
     const priorTitle = line(titleOf(current), 220);
     const logicalTitle = line(intendedTitle || priorTitle, 220);
     const nextKeys = preserveExactFields
@@ -792,18 +1043,63 @@ function CharacterContinuity(hook, incomingText) {
     if (textOf(current && current.keys) === nextKeys
       && entryOf(current) === nextEntry
       && textOf(current && current.type) === nextType) {
-      return restoreVisibleCardTitle(current, logicalTitle);
+      const unchanged = restoreVisibleCardTitle(current, logicalTitle);
+      return exactCardFieldsMatch(unchanged, nextKeys, nextEntry, nextType, logicalTitle)
+        ? unchanged
+        : null;
     }
+    const restorePrior = () => restorePhysicalCardDeck(priorDeck);
+    const verifiedUpdatedCard = () => {
+      if (cards.length !== priorDeck.length) return null;
+      const mapping = mapPhysicalCardImages(priorDeck, false);
+      let updated = mapping.mapped[index] && mapping.mapped[index].card;
+      if (!updated) {
+        const fallback = mapPhysicalCardImages(priorDeck, true);
+        updated = fallback.mapped[index] && fallback.mapped[index].card;
+        if (!fallback.complete) return null;
+      } else if (!mapping.complete) {
+        return null;
+      }
+      for (let position = 0; position < priorDeck.length; position += 1) {
+        const item = mapping.mapped[position];
+        if (position === index) continue;
+        if (!item || !exactCardMatchesImage(item.card, item.image)) return null;
+      }
+      return exactCardFieldsMatch(updated, nextKeys, nextEntry, nextType, logicalTitle)
+        ? updated
+        : null;
+    };
     try {
       updateStoryCard(index, nextKeys, nextEntry, nextType);
       invalidateCardCatalog();
-      const updated = restoreVisibleCardTitle(cards[index] || current, logicalTitle);
+      const resolved = resolvePhysicalCardImage(targetImage, new Set(), false);
+      const updated = restoreVisibleCardTitle(resolved, logicalTitle);
+      const verified = updated && verifiedUpdatedCard();
+      if (!verified) {
+        const restored = restorePrior();
+        if (!restored) {
+          markManagedTitlesDirty(
+            [priorTitle, logicalTitle],
+            "Incomplete write and rollback for " + (logicalTitle || priorTitle || "managed Story Card")
+          );
+        }
+        debug("Rejected an incomplete Story Card write for "
+          + (logicalTitle || priorTitle || nextKeys) + (restored ? "." : "; rollback was incomplete."));
+        return null;
+      }
       markManagedTitlesDirty(
         [priorTitle, logicalTitle],
         "Updated " + (logicalTitle || priorTitle || "managed Story Card")
       );
-      return updated;
+      return verified;
     } catch (error) {
+      const restored = restorePrior();
+      if (!restored) {
+        markManagedTitlesDirty(
+          [priorTitle, logicalTitle],
+          "Failed write and rollback for " + (logicalTitle || priorTitle || "managed Story Card")
+        );
+      }
       debug("Could not update " + (titleOf(current) || nextKeys) + " through the Story Card API: " + error.message);
       return null;
     }
@@ -824,80 +1120,109 @@ function CharacterContinuity(hook, incomingText) {
     );
   }
 
+  function addCardExact(title, keys, entry, type) {
+    const cardTitle = line(title, 220);
+    if (!cardTitle) return null;
+    const cardKey = textOf(keys);
+    const cardEntry = typeof entry === "string" ? entry : "";
+    const cardType = textOf(type);
+    const priorDeck = capturePhysicalCardDeck();
+    const before = priorDeck.length;
+    let created = null;
+    try {
+      addStoryCard(
+        cardKey,
+        cardEntry,
+        cardType
+      );
+      invalidateCardCatalog();
+      const mapping = mapPhysicalCardImages(priorDeck, false);
+      const additions = cards.filter(card => card && !mapping.used.has(card));
+      if (mapping.complete && additions.length === 1) created = additions[0];
+      created = restoreVisibleCardTitle(created, cardTitle);
+      if (cards.length !== before + 1
+        || !mapping.complete
+        || mapping.mapped.some(item => !exactCardMatchesImage(item.card, item.image))
+        || !exactCardFieldsMatch(created, cardKey, cardEntry, cardType, cardTitle)) {
+        const restored = restorePhysicalCardDeck(priorDeck);
+        debug("Rejected an incomplete Story Card creation for " + cardTitle
+          + (restored ? "." : "; cleanup was incomplete."));
+        return null;
+      }
+    } catch (error) {
+      debug("Could not create " + cardTitle + ": " + error.message);
+      const restored = restorePhysicalCardDeck(priorDeck);
+      if (!restored) debug("Creation cleanup was incomplete for " + cardTitle + ".");
+      return null;
+    }
+    markManagedTitlesDirty(cardTitle, "Added " + cardTitle);
+    return created;
+  }
+
   function addCard(title, entry) {
     const cardTitle = line(title, 220);
     if (!cardTitle) return null;
     const cardKey = managedCardKey(cardTitle);
-    const existing = firstCatalogCard(catalogRecordsByRawKey(cardKey))
-      || findCard(cardTitle);
-    if (existing) return restoreVisibleCardTitle(existing, cardTitle);
-    const before = cards.length;
-    let created = null;
-    try {
-      const result = addStoryCard(
-        cardKey,
-        typeof entry === "string" ? entry : "",
-        settings.CARD_TYPE
-      );
-      invalidateCardCatalog();
-      created = firstCatalogCard(catalogRecordsByRawKey(cardKey));
-      if (!created && Number.isInteger(result)) {
-        created = cards[result] || cards[result - 1] || null;
-      } else if (!created && cards.length > before) {
-        created = cards[cards.length - 1];
-      } else if (!created && result === false) {
-        created = findCard(cardTitle);
-      }
-    } catch (error) {
-      debug("Could not create " + cardTitle + ": " + error.message);
+    const cardEntry = typeof entry === "string" ? entry : "";
+    const matching = managedCardMatches(cardTitle);
+    if (matching.length > 1) return null;
+    if (matching.length === 1) {
+      const existing = matching[0];
+      if (textOf(existing.keys) !== cardKey || entryOf(existing) !== cardEntry
+        || textOf(existing.type) !== settings.CARD_TYPE) return null;
+      const restored = restoreVisibleCardTitle(existing, cardTitle);
+      return exactCardFieldsMatch(
+        restored, cardKey, cardEntry, settings.CARD_TYPE, cardTitle
+      ) ? restored : null;
     }
-    const added = cards.length > before;
-    created = created || (cards.length > before ? cards[cards.length - 1] : null);
-    created = restoreVisibleCardTitle(created, cardTitle);
-    if (added && created) markManagedTitlesDirty(cardTitle, "Added " + cardTitle);
-    return created;
+    return addCardExact(cardTitle, cardKey, cardEntry, settings.CARD_TYPE);
   }
 
   function upsertCard(title, entry) {
-    const card = findCard(title);
+    const matching = managedCardMatches(title);
+    if (matching.length > 1) return null;
+    const card = matching[0] || null;
     return card ? saveCard(card, entry) : addCard(title, entry);
   }
 
   function removeCard(card) {
     const index = cardIndex(card);
     if (index < 0) return false;
-    const removedTitle = titleOf(cards[index] || card);
+    const priorDeck = capturePhysicalCardDeck();
+    const target = cards[index] || card;
+    const removedTitle = titleOf(target);
+    const before = cards.length;
     try {
       removeStoryCard(index);
       invalidateCardCatalog();
+      const expected = priorDeck.filter((item, position) => position !== index);
+      if (cards.length !== before - 1 || cards.includes(target)
+        || !physicalDeckImageMultisetMatches(expected)) {
+        const restored = restorePhysicalCardDeck(priorDeck);
+        debug("Story Card removal could not be verified for "
+          + (removedTitle || "the requested card")
+          + (restored ? "." : "; rollback was incomplete."));
+        return false;
+      }
       markManagedTitlesDirty(removedTitle, "Removed " + (removedTitle || "managed Story Card"));
       return true;
     } catch (error) {
+      const restored = restorePhysicalCardDeck(priorDeck);
       debug("Could not remove " + (titleOf(card) || "Story Card") + ": " + error.message);
+      if (!restored) debug("Removal rollback was incomplete for " + (removedTitle || "Story Card") + ".");
       return false;
     }
   }
 
   function removeCards(cardList) {
-    const indices = unique((Array.isArray(cardList) ? cardList : [])
-      .map(cardIndex)
-      .filter(index => index >= 0)
-      .map(String), 20)
-      .map(Number)
-      .sort((left, right) => right - left);
-    if (!indices.length) return true;
-    let removed = true;
-    indices.forEach(index => {
-      const removedTitle = titleOf(cards[index]);
-      try {
-        removeStoryCard(index);
-        invalidateCardCatalog();
-        markManagedTitlesDirty(removedTitle, "Removed " + (removedTitle || "managed Story Card"));
-      } catch (error) {
-        debug("Could not remove Story Card at index " + index + ": " + error.message);
-        removed = false;
-      }
+    const targets = [];
+    (Array.isArray(cardList) ? cardList : []).forEach(card => {
+      if (card && cardIndex(card) >= 0 && !targets.includes(card)) targets.push(card);
     });
+    targets.sort((left, right) => cardIndex(right) - cardIndex(left));
+    if (!targets.length) return true;
+    let removed = true;
+    targets.forEach(card => { if (!removeCard(card)) removed = false; });
     return removed;
   }
 
@@ -2356,13 +2681,7 @@ function CharacterContinuity(hook, incomingText) {
         entry: outer.entry
       }
     ];
-    const snapshots = changes.map(change => ({
-      index: cardIndex(change.card),
-      title: titleOf(change.card),
-      keys: change.card.keys,
-      entry: entryOf(change.card),
-      type: change.card.type
-    }));
+    const priorDeck = capturePhysicalCardDeck();
     try {
       changes.forEach(change => {
         const saved = saveCard(change.card, change.entry, change.title);
@@ -2373,16 +2692,7 @@ function CharacterContinuity(hook, incomingText) {
         change.card = saved;
       });
     } catch (error) {
-      let restored = true;
-      snapshots.slice().reverse().forEach(snapshot => {
-        if (!updateCardAt(
-          snapshot.index,
-          snapshot.keys,
-          snapshot.entry,
-          snapshot.type,
-          snapshot.title
-        )) restored = false;
-      });
+      const restored = restorePhysicalCardDeck(priorDeck);
       return {
         ok: false,
         error: "activation transaction failed at " + (error.message || "an unknown card")
@@ -3561,7 +3871,8 @@ function CharacterContinuity(hook, incomingText) {
       const before = record.value;
       const after = effectiveOperationDrainValue(record, opportunity);
       if (after !== before || record.updatedOpportunity !== opportunity) changed += 1;
-      if (after <= 0) {
+      const preservesOmissionHistory = keyOf(record.lastResult) === "omitted" && record.attempts > 0;
+      if (after <= 0 && !preservesOmissionHistory) {
         removed += 1;
         return;
       }
@@ -3755,6 +4066,105 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
+  function blankLastGenuineOperation() {
+    return {
+      inputCount: 0,
+      inputEvidenceId: "",
+      phase: "none",
+      task: "none",
+      taskDelivered: false,
+      ownerKey: "",
+      ownerName: "",
+      operationKind: "",
+      ownerOpportunity: 0,
+      selectionFrozen: false,
+      selectedGain: 0,
+      selectedDrain: 0,
+      selectedNet: 0,
+      evidenceIds: [],
+      selectedCandidate: null,
+      deferredReason: "",
+      parserResult: "Not processed",
+      candidateResult: "not requested",
+      mutationResult: "None",
+      outcome: "None",
+      drainChange: "No drain change",
+      outputRawChars: 0,
+      outputStoryChars: 0,
+      outputRecordChars: 0,
+      outputRecordPosition: "none",
+      resolution: "Not processed"
+    };
+  }
+
+  function recordedOperationCandidate(value) {
+    const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    if (!Object.keys(source).length) return null;
+    return {
+      kind: keyOf(source.kind),
+      targetKey: normalizedTargetKey(source.targetKey),
+      field: line(source.field, 80),
+      destination: line(source.destination, 80),
+      evidenceSignature: line(source.evidenceSignature, 500),
+      sourceIds: unique(Array.isArray(source.sourceIds) ? source.sourceIds : [], 40).slice(0, 8),
+      direct: source.direct === true,
+      derived: source.derived === true
+    };
+  }
+
+  function normalizeLastGenuineOperation(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const fallback = blankLastGenuineOperation();
+    return {
+      inputCount: Math.max(0, Math.floor(Number(source.inputCount) || 0)),
+      inputEvidenceId: continuitySourceId(source.inputEvidenceId),
+      phase: line(source.phase, 80) || fallback.phase,
+      task: line(source.task, 40) || fallback.task,
+      taskDelivered: source.taskDelivered === true,
+      ownerKey: normalizedTargetKey(source.ownerKey),
+      ownerName: line(source.ownerName, 160),
+      operationKind: keyOf(source.operationKind),
+      ownerOpportunity: Math.max(0, Math.floor(Number(source.ownerOpportunity) || 0)),
+      selectionFrozen: source.selectionFrozen === true,
+      selectedGain: Math.max(0, Math.floor(Number(source.selectedGain) || 0)),
+      selectedDrain: Math.max(0, Math.floor(Number(source.selectedDrain) || 0)),
+      selectedNet: Math.floor(Number(source.selectedNet) || 0),
+      evidenceIds: unique(Array.isArray(source.evidenceIds) ? source.evidenceIds : [], 40).slice(0, 12),
+      selectedCandidate: recordedOperationCandidate(source.selectedCandidate),
+      deferredReason: line(source.deferredReason, 500),
+      parserResult: line(source.parserResult, 700) || fallback.parserResult,
+      candidateResult: line(source.candidateResult, 200) || fallback.candidateResult,
+      mutationResult: line(source.mutationResult, 700) || fallback.mutationResult,
+      outcome: line(source.outcome, 200) || fallback.outcome,
+      drainChange: line(source.drainChange, 700) || fallback.drainChange,
+      outputRawChars: Math.max(0, Math.floor(Number(source.outputRawChars) || 0)),
+      outputStoryChars: Math.max(0, Math.floor(Number(source.outputStoryChars) || 0)),
+      outputRecordChars: Math.max(0, Math.floor(Number(source.outputRecordChars) || 0)),
+      outputRecordPosition: line(source.outputRecordPosition, 40) || fallback.outputRecordPosition,
+      resolution: line(source.resolution, 300) || fallback.resolution
+    };
+  }
+
+  function blankPendingOperationRetry() {
+    return { active: false, sourceInputCount: 0, ownerKey: "", plan: null };
+  }
+
+  function normalizePendingOperationRetry(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const plan = source.plan && typeof source.plan === "object" && !Array.isArray(source.plan)
+      ? clone(source.plan)
+      : null;
+    const active = source.active === true && !!plan && plan.taskDelivered === true
+      && plan.task === "operation" && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+      && !!line(plan.selectedEvidenceSignature, 500);
+    return active ? {
+      active: true,
+      sourceInputCount: Math.max(0, Math.floor(Number(source.sourceInputCount) || 0)),
+      ownerKey: normalizedTargetKey(source.ownerKey || plan.ownerKey),
+      plan
+    } : blankPendingOperationRetry();
+  }
+
   function initialStableState() {
     return {
       schemaVersion: 1,
@@ -3764,6 +4174,8 @@ function CharacterContinuity(hook, incomingText) {
       openingSeen: false, openingEvidenceId: "",
       lastInput: "", currentPlan: null,
       preGenerationSnapshot: null, lastVisibleOutputAnchor: null,
+      lastGenuineOperation: blankLastGenuineOperation(),
+      pendingOperationRetry: blankPendingOperationRetry(),
       focusLastServed: {}, sceneLastSeen: {}, recoveryPending: false,
       evidence: [], nextEvidenceNumber: 1, ownerOpportunities: {}, recoveringViews: {},
       provenance: blankProvenanceLedger(), operationState: blankOperationState(),
@@ -4022,6 +4434,19 @@ function CharacterContinuity(hook, incomingText) {
     snapshot.recoveringViews = migrateRecoveringViewKeys(snapshot.recoveringViews);
     snapshot.provenance = migrateProvenanceIdentityKeys(snapshot.provenance);
     snapshot.operationState = migrateOperationStateIdentityKeys(snapshot.operationState);
+    if (snapshot.lastGenuineOperation && typeof snapshot.lastGenuineOperation === "object") {
+      snapshot.lastGenuineOperation.ownerKey = migratedCharacterKey(snapshot.lastGenuineOperation.ownerKey);
+      if (snapshot.lastGenuineOperation.selectedCandidate
+        && typeof snapshot.lastGenuineOperation.selectedCandidate === "object") {
+        snapshot.lastGenuineOperation.selectedCandidate.targetKey = migratedCharacterKey(
+          snapshot.lastGenuineOperation.selectedCandidate.targetKey
+        );
+      }
+    }
+    if (snapshot.pendingOperationRetry && typeof snapshot.pendingOperationRetry === "object") {
+      snapshot.pendingOperationRetry.ownerKey = migratedCharacterKey(snapshot.pendingOperationRetry.ownerKey);
+      migratePlanIdentityKeys(snapshot.pendingOperationRetry.plan);
+    }
     migrateEvidenceIdentityKeys(snapshot.evidence);
   }
 
@@ -4039,8 +4464,21 @@ function CharacterContinuity(hook, incomingText) {
     CC.recoveringViews = migrateRecoveringViewKeys(CC.recoveringViews);
     CC.provenance = migrateProvenanceIdentityKeys(CC.provenance);
     CC.operationState = migrateOperationStateIdentityKeys(CC.operationState);
+    if (CC.lastGenuineOperation && typeof CC.lastGenuineOperation === "object") {
+      CC.lastGenuineOperation.ownerKey = migratedCharacterKey(CC.lastGenuineOperation.ownerKey);
+      if (CC.lastGenuineOperation.selectedCandidate
+        && typeof CC.lastGenuineOperation.selectedCandidate === "object") {
+        CC.lastGenuineOperation.selectedCandidate.targetKey = migratedCharacterKey(
+          CC.lastGenuineOperation.selectedCandidate.targetKey
+        );
+      }
+    }
     migrateEvidenceIdentityKeys(CC.evidence);
     migratePlanIdentityKeys(CC.currentPlan);
+    if (CC.pendingOperationRetry && typeof CC.pendingOperationRetry === "object") {
+      CC.pendingOperationRetry.ownerKey = migratedCharacterKey(CC.pendingOperationRetry.ownerKey);
+      migratePlanIdentityKeys(CC.pendingOperationRetry.plan);
+    }
     migrateSnapshotIdentityKeys(CC.preGenerationSnapshot);
     if (CC.lastVisibleOutputAnchor && typeof CC.lastVisibleOutputAnchor === "object") {
       CC.lastVisibleOutputAnchor.focusKey = migratedCharacterKey(CC.lastVisibleOutputAnchor.focusKey);
@@ -4067,6 +4505,8 @@ function CharacterContinuity(hook, incomingText) {
   if (!CC.recoveringViews || typeof CC.recoveringViews !== "object" || Array.isArray(CC.recoveringViews)) CC.recoveringViews = {};
   CC.provenance = normalizeProvenanceLedger(CC.provenance);
   CC.operationState = normalizeOperationState(CC.operationState);
+  CC.lastGenuineOperation = normalizeLastGenuineOperation(CC.lastGenuineOperation);
+  CC.pendingOperationRetry = normalizePendingOperationRetry(CC.pendingOperationRetry);
   characters.forEach(character => {
     if (!CC.operationState.owners[character.key]) {
       CC.operationState.owners[character.key] = blankOwnerOperationState();
@@ -4401,21 +4841,37 @@ function CharacterContinuity(hook, incomingText) {
 
   function repairViewsCollection(character, buried, pages, diagnostics) {
     const maximum = settings.MAX_VIEWS_CARD_CHARS;
+    const ownerScope = [character.key];
+    const snapshot = captureManagedViewsCards(ownerScope);
+    const plannedPages = (Array.isArray(pages) ? pages : []).map(page => ({
+      ...page,
+      records: page.records.map(record => ({ ...record })),
+      created: false,
+      dirty: false
+    }));
     let changed = false;
-    const movablePages = pages.filter(page => page.safe && !page.duplicatePage);
+    let attempted = false;
+    const pendingDiagnostics = [];
+    const movablePages = plannedPages.filter(page => page.safe && !page.duplicatePage);
     const oversizedPages = movablePages.filter(page => page.records.some(record => record.oversize));
     oversizedPages.forEach(page => page.records.filter(record => record.oversize).forEach(record => {
       diagnostics.push(page.title + " has an oversized record for " + record.targetName + "; it was preserved and excluded.");
     }));
     const repairablePages = movablePages.filter(page => !oversizedPages.includes(page));
     repairablePages.forEach(page => {
+      const priorCount = page.records.length;
       page.records = page.records.filter(record => !record.duplicate);
+      if (page.records.length !== priorCount) {
+        page.dirty = true;
+        changed = true;
+      }
       page.records.forEach(record => {
         if (record.conflict || record.oversize || !record.writable) return;
         const corrected = correctedViewExplanation(record.explanation, record.category);
         if (!corrected || corrected === record.explanation) return;
         record.explanation = corrected;
-        diagnostics.push("Aligned " + character.name + "→" + record.targetName
+        page.dirty = true;
+        pendingDiagnostics.push("Aligned " + character.name + "→" + record.targetName
           + " View explanation with the managed " + record.category + " category.");
         changed = true;
       });
@@ -4425,48 +4881,80 @@ function CharacterContinuity(hook, incomingText) {
     repairablePages.forEach(page => {
       while (renderViewsPage(character, buried, page.page, page.records).length > maximum && page.records.length) {
         overflow.unshift(page.records.pop());
+        page.dirty = true;
+        changed = true;
       }
     });
-    overflow.forEach(record => {
+    for (const record of overflow) {
       let destination = repairablePages.find(page => {
         const candidate = page.records.concat({ ...record, page: page.page, card: page.card });
         return renderViewsPage(character, buried, page.page, candidate).length <= maximum;
       });
       if (!destination) {
-        const pageNumber = nextViewsPageNumber(pages);
+        const pageNumber = nextViewsPageNumber(plannedPages);
         const title = viewPageTitle(character, buried, pageNumber);
-        const card = addCard(title, emptyViewsEntry(character, buried, pageNumber));
-        if (!card) {
-          diagnostics.push("Could not create " + title + " while redistributing whole records.");
-          return;
-        }
         destination = {
-          card, page: pageNumber, buried: !!buried, title, source: entryOf(card), records: [], invalid: [],
-          wrapperValid: true, headingsValid: true, safe: true, chars: entryOf(card).length
+          card: null, page: pageNumber, buried: !!buried, title, source: "", records: [], invalid: [],
+          wrapperValid: true, headingsValid: true, safe: true, chars: 0,
+          created: true, dirty: true
         };
-        pages.push(destination);
+        plannedPages.push(destination);
         repairablePages.push(destination);
       }
       record.page = destination.page;
       record.card = destination.card;
       destination.records.push(record);
-    });
+      destination.dirty = true;
+    }
 
-    repairablePages.forEach(page => {
-      const entry = renderViewsPage(character, buried, page.page, page.records);
-      if (entry !== entryOf(page.card)) {
-        const saved = saveCard(page.card, entry);
-        if (saved) {
-          page.card = saved;
-          page.records.forEach(record => { record.card = page.card; });
-          diagnostics.push("Repaired " + page.title + " structurally.");
-          changed = true;
-        } else {
-          diagnostics.push("Could not repair " + page.title + " through the Story Card API.");
+    if (!changed) return { changed: false, attempted: false, failed: false };
+    attempted = true;
+    try {
+      for (const page of repairablePages.filter(item => item.dirty && item.created)) {
+        const entry = renderViewsPage(character, buried, page.page, page.records);
+        if (entry.length > maximum) throw new Error(page.title + " exceeded the 1,000-character hard limit.");
+        const card = addCard(page.title, entry);
+        if (!card || entryOf(card) !== entry || !managedCardIdentityMatches(card, page.title)) {
+          throw new Error("Could not create and verify " + page.title + ".");
         }
+        page.card = card;
+        page.records.forEach(record => { record.card = card; });
       }
+      for (const page of repairablePages.filter(item => item.dirty && !item.created)) {
+        const entry = renderViewsPage(character, buried, page.page, page.records);
+        if (entry.length > maximum) throw new Error(page.title + " exceeded the 1,000-character hard limit.");
+        const saved = saveCard(page.card, entry);
+        if (!saved || entryOf(saved) !== entry || !managedCardIdentityMatches(saved, page.title)) {
+          throw new Error("Could not update and verify " + page.title + ".");
+        }
+        page.card = saved;
+        page.records.forEach(record => { record.card = saved; });
+      }
+      refreshViewsStore(false);
+      const verifiedOwner = viewsForOwner(character.key);
+      const verifiedPages = verifiedOwner
+        ? (buried ? verifiedOwner.buriedPages : verifiedOwner.activePages)
+        : [];
+      for (const page of repairablePages) {
+        const expected = renderViewsPage(character, buried, page.page, page.records);
+        const matching = verifiedPages.filter(item => item.page === page.page
+          && entryOf(item.card) === expected && item.safe && !item.duplicatePage);
+        if (matching.length !== 1) throw new Error("Could not reparse and verify " + page.title + ".");
+      }
+    } catch (error) {
+      const restored = restoreManagedViewsCards(snapshot, ownerScope);
+      diagnostics.push("View repair failed for " + character.name + ": "
+        + (error.message || "unknown failure")
+        + (restored ? "; rolled back." : "; rollback was incomplete."));
+      refreshViewsStore(false);
+      return { changed: false, attempted: true, failed: true };
+    }
+    diagnostics.push(...pendingDiagnostics);
+    repairablePages.filter(page => page.dirty).forEach(page => {
+      diagnostics.push("Repaired " + page.title + " structurally.");
     });
-    return changed || overflow.length > 0;
+    if (attempted) refreshViewsStore(false);
+    return { changed: true, attempted: true, failed: false };
   }
 
   let viewsStore = null;
@@ -4518,13 +5006,27 @@ function CharacterContinuity(hook, incomingText) {
     if (repair && !(session && session.repaired)) {
       const priorBindings = viewManagedBindings(store);
       let changed = false;
+      let attempted = false;
+      const repairDiagnostics = store.diagnostics.slice();
       characters.filter(character => !character.onboardingPending).forEach(character => {
-        const owner = store.owners[character.key];
+        const currentStore = attempted ? refreshViewsStore(false) : store;
+        const owner = currentStore.owners[character.key];
         if (!owner) return;
-        changed = repairViewsCollection(character, false, owner.activePages, store.diagnostics) || changed;
-        changed = repairViewsCollection(character, true, owner.buriedPages, store.diagnostics) || changed;
+        const activeResult = repairViewsCollection(
+          character, false, owner.activePages, repairDiagnostics
+        );
+        changed = activeResult.changed || changed;
+        attempted = activeResult.attempted || attempted;
+        const nextStore = activeResult.attempted ? refreshViewsStore(false) : currentStore;
+        const nextOwner = nextStore.owners[character.key];
+        if (!nextOwner) return;
+        const buriedResult = repairViewsCollection(
+          character, true, nextOwner.buriedPages, repairDiagnostics
+        );
+        changed = buriedResult.changed || changed;
+        attempted = buriedResult.attempted || attempted;
       });
-      if (changed) {
+      if (attempted) {
         const repaired = refreshViewsStore(false);
         const nextBindings = viewManagedBindings(repaired);
         priorBindings.forEach(prior => {
@@ -4539,12 +5041,14 @@ function CharacterContinuity(hook, incomingText) {
             next.category
           );
           if (rebound) {
-            store.diagnostics.push("Rebound " + rebound + " View provenance record"
+            repairDiagnostics.push("Rebound " + rebound + " View provenance record"
               + (rebound === 1 ? "" : "s") + " after deterministic explanation alignment.");
           }
         });
-        CC.viewRepairDiagnostics = unique(CC.viewRepairDiagnostics.concat(store.diagnostics), 300).slice(-30);
-        repaired.diagnostics = unique(store.diagnostics.concat(repaired.diagnostics), 300);
+        CC.viewRepairDiagnostics = unique(
+          CC.viewRepairDiagnostics.concat(repairDiagnostics), 300
+        ).slice(-30);
+        repaired.diagnostics = unique(repairDiagnostics.concat(repaired.diagnostics), 300);
         if (session) session.repaired = true;
         return repaired;
       }
@@ -4666,78 +5170,156 @@ function CharacterContinuity(hook, incomingText) {
       .sort((left, right) => catalogCardOrder(left.card) - catalogCardOrder(right.card));
   }
 
-  function captureOwnedManagedCards(records) {
+  function captureOwnedManagedCards(records, ownerKeys) {
     const titleCounts = {};
-    return orderedUniqueOwnedCatalogRecords(records).map(record => {
+    const idCounts = {};
+    const items = orderedUniqueOwnedCatalogRecords(records).map(record => {
       const card = record.card;
       const title = titleOf(card);
-      const titleKey = nameKeyOf(title);
+      const ownerKey = line(record.ownerKey, 180);
+      const titleKey = ownerKey + "\u241f" + nameKeyOf(title);
       const occurrence = titleCounts[titleKey] || 0;
+      const id = physicalCardId(card);
+      const idOccurrence = idCounts[id] || 0;
       titleCounts[titleKey] = occurrence + 1;
+      idCounts[id] = idOccurrence + 1;
       return {
+        ownerKey,
         title,
+        visibleTitle: rawVisibleTitleOf(card),
         occurrence,
+        card,
+        id,
+        idOccurrence,
+        deckIndex: cardIndex(card),
         entry: entryOf(card),
         keys: card.keys,
         type: card.type
       };
     });
+    items.ownerKeys = uniqueNameForms(
+      Array.isArray(ownerKeys) ? ownerKeys : items.map(item => item.ownerKey),
+      180
+    );
+    return items;
   }
 
-  function restoreOwnedManagedCards(snapshot, currentRecords, resolveOwnerKey) {
-    const records = orderedUniqueOwnedCatalogRecords(currentRecords);
-    const currentOwnerKeys = new Set(records.map(record => record.ownerKey).filter(Boolean));
+  function restoreOwnedManagedCards(snapshot, currentRecords, resolveOwnerKey, expectedOwnerKeys) {
+    const readRecords = () => orderedUniqueOwnedCatalogRecords(
+      typeof currentRecords === "function" ? currentRecords() : currentRecords
+    );
+    const records = readRecords();
+    const hasExplicitScope = Array.isArray(expectedOwnerKeys);
+    const explicitScope = hasExplicitScope ? expectedOwnerKeys : [];
+    const scopeValues = hasExplicitScope
+      ? explicitScope
+      : (Array.isArray(snapshot && snapshot.ownerKeys) ? snapshot.ownerKeys : [])
+        .concat((Array.isArray(snapshot) ? snapshot : []).map(item => item && item.ownerKey));
+    const ownerScope = new Set(scopeValues.map(value => line(value, 180)).filter(Boolean));
     const pools = {};
     records.forEach(record => {
-      const titleKey = nameKeyOf(titleOf(record.card));
+      const titleKey = line(record.ownerKey, 180) + "\u241f" + nameKeyOf(titleOf(record.card));
       if (!pools[titleKey]) pools[titleKey] = [];
       pools[titleKey].push(record.card);
     });
     const eligible = (Array.isArray(snapshot) ? snapshot : []).map(item => {
       const storedOwnerKey = line(item && item.ownerKey, 180);
-      const resolvedOwnerKey = currentOwnerKeys.has(storedOwnerKey)
+      const resolvedOwnerKey = ownerScope.has(storedOwnerKey)
         ? storedOwnerKey
         : (typeof resolveOwnerKey === "function" ? resolveOwnerKey(item) : "");
-      return currentOwnerKeys.has(resolvedOwnerKey)
+      return ownerScope.has(resolvedOwnerKey)
         ? { item, ownerKey: resolvedOwnerKey }
         : null;
     }).filter(Boolean);
-    const representedOwnerKeys = new Set(eligible.map(record => record.ownerKey));
     const used = new Set();
     const restoredCounts = {};
     let restored = true;
-    eligible.forEach(({ item }) => {
-      const titleKey = nameKeyOf(item.title);
+    if (eligible.length !== (Array.isArray(snapshot) ? snapshot.length : 0)) restored = false;
+    eligible.forEach(({ item, ownerKey }) => {
+      const titleKey = ownerKey + "\u241f" + nameKeyOf(item.title);
+      const physicalTitle = typeof item.visibleTitle === "string"
+        ? item.visibleTitle
+        : item.title;
       const fallbackOccurrence = restoredCounts[titleKey] || 0;
       const occurrence = Number.isSafeInteger(item.occurrence) && item.occurrence >= 0
         ? item.occurrence
         : fallbackOccurrence;
       restoredCounts[titleKey] = fallbackOccurrence + 1;
-      let card = pools[titleKey] && pools[titleKey][occurrence];
-      if (!card) card = addCard(item.title, item.entry);
+      let card = item.card && cards.includes(item.card) ? item.card : null;
+      if (!card && item.id) {
+        const idMatches = cards.filter(candidate => physicalCardId(candidate) === item.id);
+        if (idMatches.length === 1) card = idMatches[0];
+      }
+      if (!card) card = pools[titleKey] && pools[titleKey][occurrence];
+      if (card && typeof item.id === "string" && physicalCardId(card) !== item.id) card = null;
+      if (!card && typeof item.id === "string") {
+        restored = false;
+        return;
+      }
+      if (!card) card = addCardExact(item.title, item.keys, item.entry, item.type);
       if (!card) {
         restored = false;
         return;
       }
-      used.add(card);
-      const saved = updateCardAt(cardIndex(card), item.keys, item.entry, item.type, item.title, true);
-      if (!saved
-        || textOf(saved.keys) !== textOf(item.keys)
-        || entryOf(saved) !== textOf(item.entry)
-        || textOf(saved.type) !== textOf(item.type)
-        || keyOf(titleOf(saved)) !== keyOf(item.title)) {
+      let saved = updateCardAt(cardIndex(card), item.keys, item.entry, item.type, item.title, true);
+      saved = restoreRawVisibleCardTitle(saved, physicalTitle);
+      if (!exactCardFieldsMatch(
+        saved, item.keys, item.entry, item.type, physicalTitle, true
+      )) {
         restored = false;
+      } else {
+        used.add(saved);
       }
     });
-    const stale = records
-      .filter(record => representedOwnerKeys.has(record.ownerKey) && !used.has(record.card))
-      .map(record => record.card);
-    if (!removeCards(stale)) restored = false;
+    let stale = [];
+    if (restored) {
+      const postRecords = readRecords();
+      const retained = new Set();
+      eligible.forEach(({ item, ownerKey }) => {
+        const physicalTitle = typeof item.visibleTitle === "string"
+          ? item.visibleTitle
+          : item.title;
+        const match = postRecords.find(record => !retained.has(record.card)
+          && line(record.ownerKey, 180) === ownerKey
+          && nameKeyOf(titleOf(record.card)) === nameKeyOf(item.title)
+          && (typeof item.id !== "string" || physicalCardId(record.card) === item.id)
+          && exactCardFieldsMatch(
+            record.card, item.keys, item.entry, item.type, physicalTitle, true
+          ));
+        if (!match) restored = false;
+        else retained.add(match.card);
+      });
+      stale = postRecords
+        .filter(record => ownerScope.has(record.ownerKey) && !retained.has(record.card))
+        .map(record => record.card);
+      if (restored && !removeCards(stale)) restored = false;
+    }
+    invalidateCardCatalog();
+    const finalRecords = readRecords().filter(record => ownerScope.has(record.ownerKey));
+    const unmatched = finalRecords.map(record => record.card);
+    if (unmatched.length !== eligible.length) restored = false;
+    eligible.forEach(({ item, ownerKey }) => {
+      const physicalTitle = typeof item.visibleTitle === "string"
+        ? item.visibleTitle
+        : item.title;
+      const index = unmatched.findIndex(card => {
+        const record = finalRecords.find(value => value.card === card);
+        return record && line(record.ownerKey, 180) === ownerKey
+          && nameKeyOf(titleOf(card)) === nameKeyOf(item.title)
+          && (typeof item.id !== "string" || physicalCardId(card) === item.id)
+          && exactCardFieldsMatch(card, item.keys, item.entry, item.type, physicalTitle, true);
+      });
+      if (index < 0) restored = false;
+      else unmatched.splice(index, 1);
+    });
+    if (unmatched.length) restored = false;
     return restored;
   }
 
-  function managedViewsRecords() {
-    return orderedUniqueOwnedCatalogRecords(characters.flatMap(character =>
+  function managedViewsRecords(ownerKeys) {
+    const scope = new Set((Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key))
+      .map(value => line(value, 180)).filter(Boolean));
+    return orderedUniqueOwnedCatalogRecords(characters.filter(character => scope.has(character.key)).flatMap(character =>
       catalogPagedCards(character.name, settings.VIEWS_LABEL)
         .concat(catalogPagedCards(character.name, settings.BURIED_VIEWS_LABEL))
         .map(item => ({ card: item.card, ownerKey: character.key }))
@@ -4758,16 +5340,19 @@ function CharacterContinuity(hook, incomingText) {
     return character ? character.key : "";
   }
 
-  function captureManagedViewsCards() {
-    return captureOwnedManagedCards(managedViewsRecords());
+  function captureManagedViewsCards(ownerKeys) {
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
+    return captureOwnedManagedCards(managedViewsRecords(scope), scope);
   }
 
-  function restoreManagedViewsCards(snapshot) {
+  function restoreManagedViewsCards(snapshot, ownerKeys) {
     if (!Array.isArray(snapshot)) return false;
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
     const restored = restoreOwnedManagedCards(
       snapshot,
-      managedViewsRecords(),
-      managedViewsSnapshotOwnerKey
+      () => managedViewsRecords(scope),
+      managedViewsSnapshotOwnerKey,
+      scope
     );
     refreshViewsStore(false);
     return restored;
@@ -4777,6 +5362,10 @@ function CharacterContinuity(hook, incomingText) {
     const source = buried ? ownerData.buriedPages : ownerData.activePages;
     return source.map(page => ({
       card: page.card,
+      priorVisibleTitle: rawVisibleTitleOf(page.card),
+      priorKeys: textOf(page.card && page.card.keys),
+      priorEntry: entryOf(page.card),
+      priorType: textOf(page.card && page.card.type),
       page: page.page,
       title: page.title,
       safe: page.safe,
@@ -4860,13 +5449,55 @@ function CharacterContinuity(hook, incomingText) {
     return placePlannedRecord(character, buried, pages, updated, 0);
   }
 
+  function plannedViewRecordSignature(record) {
+    return JSON.stringify([
+      normalizedTargetKey(record && record.targetKey),
+      line(record && record.targetName, 180),
+      canonicalViewDestination(record && record.category),
+      line(record && record.explanation, 2000),
+      !!(record && record.buried)
+    ]);
+  }
+
+  function verifyPlannedViews(character, activePages, buriedPages) {
+    const verified = refreshViewsStore(false);
+    const ownerData = verified && verified.owners && verified.owners[character.key];
+    if (!ownerData) return false;
+    const sets = [
+      { buried: false, planned: activePages, actual: ownerData.activePages },
+      { buried: true, planned: buriedPages, actual: ownerData.buriedPages }
+    ];
+    return sets.every(set => {
+      if (set.actual.length !== set.planned.length) return false;
+      return set.planned.every(plan => {
+        const matching = set.actual.filter(page => page.page === plan.page);
+        if (matching.length !== 1) return false;
+        const page = matching[0];
+        if (!plan.dirty && !plan.created) {
+          return entryOf(page.card) === plan.priorEntry
+            && textOf(page.card.keys) === plan.priorKeys
+            && textOf(page.card.type) === plan.priorType
+            && rawVisibleTitleOf(page.card) === plan.priorVisibleTitle;
+        }
+        const expectedEntry = renderViewsPage(
+          character, set.buried, plan.page, plan.records
+        );
+        return page.safe && !page.duplicatePage
+          && entryOf(page.card) === expectedEntry
+          && page.records.length === plan.records.length
+          && page.records.every((record, index) =>
+            plannedViewRecordSignature(record) === plannedViewRecordSignature(plan.records[index]));
+      });
+    });
+  }
+
   function commitPlannedViews(character, activePages, buriedPages) {
     const pageSets = [
       { buried: false, pages: activePages },
       { buried: true, pages: buriedPages }
     ];
-    const createdCards = [];
-    const priorEntries = [];
+    const ownerScope = [character.key];
+    const snapshot = captureManagedViewsCards(ownerScope);
     try {
       for (const set of pageSets) {
         for (const page of set.pages.filter(item => item.dirty && item.created)) {
@@ -4877,7 +5508,7 @@ function CharacterContinuity(hook, incomingText) {
           const card = addCard(page.title, entry);
           if (!card) throw new Error("Could not create " + page.title + ".");
           page.card = card;
-          createdCards.push(card);
+          page.records.forEach(record => { record.card = card; });
         }
       }
       for (const set of pageSets) {
@@ -4886,26 +5517,24 @@ function CharacterContinuity(hook, incomingText) {
           if (entry.length > settings.MAX_VIEWS_CARD_CHARS) {
             throw new Error(page.title + " exceeded the 1,000-character hard limit.");
           }
-          priorEntries.push({
-            index: cardIndex(page.card),
-            title: page.title,
-            entry: entryOf(page.card),
-            keys: page.card.keys,
-            type: page.card.type
-          });
           const saved = saveCard(page.card, entry);
           if (!saved) throw new Error("Could not update " + page.title + ".");
           page.card = saved;
           page.records.forEach(record => { record.card = page.card; });
         }
       }
+      if (!verifyPlannedViews(character, activePages, buriedPages)) {
+        throw new Error("The complete Views transaction could not be verified after saving.");
+      }
     } catch (error) {
-      priorEntries.slice().reverse().forEach(item => {
-        updateCardAt(item.index, item.keys, item.entry, item.type, item.title);
-      });
-      removeCards(createdCards);
+      const restored = restoreManagedViewsCards(snapshot, ownerScope);
       refreshViewsStore(false);
-      return { ok: false, error: error.message || "The Views card transaction failed." };
+      const reason = textOf(error && error.message || "The Views card transaction failed")
+        .replace(/[.;\s]+$/g, "");
+      return {
+        ok: false,
+        error: reason + (restored ? "." : "; rollback was incomplete.")
+      };
     }
     refreshViewsStore(false);
     return { ok: true };
@@ -5266,15 +5895,16 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function captureManagedNamesCards() {
-    return captureOwnedManagedCards(managedNamesRecords());
+    return captureOwnedManagedCards(managedNamesRecords(), nameIdentities.map(identity => identity.key));
   }
 
   function restoreManagedNamesCards(snapshot) {
     if (!Array.isArray(snapshot)) return false;
     const restored = restoreOwnedManagedCards(
       snapshot,
-      managedNamesRecords(),
-      managedNamesSnapshotOwnerKey
+      managedNamesRecords,
+      managedNamesSnapshotOwnerKey,
+      nameIdentities.map(identity => identity.key)
     );
     refreshNamesStore();
     applyManagedNameForms();
@@ -5955,15 +6585,19 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function captureManagedRelationshipsCards() {
-    return captureOwnedManagedCards(managedRelationshipsRecords());
+    return captureOwnedManagedCards(
+      managedRelationshipsRecords(),
+      characters.map(character => character.key)
+    );
   }
 
   function restoreManagedRelationshipsCards(snapshot) {
     if (!Array.isArray(snapshot)) return false;
     const restored = restoreOwnedManagedCards(
       snapshot,
-      managedRelationshipsRecords(),
-      managedRelationshipsSnapshotOwnerKey
+      managedRelationshipsRecords,
+      managedRelationshipsSnapshotOwnerKey,
+      characters.map(character => character.key)
     );
     refreshRelationshipsStore();
     return restored;
@@ -6755,7 +7389,10 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function captureManagedTurningPointsCards() {
-    return captureOwnedManagedCards(managedTurningPointsRecords());
+    return captureOwnedManagedCards(
+      managedTurningPointsRecords(),
+      characters.map(character => character.key)
+    );
   }
 
   function managedTurningPointsSnapshotOwnerKey(item) {
@@ -6770,8 +7407,9 @@ function CharacterContinuity(hook, incomingText) {
     if (!Array.isArray(snapshot)) return false;
     const restored = restoreOwnedManagedCards(
       snapshot,
-      managedTurningPointsRecords(),
-      managedTurningPointsSnapshotOwnerKey
+      managedTurningPointsRecords,
+      managedTurningPointsSnapshotOwnerKey,
+      characters.map(character => character.key)
     );
     refreshTurningPointsStore();
     return restored;
@@ -6938,16 +7576,8 @@ function CharacterContinuity(hook, incomingText) {
       && textOf(candidate.type) === expected.type
       && keyOf(titleOf(candidate)) === keyOf(expected.title));
     const rollbackFailure = message => {
-      const direct = updateCardAt(
-        cardPosition, priorCard.keys, priorCard.entry, priorCard.type, priorCard.title, true
-      );
-      let restored = exactCardMatches(direct, priorCard);
-      if (!restored) {
-        const snapshotRestored = restoreManagedTurningPointsCards(snapshot);
-        restored = snapshotRestored;
-      } else {
-        refreshTurningPointsStore();
-      }
+      const restored = restoreManagedTurningPointsCards(snapshot);
+      refreshTurningPointsStore();
       return {
         ok: false,
         error: textOf(message).replace(/[.;\s]+$/g, "")
@@ -7121,10 +7751,52 @@ function CharacterContinuity(hook, incomingText) {
     if (!npc) return;
     const title = stateTitle(character);
     const entry = stateEntry(character, npc);
-    const card = namedCard(character.name, settings.STATE_LABEL);
+    const matching = namedCards(character.name, settings.STATE_LABEL);
+    if (matching.length > 1) return null;
+    const card = matching[0] || null;
     const saved = card ? saveCard(card, entry) : addCard(title, entry);
     if (saved) CC.cardHashes[title] = hashString(entry);
     return saved;
+  }
+
+  function managedStateRecords(ownerKeys) {
+    const scope = new Set((Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key))
+      .map(value => line(value, 180)).filter(Boolean));
+    return orderedUniqueOwnedCatalogRecords(characters.filter(character => scope.has(character.key))
+      .flatMap(character => namedCards(character.name, settings.STATE_LABEL)
+        .map(card => ({ card, ownerKey: character.key }))));
+  }
+
+  function managedStateSnapshotOwnerKey(item) {
+    const ownerName = nameFromNamedTitle(item && item.title, settings.STATE_LABEL);
+    const character = ownerName
+      ? characters.find(candidate => sameNameForm(candidate.name, ownerName))
+      : null;
+    return character ? character.key : "";
+  }
+
+  function captureManagedStateCards(ownerKeys) {
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
+    return captureOwnedManagedCards(managedStateRecords(scope), scope);
+  }
+
+  function restoreManagedStateCards(snapshot, ownerKeys) {
+    if (!Array.isArray(snapshot)) return false;
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
+    return restoreOwnedManagedCards(
+      snapshot,
+      () => managedStateRecords(scope),
+      managedStateSnapshotOwnerKey,
+      scope
+    );
+  }
+
+  function captureStateCard(character) {
+    return captureManagedStateCards([character.key]);
+  }
+
+  function restoreStateCard(character, snapshot) {
+    return !!character && restoreManagedStateCards(snapshot, [character.key]);
   }
 
   function syncAllStateCards() {
@@ -7405,8 +8077,11 @@ function CharacterContinuity(hook, incomingText) {
       : null;
   }
 
-  function managedExperienceRecords() {
+  function managedExperienceRecords(ownerKeys) {
+    const scope = new Set((Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key))
+      .map(value => line(value, 180)).filter(Boolean));
     return orderedUniqueOwnedCatalogRecords(catalogExperienceOwners().records
+      .filter(record => scope.has(record.ownerKey))
       .map(record => ({ card: record.card, ownerKey: record.ownerKey })));
   }
 
@@ -7419,16 +8094,22 @@ function CharacterContinuity(hook, incomingText) {
     return parts && parts.owner ? parts.owner.key : "";
   }
 
-  function captureManagedExperienceCards() {
-    return captureOwnedManagedCards(managedExperienceRecords());
+  function captureManagedExperienceCards(ownerKeys) {
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
+    return captureOwnedManagedCards(
+      managedExperienceRecords(scope),
+      scope
+    );
   }
 
-  function restoreManagedExperienceCards(snapshot) {
+  function restoreManagedExperienceCards(snapshot, ownerKeys) {
     if (!Array.isArray(snapshot)) return false;
+    const scope = Array.isArray(ownerKeys) ? ownerKeys : characters.map(character => character.key);
     const restored = restoreOwnedManagedCards(
       snapshot,
-      managedExperienceRecords(),
-      managedExperienceSnapshotOwnerKey
+      () => managedExperienceRecords(scope),
+      managedExperienceSnapshotOwnerKey,
+      scope
     );
     refreshExperiencesStore(false);
     return restored;
@@ -7555,7 +8236,19 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function commitExperienceMigration(owner, plans) {
-    const snapshot = captureManagedExperienceCards();
+    const ownerScope = [owner.key];
+    const snapshot = captureManagedExperienceCards(ownerScope);
+    const fail = error => {
+      const reason = textOf(error && error.message || error || "The Experiences migration failed")
+        .replace(/[.;\s]+$/g, "");
+      const restored = restoreManagedExperienceCards(snapshot, ownerScope);
+      const reported = reason + (restored ? "." : "; rollback was incomplete.");
+      CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
+        "Rolled back " + owner.name + " Experiences after API failure: " + reported
+      ).slice(-20);
+      refreshExperiencesStore(false);
+      return { ok: false, error: reported };
+    };
     try {
       for (const plan of plans.filter(item => item.created)) {
         const card = addCard(plan.title, plan.entry);
@@ -7563,20 +8256,39 @@ function CharacterContinuity(hook, incomingText) {
         plan.card = card;
       }
       for (const plan of plans.filter(item => !item.created)) {
-        if (entryOf(plan.card).replace(/\r/g, "").trim() === plan.entry) continue;
+        if (entryOf(plan.card) === plan.entry
+          && textOf(plan.card.type) === settings.CARD_TYPE
+          && managedCardIdentityMatches(plan.card, plan.title)) continue;
         const saved = saveCard(plan.card, plan.entry);
         if (!saved) throw new Error("Could not update " + plan.title + ".");
         plan.card = saved;
       }
+      const verified = refreshExperiencesStore(false);
+      const ownerData = verified && verified.owners && verified.owners[owner.key];
+      if (!ownerData || ownerData.pages.length !== plans.length) {
+        throw new Error("The complete Experiences migration could not be reparsed after saving.");
+      }
+      for (const plan of plans) {
+        const matching = ownerData.pages.filter(page => page.page === plan.page);
+        if (matching.length !== 1) {
+          throw new Error("The migrated Experiences page set was incomplete or ambiguous.");
+        }
+        const page = matching[0];
+        if (!page.safe || page.duplicatePage || entryOf(page.card) !== plan.entry
+          || !managedCardIdentityMatches(page.card, plan.title)) {
+          throw new Error("Could not semantically verify " + plan.title + " after migration.");
+        }
+        if (Array.isArray(plan.records)) {
+          const expected = plan.records.map(record => record.signature);
+          const actual = page.records.map(record => record.signature);
+          if (expected.length !== actual.length
+            || expected.some((value, index) => value !== actual[index])) {
+            throw new Error("The records in " + plan.title + " changed during migration.");
+          }
+        }
+      }
     } catch (error) {
-      const restored = restoreManagedExperienceCards(snapshot);
-      CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
-        "Rolled back " + owner.name + " Experiences after API failure: "
-          + (error.message || "unknown failure")
-          + (restored ? "" : " (rollback was incomplete)")
-      ).slice(-20);
-      refreshExperiencesStore(false);
-      return { ok: false, error: error.message || "The Experiences migration failed." };
+      return fail(error);
     }
     CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
       "Committed and repacked " + owner.name + " Experiences without deleting an existing card."
@@ -7673,20 +8385,37 @@ function CharacterContinuity(hook, incomingText) {
     if (entry.length > maximum) {
       return { ok: false, error: "The complete Experience record could not fit an empty 1,000-character page." };
     }
+    const ownerScope = [owner.key];
+    const snapshot = captureManagedExperienceCards(ownerScope);
+    const fail = error => {
+      const reason = textOf(error).replace(/[.;\s]+$/g, "")
+        || "The Experience page could not be saved";
+      const restored = restoreManagedExperienceCards(snapshot, ownerScope);
+      const reported = reason + (restored ? "." : "; rollback was incomplete.");
+      CC.experienceTransactionDiagnostics = (CC.experienceTransactionDiagnostics || []).concat(
+        "Rolled back " + owner.name + " Experience append: " + reported
+      ).slice(-20);
+      refreshExperiencesStore(false);
+      return { ok: false, error: reported };
+    };
     let saved = null;
     if (created) {
       saved = addCard(experiencesPageTitle(owner, page.page), entry);
     } else {
       saved = saveCard(page.card, entry);
     }
-    if (!saved) return { ok: false, error: "The Experience page could not be saved." };
+    if (!saved) return fail("The Experience page could not be saved");
     refreshExperiencesStore(false);
     const committed = experiencesForOwner(owner.key);
     const committedRecord = committed && committed.contextRecords.find(item => item.signature === record.signature);
     if (!committedRecord) {
-      if (created) removeCard(saved);
-      refreshExperiencesStore(false);
-      return { ok: false, error: "The Experience page could not be verified as a canonical managed record after saving." };
+      return fail("The Experience page could not be verified as a canonical managed record after saving");
+    }
+    const committedPage = committed.pages.find(item => item.page === page.page);
+    if (!committedPage || !committedPage.safe || committedPage.duplicatePage
+      || entryOf(committedPage.card) !== entry
+      || !managedCardIdentityMatches(committedPage.card, experiencesPageTitle(owner, page.page))) {
+      return fail("The complete Experience page changed or became unsafe after saving");
     }
     return {
       ok: true,
@@ -8640,6 +9369,8 @@ function CharacterContinuity(hook, incomingText) {
       recoveringViews: CC.recoveringViews,
       provenance: CC.provenance,
       operationState: CC.operationState,
+      lastGenuineOperation: CC.lastGenuineOperation,
+      pendingOperationRetry: CC.pendingOperationRetry,
       lastOperationOutcome: CC.last.operationOutcome,
       lastOperationDrainChange: CC.last.operationDrainChange,
       lastOperationDecay: CC.last.operationDecay,
@@ -8651,7 +9382,9 @@ function CharacterContinuity(hook, incomingText) {
       viewUseDiagnostics: CC.last.viewUseDiagnostics,
       viewRepairDiagnostics: CC.viewRepairDiagnostics,
       viewTransactionDiagnostics: CC.viewTransactionDiagnostics,
+      cardHashes: CC.cardHashes,
       lastTimeJumpEvidenceId: CC.lastTimeJumpEvidenceId,
+      managedStateCards: captureManagedStateCards(),
       managedViewsCards: captureManagedViewsCards(),
       managedNamesCards: captureManagedNamesCards(),
       managedRelationshipsCards: captureManagedRelationshipsCards(),
@@ -8668,6 +9401,12 @@ function CharacterContinuity(hook, incomingText) {
       "activeKeys", "modelActiveKeys", "focusKey", "conversationKey", "evidence", "nextEvidenceNumber",
       "ownerOpportunities", "recoveringViews", "provenance", "operationState", "lastTimeJumpEvidenceId"
     ].forEach(field => { if (snapshot[field] !== undefined) CC[field] = clone(snapshot[field]); });
+    if (snapshot.lastGenuineOperation !== undefined) {
+      CC.lastGenuineOperation = normalizeLastGenuineOperation(snapshot.lastGenuineOperation);
+    }
+    if (snapshot.pendingOperationRetry !== undefined) {
+      CC.pendingOperationRetry = normalizePendingOperationRetry(snapshot.pendingOperationRetry);
+    }
     if (snapshot.lastOperationOutcome !== undefined) {
       CC.last.operationOutcome = line(snapshot.lastOperationOutcome, 500) || "None";
     }
@@ -8701,7 +9440,11 @@ function CharacterContinuity(hook, incomingText) {
     if (snapshot.viewTransactionDiagnostics !== undefined) {
       CC.viewTransactionDiagnostics = unique(snapshot.viewTransactionDiagnostics, 300).slice(-30);
     }
+    if (snapshot.cardHashes !== undefined) CC.cardHashes = clone(snapshot.cardHashes);
     let cardsRestored = true;
+    if (snapshot.managedStateCards !== undefined) {
+      cardsRestored = restoreManagedStateCards(snapshot.managedStateCards) && cardsRestored;
+    }
     if (snapshot.managedViewsCards !== undefined) {
       cardsRestored = restoreManagedViewsCards(snapshot.managedViewsCards) && cardsRestored;
     }
@@ -8731,8 +9474,9 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function restoreDiscardedGeneration() {
-    restoreSnapshot(CC.preGenerationSnapshot);
+    const restored = restoreSnapshot(CC.preGenerationSnapshot);
     CC.lastVisibleOutputAnchor = null;
+    return restored;
   }
 
   function frozenOperationSelectionFrom(plan) {
@@ -8752,6 +9496,222 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
+  function pendingOperationRetryFromPlan(plan) {
+    const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : null;
+    if (!source || source.taskDelivered !== true || source.task !== "operation"
+      || !MODEL_OPERATION_KINDS.includes(keyOf(source.selectedOperationKind))
+      || !line(source.selectedEvidenceSignature, 500)) return blankPendingOperationRetry();
+    const pendingPlan = {
+      task: "operation",
+      taskDelivered: true,
+      ownerKey: source.ownerKey,
+      focusKey: source.focusKey,
+      activeKeys: clone(source.activeKeys || []),
+      targets: clone(source.targets || []),
+      evidenceIds: clone(source.evidenceIds || []),
+      evidenceEligibility: clone(source.evidenceEligibility || {}),
+      sourcePacket: clone(source.sourcePacket || []),
+      sourcePacketText: "",
+      operationTaskText: "",
+      operationTaskKind: line(source.operationTaskKind, 40),
+      relationshipPace: clone(source.relationshipPace || runtime.relationshipPace),
+      genuineInputCount: Math.max(0, Math.floor(Number(source.genuineInputCount) || Number(CC.inputCount) || 0)),
+      ...frozenOperationSelectionFrom(source)
+    };
+    return normalizePendingOperationRetry({
+      active: true,
+      sourceInputCount: pendingPlan.genuineInputCount,
+      ownerKey: source.ownerKey,
+      plan: pendingPlan
+    });
+  }
+
+  function applyPendingOperationRetry(plan, pending) {
+    const target = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : null;
+    const stored = normalizePendingOperationRetry(pending);
+    if (!target || !stored.active || !stored.plan) return false;
+    const source = stored.plan;
+    target.pendingOperationRetry = true;
+    target.pendingRetrySourceInputCount = stored.sourceInputCount;
+    target.retryFocusKey = source.ownerKey || source.focusKey || stored.ownerKey;
+    target.retryActiveKeys = clone(source.activeKeys || []);
+    target.retryTargets = clone(source.targets || []);
+    target.retryEvidenceIds = clone(source.evidenceIds || []);
+    target.retryEvidenceEligibility = clone(source.evidenceEligibility || {});
+    target.retrySourcePacket = clone(source.sourcePacket || []);
+    target.retrySourcePacketText = textOf(source.sourcePacketText);
+    target.retryOperationTaskText = textOf(source.operationTaskText);
+    target.retryOperationTaskKind = line(source.operationTaskKind, 40);
+    target.relationshipPace = clone(source.relationshipPace || runtime.relationshipPace);
+    Object.assign(target, frozenOperationSelectionFrom(source));
+    if (target.selectedCandidate && typeof target.selectedCandidate === "object") {
+      target.selectedCandidate.pendingRetry = true;
+    }
+    return target.operationSelectionFrozen === true;
+  }
+
+  function cancelPendingOperationRetry(plan) {
+    CC.pendingOperationRetry = blankPendingOperationRetry();
+    if (CC.preGenerationSnapshot && typeof CC.preGenerationSnapshot === "object") {
+      CC.preGenerationSnapshot.pendingOperationRetry = blankPendingOperationRetry();
+    }
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) return;
+    delete plan.pendingOperationRetry;
+    delete plan.pendingRetrySourceInputCount;
+    plan.retryFocusKey = "";
+    plan.retryActiveKeys = [];
+    plan.retryTargets = [];
+    plan.retryEvidenceIds = [];
+    plan.retryEvidenceEligibility = {};
+    plan.retrySourcePacket = [];
+    plan.retrySourcePacketText = "";
+    plan.retryOperationTaskText = "";
+    plan.retryOperationTaskKind = "";
+    plan.operationSelectionFrozen = false;
+    plan.selectedOperationKind = "";
+    plan.selectedCandidate = null;
+    plan.operationCandidates = [];
+    plan.selectedEvidenceSignature = "";
+    plan.selectedGain = 0;
+    plan.selectedDrain = 0;
+    plan.selectedNet = 0;
+    plan.selectionReasons = [];
+    plan.operationTieBreak = "";
+    plan.relationshipPace = clone(runtime.relationshipPace);
+  }
+
+  function pendingOperationRetryStillEligible(plan) {
+    if (!plan || plan.pendingOperationRetry !== true) return false;
+    const owner = characters.find(character => character.key === plan.retryFocusKey) || null;
+    const kind = keyOf(plan.selectedOperationKind);
+    const ids = unique(Array.isArray(plan.retryEvidenceIds) ? plan.retryEvidenceIds : [], 40);
+    if (!owner || !MODEL_OPERATION_KINDS.includes(kind) || !ids.length) return false;
+    const rawIds = ids.filter(id => /^E\d+$/.test(id));
+    if (rawIds.length) {
+      const currentOpportunity = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0);
+      for (const id of rawIds) {
+        const item = evidenceForId(id);
+        if (!item) return false;
+        if (kind === "state" && !stateEvidenceEligible(item, owner, "")) return false;
+        if (kind === "name" && !nameEvidenceEligible(item, owner, "", "", "", currentOpportunity)) return false;
+        if (kind === "relationship"
+          && !relationshipEvidenceEligible(item, owner, "", "", currentOpportunity)) return false;
+        if (kind === "view" && !viewEvidenceEligible(item, owner, "", "", currentOpportunity)) return false;
+        if (kind === "turning" && !turningPointEvidenceEligible(item, owner, "", "", currentOpportunity)) return false;
+      }
+    }
+    const derivedIds = ids.filter(id => /^[SRXV]\d+$/.test(id));
+    if (derivedIds.length) {
+      const frozenPacket = Array.isArray(plan.retrySourcePacket) ? plan.retrySourcePacket : [];
+      if (derivedIds.some(id => !frozenPacket.some(source => source && source.id === id))) return false;
+    }
+    return true;
+  }
+
+  function updatePendingOperationRetry(plan, outcome) {
+    if (!plan || plan.taskDelivered !== true || plan.task !== "operation") return;
+    const normalizedOutcome = keyOf(outcome);
+    if ((normalizedOutcome === "cutoff" && plan.pendingOperationRetry !== true)
+      || (normalizedOutcome === "omitted" && plan.pendingOperationRetry !== true)) {
+      CC.pendingOperationRetry = pendingOperationRetryFromPlan(plan);
+      return;
+    }
+    CC.pendingOperationRetry = blankPendingOperationRetry();
+  }
+
+  function beginGenuineOperationRecord(inputEvidence) {
+    const record = blankLastGenuineOperation();
+    record.inputCount = Math.max(0, Number(CC.inputCount) || 0);
+    record.inputEvidenceId = continuitySourceId(inputEvidence && inputEvidence.id);
+    record.phase = "awaiting context";
+    record.resolution = "Awaiting context";
+    CC.lastGenuineOperation = record;
+  }
+
+  function genuineOperationRecordMatchesPlan(plan) {
+    const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : {};
+    const record = normalizeLastGenuineOperation(CC.lastGenuineOperation);
+    const inputCount = Math.max(0, Math.floor(Number(source.genuineInputCount) || Number(CC.inputCount) || 0));
+    const inputEvidenceId = continuitySourceId(source.inputEvidenceId);
+    return record.inputCount === inputCount
+      && (!inputEvidenceId || !record.inputEvidenceId || record.inputEvidenceId === inputEvidenceId);
+  }
+
+  function ensureGenuineOperationRecordForPlan(plan) {
+    if (!plan || plan.opening || !plan.inputEvidenceId) return null;
+    if (!genuineOperationRecordMatchesPlan(plan)) {
+      beginGenuineOperationRecord({ id: plan.inputEvidenceId });
+    }
+    return CC.lastGenuineOperation;
+  }
+
+  function recordGenuineContextPlan(plan, deferredReason = "") {
+    const record = ensureGenuineOperationRecordForPlan(plan);
+    if (!record) return;
+    const owner = characters.find(character => character.key === plan.ownerKey) || null;
+    record.phase = plan.taskDelivered ? "awaiting output" : "context built";
+    record.task = line(plan.task, 40) || "none";
+    record.taskDelivered = plan.taskDelivered === true;
+    record.ownerKey = normalizedTargetKey(plan.ownerKey);
+    record.ownerName = owner ? owner.name : "";
+    record.operationKind = keyOf(plan.selectedOperationKind);
+    record.ownerOpportunity = Math.max(0, Math.floor(Number(plan.ownerOpportunity) || 0));
+    record.selectionFrozen = plan.operationSelectionFrozen === true;
+    record.selectedGain = Math.max(0, Math.floor(Number(plan.selectedGain) || 0));
+    record.selectedDrain = Math.max(0, Math.floor(Number(plan.selectedDrain) || 0));
+    record.selectedNet = Math.floor(Number(plan.selectedNet) || 0);
+    record.evidenceIds = unique(Array.isArray(plan.evidenceIds) ? plan.evidenceIds : [], 40).slice(0, 12);
+    record.selectedCandidate = recordedOperationCandidate(plan.selectedCandidate);
+    record.deferredReason = line(deferredReason, 500);
+    record.parserResult = "Not processed";
+    record.candidateResult = plan.taskDelivered ? "awaiting output" : "not requested";
+    record.mutationResult = "None";
+    record.outcome = "None";
+    record.drainChange = "No drain change";
+    record.outputRawChars = 0;
+    record.outputStoryChars = 0;
+    record.outputRecordChars = 0;
+    record.outputRecordPosition = "none";
+    record.resolution = plan.taskDelivered
+      ? "Awaiting model resolution"
+      : (record.deferredReason ? "Not delivered — " + record.deferredReason : "No operation scheduled");
+    CC.lastGenuineOperation = normalizeLastGenuineOperation(record);
+  }
+
+  function recordGenuineOutputResolution(plan) {
+    const record = ensureGenuineOperationRecordForPlan(plan);
+    if (!record || !plan.taskDelivered) return;
+    record.phase = "output processed";
+    record.task = line(plan.task, 40) || record.task;
+    record.taskDelivered = plan.taskDelivered === true;
+    const owner = characters.find(character => character.key === plan.ownerKey) || null;
+    record.ownerKey = normalizedTargetKey(plan.ownerKey) || record.ownerKey;
+    record.ownerName = owner ? owner.name : record.ownerName;
+    record.operationKind = keyOf(plan.selectedOperationKind) || record.operationKind;
+    record.ownerOpportunity = Math.max(0, Math.floor(Number(plan.ownerOpportunity) || record.ownerOpportunity || 0));
+    record.selectionFrozen = plan.operationSelectionFrozen === true || record.selectionFrozen;
+    record.selectedGain = Math.max(0, Math.floor(Number(plan.selectedGain) || record.selectedGain || 0));
+    record.selectedDrain = Math.max(0, Math.floor(Number(plan.selectedDrain) || record.selectedDrain || 0));
+    record.selectedNet = Number.isFinite(Number(plan.selectedNet))
+      ? Math.floor(Number(plan.selectedNet))
+      : record.selectedNet;
+    record.evidenceIds = unique(Array.isArray(plan.evidenceIds) ? plan.evidenceIds : record.evidenceIds, 40).slice(0, 12);
+    record.selectedCandidate = recordedOperationCandidate(plan.selectedCandidate) || record.selectedCandidate;
+    record.parserResult = line(CC.last.protocol, 700) || "No parser result";
+    record.candidateResult = line(CC.last.candidate, 200) || "not requested";
+    record.mutationResult = line(CC.last.update, 700) || "None";
+    record.outcome = line(CC.last.operationOutcome, 200) || "None";
+    record.drainChange = line(CC.last.operationDrainChange, 700) || "No drain change";
+    record.outputRawChars = Math.max(0, Number(CC.last.outputRawChars) || 0);
+    record.outputStoryChars = Math.max(0, Number(CC.last.outputStoryChars) || 0);
+    record.outputRecordChars = Math.max(0, Number(CC.last.outputRecordChars) || 0);
+    record.outputRecordPosition = line(CC.last.outputRecordPosition, 40) || "none";
+    record.resolution = record.outcome !== "None"
+      ? record.outcome
+      : (record.candidateResult === "not requested" ? "No operation scheduled" : record.candidateResult);
+    CC.lastGenuineOperation = normalizeLastGenuineOperation(record);
+  }
+
   function beginInput(inputValue) {
     const discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     const sameInput = keyOf(clean(inputValue, 5000)) === keyOf(CC.lastInput);
@@ -8760,7 +9720,7 @@ function CharacterContinuity(hook, incomingText) {
       && CC.lastVisibleOutputAnchor && !outputAnchorPresent("")
     );
     const retry = replacedOutput && sameInput;
-    if (replacedOutput) restoreDiscardedGeneration();
+    const discardedRestored = replacedOutput ? restoreDiscardedGeneration() : true;
 
     const opening = retry ? !!(discardedPlan && discardedPlan.opening) : isOpeningInput(inputValue);
     CC.lastInput = clean(inputValue, 5000);
@@ -8768,10 +9728,23 @@ function CharacterContinuity(hook, incomingText) {
     CC.last.continue = false;
     CC.last.error = "";
     CC.last.warning = "";
+    CC.last.task = "none";
+    CC.last.owner = "";
+    CC.last.protocol = "None";
+    CC.last.operationOutcome = "None";
+    CC.last.operationDrainChange = "No drain change";
+    CC.last.outputRawChars = 0;
+    CC.last.outputStoryChars = 0;
+    CC.last.outputRecordChars = 0;
+    CC.last.outputRecordPosition = "none";
     if (retry) {
       CC.last.candidate = "rolled back";
       CC.last.update = "None";
       CC.last.output = "Retry restored the pre-generation snapshot, including provenance, operation meters, drains, Names, Relationships, Turning Points, and consumed evidence.";
+      if (!discardedRestored) {
+        CC.last.warning = "Retry rollback was incomplete; one or more managed Story Cards could not be restored exactly.";
+        CC.last.output += " One or more managed Story Cards could not be restored exactly.";
+      }
     }
 
     if (opening) {
@@ -8797,10 +9770,15 @@ function CharacterContinuity(hook, incomingText) {
     if (!retry) {
       CC.inputCount += 1;
       inputEvidence = addEvidence("input", inputValue);
+      beginGenuineOperationRecord(inputEvidence);
+      if (TIME_JUMP.test(inputValue)) CC.pendingOperationRetry = blankPendingOperationRetry();
       CC.preGenerationSnapshot = captureSnapshot();
     }
     CC.currentPlan = {
       kind: "input", retry, opening: false, genuine: !retry, opportunity: true,
+      genuineInputCount: retry && discardedPlan
+        ? Math.max(0, Math.floor(Number(discardedPlan.genuineInputCount) || Number(CC.inputCount) || 0))
+        : Math.max(0, Number(CC.inputCount) || 0),
       task: "none", taskDelivered: false, completed: false, castProgressApplied: false,
       inputEvidenceId: inputEvidence ? inputEvidence.id : (discardedPlan && discardedPlan.inputEvidenceId || ""),
       retryFocusKey: retry && discardedPlan ? discardedPlan.ownerKey || discardedPlan.focusKey || "" : "",
@@ -8817,6 +9795,15 @@ function CharacterContinuity(hook, incomingText) {
         : clone(runtime.relationshipPace),
       ...(retry ? frozenOperationSelectionFrom(discardedPlan) : {})
     };
+    if (!retry && CC.pendingOperationRetry && CC.pendingOperationRetry.active) {
+      applyPendingOperationRetry(CC.currentPlan, CC.pendingOperationRetry);
+    }
+    if (retry && discardedPlan && discardedPlan.pendingOperationRetry === true) {
+      CC.currentPlan.pendingOperationRetry = true;
+      CC.currentPlan.pendingRetrySourceInputCount = Math.max(
+        0, Math.floor(Number(discardedPlan.pendingRetrySourceInputCount) || 0)
+      );
+    }
     CC.last.context = retry
       ? "Retry restored the prior turn position and reused its operation opportunity."
       : "Portrayal input and one fixed-owner operation opportunity are ready.";
@@ -8826,29 +9813,46 @@ function CharacterContinuity(hook, incomingText) {
     if (CC.currentPlan && !CC.currentPlan.completed) return CC.currentPlan;
     const discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     if (discardedPlan && CC.preGenerationSnapshot && CC.lastVisibleOutputAnchor && !outputAnchorPresent(contextValue)) {
-      restoreDiscardedGeneration();
+      const discardedRestored = restoreDiscardedGeneration();
+      const retryOpportunity = discardedPlan.opportunity === true;
       CC.currentPlan = {
         kind: "retry", retry: true, opening: false,
-        genuine: false, opportunity: true,
+        genuine: false, opportunity: retryOpportunity,
+        genuineInputCount: Math.max(0, Math.floor(Number(discardedPlan.genuineInputCount) || Number(CC.inputCount) || 0)),
         task: "none", taskDelivered: false, completed: false, castProgressApplied: false,
         inputEvidenceId: discardedPlan.inputEvidenceId || "",
         retryFocusKey: discardedPlan.ownerKey || discardedPlan.focusKey || "",
         retryActiveKeys: clone(discardedPlan.activeKeys || []),
-        retryTargets: clone(discardedPlan.targets || []),
-        retryEvidenceIds: clone(discardedPlan.evidenceIds || []),
-        retryEvidenceEligibility: clone(discardedPlan.evidenceEligibility || {}),
-        retrySourcePacket: clone(discardedPlan.sourcePacket || []),
-        retrySourcePacketText: textOf(discardedPlan.sourcePacketText),
-        retryOperationTaskText: textOf(discardedPlan.operationTaskText),
-        retryOperationTaskKind: line(discardedPlan.operationTaskKind, 40),
         relationshipPace: clone(discardedPlan.relationshipPace || runtime.relationshipPace),
-        ...frozenOperationSelectionFrom(discardedPlan)
+        ...(retryOpportunity ? {
+          retryTargets: clone(discardedPlan.targets || []),
+          retryEvidenceIds: clone(discardedPlan.evidenceIds || []),
+          retryEvidenceEligibility: clone(discardedPlan.evidenceEligibility || {}),
+          retrySourcePacket: clone(discardedPlan.sourcePacket || []),
+          retrySourcePacketText: textOf(discardedPlan.sourcePacketText),
+          retryOperationTaskText: textOf(discardedPlan.operationTaskText),
+          retryOperationTaskKind: line(discardedPlan.operationTaskKind, 40),
+          ...frozenOperationSelectionFrom(discardedPlan),
+          ...(discardedPlan.pendingOperationRetry === true ? {
+            pendingOperationRetry: true,
+            pendingRetrySourceInputCount: Math.max(
+              0, Math.floor(Number(discardedPlan.pendingRetrySourceInputCount) || 0)
+            )
+          } : {})
+        } : {})
       };
       CC.last.retry = true;
       CC.last.continue = false;
+      CC.last.warning = "";
+      if (!discardedRestored) {
+        CC.last.warning = "Continue rollback was incomplete; one or more managed Story Cards could not be restored exactly.";
+      }
       CC.last.candidate = "rolled back";
       CC.last.update = "None";
       CC.last.output = "Retry/revision restored the pre-generation snapshot, including provenance, operation meters, drains, Names, Relationships, Turning Points, and consumed evidence.";
+      if (!discardedRestored) {
+        CC.last.output += " One or more managed Story Cards could not be restored exactly.";
+      }
       return CC.currentPlan;
     }
     CC.preGenerationSnapshot = captureSnapshot();
@@ -10252,7 +11256,6 @@ function CharacterContinuity(hook, incomingText) {
     }
     const npc = CC.npcs[owner.key];
     const currentState = normalizeState(npc && npc.state, CC.stateClock);
-    const baselineState = !categories.length && !currentState.situation.value;
     const currentSituationTargetKey = normalizedTargetKey(
       currentState.situation.targetKey || currentState.target.key
     );
@@ -10272,7 +11275,7 @@ function CharacterContinuity(hook, incomingText) {
         continuationSource
       );
 
-    if (!categories.length && !baselineState && !confirmationState) return null;
+    if (!categories.length && !confirmationState) return null;
 
     let targetKey = "self";
     if (confirmationState) {
@@ -10297,19 +11300,15 @@ function CharacterContinuity(hook, incomingText) {
       targetKey,
       field: "",
       destination: "",
-      stateMode: confirmationState ? "confirm" : (baselineState ? "baseline" : "strong"),
+      stateMode: confirmationState ? "confirm" : "strong",
       confirmSituation: confirmationState ? currentState.situation.value : "",
-      gain: baselineState
-        ? settings.OPERATION_POINTS.SUPPORTING_EVIDENCE_GAIN
-        : (confirmationState
-          ? settings.OPERATION_POINTS.STATE_CONFIRMATION_GAIN
-          : settings.OPERATION_POINTS.STRONG_STATE_GAIN),
+      gain: confirmationState
+        ? settings.OPERATION_POINTS.STATE_CONFIRMATION_GAIN
+        : settings.OPERATION_POINTS.STRONG_STATE_GAIN,
       direct: false,
-      reason: baselineState
-        ? "Current scene participation supports an initial State in " + item.id + "."
-        : (confirmationState
-          ? "Fresh evidence continues the active Situation in " + item.id + "."
-          : "Strong current State signal (" + categories.join(", ") + ") in " + item.id + ".")
+      reason: confirmationState
+        ? "Fresh evidence continues the active Situation in " + item.id + "."
+        : "Strong current State signal (" + categories.join(", ") + ") in " + item.id + "."
     };
   }
 
@@ -10623,9 +11622,21 @@ function CharacterContinuity(hook, incomingText) {
         && (!targetKey || record.targetKey === targetKey)
         && (!field || keyOf(record.field) === field)
         && (!destination || keyOf(record.destination) === destination));
-    return matching.length
-      ? Math.max(...matching.map(record => effectiveOperationDrainValue(record, ownerOpportunity)))
-      : 0;
+    if (!matching.length) return 0;
+    const latest = matching.slice().sort((left, right) => right.updatedOpportunity - left.updatedOpportunity)[0];
+    if (keyOf(latest.lastResult) === "declined") {
+      return Math.min(settings.OPERATION_DRAIN_CAP, Math.max(0, Number(candidate.gain) || 0));
+    }
+    if (keyOf(latest.lastResult) === "omitted") {
+      if (latest.attempts >= 2) {
+        return Math.min(settings.OPERATION_DRAIN_CAP, Math.max(0, Number(candidate.gain) || 0));
+      }
+      return Math.max(
+        Math.max(...matching.map(record => effectiveOperationDrainValue(record, ownerOpportunity))),
+        Math.max(0, (Number(candidate.gain) || 0) - 1)
+      );
+    }
+    return Math.max(...matching.map(record => effectiveOperationDrainValue(record, ownerOpportunity)));
   }
 
   function blankScoringCandidate(kind, owner) {
@@ -11231,11 +12242,15 @@ function CharacterContinuity(hook, incomingText) {
     const evidenceChoice = evidenceIds.length > 1
       ? "EvidenceIDs: " + evidenceIds.join(", ") + ". Cite each ID whose evidence supports the completed record."
       : "";
+    const declineRecord = "(CCO|K|" + authorizedOperationCodeFromKind(normalized)
+      + "|" + evidenceIds.join(",") + ")";
     const evidence = evidencePacketForKind(owner, normalized, evidenceCandidates, currentInputId, recent, target);
     const targetMap = targetPacketForKind(owner, normalized, targets);
     const commonEnding = [
       "Write complete story prose first.",
-      "If supplied evidence warrants the change, end with exactly one completed parenthesized CCO record on its own unlabeled final line and ground every field in that evidence; otherwise omit the record entirely.",
+      "A final CCO resolution is mandatory. If supplied evidence warrants the change, end with exactly one completed operation record on its own unlabeled final line and ground every field in that evidence.",
+      "If the record cannot be completed safely from that evidence, end instead with this exact decline record: " + declineRecord,
+      "Never omit the final resolution and never output both records.",
       "Inside the record, no completed field may contain |, (, ), {, }, [, or ].",
       "Do not expose other maintenance text."
     ];
@@ -11280,6 +12295,11 @@ function CharacterContinuity(hook, incomingText) {
           + ". Situation is a character-voiced clause of at most " + settings.MODEL_STATE_VALUE_CHARS
           + " characters. Thought is direct first-person inner speech of at most "
           + settings.MODEL_STATE_VALUE_CHARS + " characters.",
+        "Situation must state only the supplied event or its immediate established consequence. TriggerList and private Thought may be conservative character-specific inferences from that event and the owner's supplied Inner continuity.",
+        ...(selectedCandidate && selectedCandidate.pendingRetry === true
+          ? ["This is the one carried retry of earlier cited evidence. Ignore the new player input when completing the record; Situation must directly paraphrase a cited E# event, or use the exact decline record."]
+          : []),
+        "Do not invent another event, new knowledge, a commitment, or a relationship fact to complete State.",
         ...commonEnding
       ];
     } else if (normalized === "name") {
@@ -11692,10 +12712,11 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.modelOmitted.push(focus.name + " current State");
     }
 
-    const frozenEvidenceIds = plan.retry && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
+    const frozenEvidenceIds = (plan.retry || plan.pendingOperationRetry)
+      && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
       ? plan.retryEvidenceIds
       : (plan.opportunityCounted && Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []);
-    const frozenEvidenceEligibility = plan.retry && plan.retryEvidenceEligibility
+    const frozenEvidenceEligibility = (plan.retry || plan.pendingOperationRetry) && plan.retryEvidenceEligibility
       ? plan.retryEvidenceEligibility
       : (plan.opportunityCounted && plan.evidenceEligibility ? plan.evidenceEligibility : null);
     const frozenOpportunity = plan.opportunityCounted && Number.isFinite(Number(plan.ownerOpportunity))
@@ -11815,7 +12836,8 @@ function CharacterContinuity(hook, incomingText) {
     ).filter(target => !hiddenRelevantKeys.has(target.key))
       .filter(target => target.mode !== "recovering" || selectedRecoveredTargets.has(target.key))
       .map(target => hiddenRelationshipKeys.has(target.key) ? { ...target, relationship: false } : target);
-    if (plan.retry && Array.isArray(plan.retryTargets) && plan.retryTargets.length) targets = clone(plan.retryTargets);
+    if ((plan.retry || plan.pendingOperationRetry)
+      && Array.isArray(plan.retryTargets) && plan.retryTargets.length) targets = clone(plan.retryTargets);
     else if (plan.opportunityCounted && Array.isArray(plan.targets) && plan.targets.length) targets = clone(plan.targets);
     const selectedOperationKind = MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
       ? keyOf(plan.selectedOperationKind)
@@ -11839,7 +12861,7 @@ function CharacterContinuity(hook, incomingText) {
         targets = targets.filter(target => normalizedTargetKey(target.key) === selectedOperationTargetKey);
       }
     }
-    const frozenDerivedPacket = plan.retry && Array.isArray(plan.retrySourcePacket)
+    const frozenDerivedPacket = (plan.retry || plan.pendingOperationRetry) && Array.isArray(plan.retrySourcePacket)
       ? plan.retrySourcePacket
       : (plan.opportunityCounted && Array.isArray(plan.sourcePacket) ? plan.sourcePacket : null);
     const derivedRelationshipEvidence = selectedOperationKind === "relationship"
@@ -11849,7 +12871,8 @@ function CharacterContinuity(hook, incomingText) {
       ? viewDerivedEvidenceCandidates(focus, targets, frozenOpportunity, frozenDerivedPacket)
       : [];
     const operationSources = allEvidence.concat(derivedRelationshipEvidence, derivedViewEvidence);
-    const frozenTaskEvidenceIds = plan.retry && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
+    const frozenTaskEvidenceIds = (plan.retry || plan.pendingOperationRetry)
+      && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
       ? plan.retryEvidenceIds
       : (plan.opportunityCounted && Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []);
     const operationEvidence = operationEvidenceCandidatesForKind(
@@ -12042,7 +13065,7 @@ function CharacterContinuity(hook, incomingText) {
     let selectedEvidence = [];
     let taskDelivered = false;
     let taskDeferredReason = "";
-    const retryTaskText = plan.retry && textOf(plan.retryOperationTaskText).trim()
+    const retryTaskText = (plan.retry || plan.pendingOperationRetry) && textOf(plan.retryOperationTaskText).trim()
       ? textOf(plan.retryOperationTaskText)
       : "";
     const selectedSourceIds = operationPacketSourceIds(
@@ -14095,6 +15118,44 @@ function CharacterContinuity(hook, incomingText) {
     if (rawParts[0] !== "CCO") {
       return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The protocol name was not exactly CCO.", raw: line(raw, 300) };
     }
+    if (textOf(rawParts[1]).trim().toUpperCase() === "K") {
+      if (rawParts.length !== 4) {
+        return {
+          story, candidate: null, malformed: true, hadProtocol: true,
+          reason: "The decline CCO record did not contain exactly four fields.", raw: line(raw, 300)
+        };
+      }
+      const declineKindCode = textOf(rawParts[2]).trim().toUpperCase();
+      const expectedKindCode = authorizedOperationCodeFromKind(plan.selectedOperationKind);
+      const suppliedEvidenceParts = textOf(rawParts[3]).split(",")
+        .map(value => value.trim().toUpperCase()).filter(Boolean);
+      const declineEvidenceIds = unique(suppliedEvidenceParts, 20);
+      const expectedEvidenceIds = (Array.isArray(plan.evidenceIds) ? plan.evidenceIds : [])
+        .map(value => textOf(value).trim().toUpperCase()).filter(Boolean);
+      if (!declineEvidenceIds.length
+        || declineEvidenceIds.length !== suppliedEvidenceParts.length
+        || declineEvidenceIds.some(id => !continuitySourceId(id))) {
+        return {
+          story, candidate: null, malformed: true, hadProtocol: true,
+          reason: "The decline CCO record cited an empty, duplicate, or invalid evidence list.", raw: line(raw, 300)
+        };
+      }
+      const exactEvidence = expectedEvidenceIds.length === declineEvidenceIds.length
+        && expectedEvidenceIds.every((id, index) => id === declineEvidenceIds[index]);
+      if (!expectedKindCode || declineKindCode !== expectedKindCode || !exactEvidence) {
+        return {
+          story, candidate: null, malformed: false, unauthorized: true, hadProtocol: true,
+          reason: "The decline CCO record did not repeat the frozen operation kind and exact supplied evidence list.",
+          raw: line(raw, 300)
+        };
+      }
+      return {
+        story, candidate: null, declined: true, malformed: false, hadProtocol: true,
+        declineKind: keyOf(plan.selectedOperationKind), evidenceIds: declineEvidenceIds,
+        reason: "Exact CCO decline record parsed." + protocolPresentationNote,
+        raw: reportedRaw
+      };
+    }
     const routing = canonicalizeFrozenOperationRouting(rawParts, plan);
     const parts = routing.parts;
     const kind = textOf(parts[1]).toUpperCase();
@@ -14336,6 +15397,21 @@ function CharacterContinuity(hook, incomingText) {
     return "";
   }
 
+  function pendingStateSituationGroundingError(owner, target, situation, plan, evidenceItems) {
+    if (!plan || plan.pendingOperationRetry !== true
+      || keyOf(plan.selectedCandidate && plan.selectedCandidate.stateMode) === "confirm") return "";
+    const excludedForms = [owner && owner.name]
+      .concat(owner && owner.aliases || [])
+      .concat(target && target.name ? [target.name] : [])
+      .concat(target && target.key === "player" ? ["Player", "the player", "you", player.name].concat(player.aliases || []) : []);
+    const situationTerms = new Set(relationshipGroundingTerms(situation, excludedForms));
+    const sourceTerms = unique((Array.isArray(evidenceItems) ? evidenceItems : []).flatMap(item =>
+      relationshipGroundingTerms(item && item.text, excludedForms)
+    ), 80);
+    if (sourceTerms.some(term => situationTerms.has(term))) return "";
+    return "The carried State retry Situation did not directly paraphrase any distinctive term from its frozen cited evidence.";
+  }
+
   function applyStateCandidate(owner, candidate, nextClock, plan, evidenceItems) {
     if (!owner || !candidate) return { ok: false, error: "State operation lacked its fixed owner or content." };
     const npc = CC.npcs[owner.key];
@@ -14374,6 +15450,10 @@ function CharacterContinuity(hook, incomingText) {
     if (!situation || /[{}|\r\n]/.test(situation)) {
       return { ok: false, error: "State contained no complete safe Situation phrase." };
     }
+    const pendingGroundingError = pendingStateSituationGroundingError(
+      owner, target, situation, plan, evidenceItems
+    );
+    if (pendingGroundingError) return { ok: false, error: pendingGroundingError };
     const thought = line(candidate.thought, settings.MAX_STATE_VALUE_CHARS);
     const validThought = directPrivateThought(thought, owner);
     const groundingError = validThought
@@ -14406,16 +15486,25 @@ function CharacterContinuity(hook, incomingText) {
     const priorProvenance = clone(CC.provenance);
     const priorProvenanceCreated = CC.last.provenanceCreated;
     const priorExperienceCards = captureManagedExperienceCards();
+    const priorStateCard = captureStateCard(owner);
+    const stateTitleKey = stateTitle(owner);
+    const priorHashPresent = Object.prototype.hasOwnProperty.call(CC.cardHashes, stateTitleKey);
+    const priorHash = CC.cardHashes[stateTitleKey];
     const rollback = error => {
       npc.state = normalizeState(priorStateSnapshot, CC.stateClock);
       CC.provenance = normalizeProvenanceLedger(priorProvenance);
       CC.last.provenanceCreated = priorProvenanceCreated;
-      restoreManagedExperienceCards(priorExperienceCards);
-      writeStateCard(owner);
+      const experiencesRestored = restoreManagedExperienceCards(priorExperienceCards);
+      const stateRestored = restoreStateCard(owner, priorStateCard);
+      if (stateRestored && priorHashPresent) CC.cardHashes[stateTitleKey] = priorHash;
+      else delete CC.cardHashes[stateTitleKey];
+      const restored = experiencesRestored && stateRestored;
+      const reported = textOf(error).replace(/[.;\s]+$/g, "")
+        + (restored ? "." : "; rollback was incomplete.");
       CC.last.provenanceDiagnostics = unique((CC.last.provenanceDiagnostics || []).concat(
-        "State provenance transaction rolled back: " + error
+        "State provenance transaction rolled back: " + reported
       ), 500).slice(-20);
-      return { ok: false, error };
+      return { ok: false, error: reported };
     };
 
     let promotion = null;
@@ -16379,7 +17468,8 @@ function CharacterContinuity(hook, incomingText) {
       selectedTurningPoints: [], omittedTurningPoints: [],
       selectedViews: [], omittedViews: [], selectedExperiences: [], omittedExperiences: [],
       suppliedEvidence: [], suppliedTargets: [],
-      operationDecay: "None",
+      operationOutcome: "None", operationDrainChange: "No drain change", operationDecay: "None",
+      outputRawChars: 0, outputStoryChars: 0, outputRecordChars: 0, outputRecordPosition: "none",
       nameDiagnostics: [], relationshipSourceDiagnostics: [], viewSourceDiagnostics: [], modelOmitted: []
     });
   }
@@ -16420,7 +17510,27 @@ function CharacterContinuity(hook, incomingText) {
       if (repeated.length) active = repeated;
     }
     let focus = selectFocus(active, currentInput);
-    if (plan.retry && plan.retryFocusKey) focus = active.find(character => character.key === plan.retryFocusKey) || focus;
+    if (plan.pendingOperationRetry === true
+      && (!focus || focus.key !== plan.retryFocusKey
+        || !active.some(character => character.key === plan.retryFocusKey))) {
+      cancelPendingOperationRetry(plan);
+    }
+    if (plan.pendingOperationRetry === true && !pendingOperationRetryStillEligible(plan)) {
+      cancelPendingOperationRetry(plan);
+      CC.last.warning = [CC.last.warning,
+        "A queued operation retry was canceled because its frozen evidence or owner was no longer eligible."
+      ].filter(Boolean).join(" ");
+    }
+    if (plan.retry && plan.retryFocusKey) {
+      const frozenFocus = active.find(character => character.key === plan.retryFocusKey)
+        || characters.find(character => character.key === plan.retryFocusKey) || null;
+      if (frozenFocus) {
+        focus = frozenFocus;
+        if (!active.some(character => character.key === frozenFocus.key)) {
+          active = [frozenFocus].concat(active).slice(0, runtime.maxActive);
+        }
+      }
+    }
     if (!active.length || !focus) {
       CC.activeKeys = [];
       CC.modelActiveKeys = [];
@@ -16429,15 +17539,18 @@ function CharacterContinuity(hook, incomingText) {
       plan.task = "none";
       plan.taskDelivered = false;
       CC.last.context = "No predetermined active NPC was detected.";
+      recordGenuineContextPlan(plan, "no predetermined active NPC was detected");
       return originalText;
     }
     CC.activeKeys = active.map(character => character.key);
     CC.focusKey = focus.key;
 
-    const scoringFrozenEvidenceIds = plan.retry && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
+    if (plan.opportunity) {
+    const scoringFrozenEvidenceIds = (plan.retry || plan.pendingOperationRetry)
+      && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
       ? plan.retryEvidenceIds
       : (plan.opportunityCounted && Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []);
-    const scoringFrozenEligibility = plan.retry && plan.retryEvidenceEligibility
+    const scoringFrozenEligibility = (plan.retry || plan.pendingOperationRetry) && plan.retryEvidenceEligibility
       ? plan.retryEvidenceEligibility
       : (plan.opportunityCounted && plan.evidenceEligibility ? plan.evidenceEligibility : null);
     const scoringFrozenOpportunity = plan.opportunityCounted && Number.isFinite(Number(plan.ownerOpportunity))
@@ -16464,7 +17577,7 @@ function CharacterContinuity(hook, incomingText) {
       scoringEvidence,
       recent
     );
-    const scoringFrozenSourcePacket = plan.retry && Array.isArray(plan.retrySourcePacket)
+    const scoringFrozenSourcePacket = (plan.retry || plan.pendingOperationRetry) && Array.isArray(plan.retrySourcePacket)
       ? plan.retrySourcePacket
       : (plan.opportunityCounted && Array.isArray(plan.sourcePacket) ? plan.sourcePacket : null);
     const scoringDerivedRelationships = relationshipDerivedEvidenceCandidates(
@@ -16481,6 +17594,7 @@ function CharacterContinuity(hook, incomingText) {
     );
     const scoringSources = scoringEvidence.concat(scoringDerivedRelationships, scoringDerivedViews);
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
+    }
 
     const attempt = assembleContext(originalText, active, focus, currentInput, recent, plan);
     if (!attempt.ok) {
@@ -16517,6 +17631,7 @@ function CharacterContinuity(hook, incomingText) {
       plan.sourcePacketText = "";
       plan.sourcePacketTokens = 0;
       CC.modelActiveKeys = [];
+      recordGenuineContextPlan(plan, attempt.reason || "the continuity packet could not fit safely");
       return originalText;
     }
 
@@ -16576,7 +17691,7 @@ function CharacterContinuity(hook, incomingText) {
     });
     plan.sourcePacket = attempt.taskDelivered ? freshSourcePacket : [];
     plan.sourcePacketText = attempt.taskDelivered
-      ? (plan.retry && textOf(plan.retrySourcePacketText)
+      ? ((plan.retry || plan.pendingOperationRetry) && textOf(plan.retrySourcePacketText)
         ? textOf(plan.retrySourcePacketText)
         : evidencePacketForKind(
           focus,
@@ -16591,6 +17706,9 @@ function CharacterContinuity(hook, incomingText) {
     plan.activeKeys = active.map(character => character.key);
     plan.modelActiveKeys = attempt.modelActive.map(character => character.key);
     plan.recentStory = recent;
+    if (plan.pendingOperationRetry && attempt.taskDelivered) {
+      CC.pendingOperationRetry = blankPendingOperationRetry();
+    }
     if (attempt.taskDelivered && !plan.opportunityCounted) {
       CC.ownerOpportunities[focus.key] = Math.max(0, Number(CC.ownerOpportunities[focus.key]) || 0) + 1;
       plan.opportunityCounted = true;
@@ -16664,6 +17782,7 @@ function CharacterContinuity(hook, incomingText) {
       + "; focus " + focus.name + (attempt.taskDelivered
         ? "; one " + operationKindLabel(attempt.taskKind) + " CCO task delivered."
         : ".");
+    recordGenuineContextPlan(plan, attempt.taskDelivered ? "" : attempt.taskDeferredReason);
     return attempt.text;
   }
 
@@ -16717,6 +17836,8 @@ function CharacterContinuity(hook, incomingText) {
       cutoff: 0,
       success: settings.OPERATION_POINTS.SUCCESS_DRAIN,
       unchanged: settings.OPERATION_POINTS.UNCHANGED_DRAIN,
+      omitted: settings.OPERATION_POINTS.OMITTED_DRAIN,
+      declined: settings.OPERATION_POINTS.DECLINED_DRAIN,
       rejected: settings.OPERATION_POINTS.REJECTED_DRAIN,
       malformed: settings.OPERATION_POINTS.MALFORMED_DRAIN
     }[normalizedOutcome];
@@ -16724,6 +17845,12 @@ function CharacterContinuity(hook, incomingText) {
     const identity = operationOutcomeIdentity(owner, plan, parsedCandidate, result);
     if (!MODEL_OPERATION_KINDS.includes(identity.kind) || !identity.ownerKey || !identity.evidenceSignature) return null;
     const opportunity = Math.max(0, Number(plan.ownerOpportunity) || Number(CC.ownerOpportunities[owner.key]) || 0);
+    const priorMeter = normalizeOperationMeter(
+      CC.operationState.owners[owner.key] && CC.operationState.owners[owner.key][identity.kind]
+    );
+    const repeatedOmission = normalizedOutcome === "omitted"
+      && keyOf(priorMeter.lastResult) === "omitted"
+      && priorMeter.lastSignature === identity.evidenceSignature;
     materializeOwnerDrainDecay(owner.key, opportunity);
     const key = operationDrainKey(identity);
     let record = (Array.isArray(CC.operationState.drains) ? CC.operationState.drains : [])
@@ -16749,15 +17876,23 @@ function CharacterContinuity(hook, incomingText) {
         + priorValue + " at owner opportunity " + opportunity + ".";
       CC.last.operationOutcome = operationKindLabel(identity.kind) + " cutoff";
       CC.last.operationDrainChange = summary;
+      updatePendingOperationRetry(plan, normalizedOutcome);
       return { record, priorValue, base: 0, repeated: 0, summary };
     }
     if (!record) {
-      record = normalizeOperationDrainRecord({ ...identity, value: 0, updatedOpportunity: opportunity, attempts: 0 });
+      record = normalizeOperationDrainRecord({
+        ...identity,
+        value: 0,
+        updatedOpportunity: opportunity,
+        attempts: repeatedOmission ? 1 : 0
+      });
     }
     if (!record) return null;
     record.value = Math.min(settings.OPERATION_DRAIN_CAP, priorValue + added);
     record.updatedOpportunity = opportunity;
-    record.attempts += 1;
+    record.attempts = normalizedOutcome === "omitted"
+      ? (keyOf(record.lastResult) === "omitted" ? record.attempts + 1 : 1)
+      : 0;
     record.lastResult = normalizedOutcome;
     record.key = operationDrainKey(record);
     const others = (Array.isArray(CC.operationState.drains) ? CC.operationState.drains : [])
@@ -16784,6 +17919,7 @@ function CharacterContinuity(hook, incomingText) {
       + " at owner opportunity " + opportunity + ".";
     CC.last.operationOutcome = operationKindLabel(identity.kind) + " " + normalizedOutcome;
     CC.last.operationDrainChange = summary;
+    updatePendingOperationRetry(plan, normalizedOutcome);
     return { record, priorValue, base: points, repeated, summary };
   }
 
@@ -16849,7 +17985,7 @@ function CharacterContinuity(hook, incomingText) {
         + " (" + operationFallback.count + " line"
         + (operationFallback.count === 1 ? "" : "s") + ").");
     }
-    if (cleanupNotes.length && !parsed.candidate && !parsed.unauthorized && !parsed.cutoff) {
+    if (cleanupNotes.length && !parsed.candidate && !parsed.declined && !parsed.unauthorized && !parsed.cutoff) {
       parsed.malformed = true;
       parsed.reason = cleanupNotes.join(" ")
         + (parsed.hadProtocol ? " " + parsed.reason : "");
@@ -16858,7 +17994,7 @@ function CharacterContinuity(hook, incomingText) {
     const protocolSummary = parsed.hadProtocol
       ? parsed.reason + (parsed.raw ? " Record: " + line(parsed.raw, 180) : "")
       : (parsed.reason || "No CCO record");
-    CC.last.protocol = cleanupNotes.length && parsed.candidate
+    CC.last.protocol = cleanupNotes.length && (parsed.candidate || parsed.declined)
       ? cleanupNotes.join(" ") + " " + protocolSummary
       : protocolSummary;
     const story = parsed.story.trim();
@@ -16872,11 +18008,13 @@ function CharacterContinuity(hook, incomingText) {
           ? "malformed stripped"
           : (parsed.cutoff
             ? "cutoff stripped"
+          : (parsed.declined
+            ? "declined; prose recovery pending"
           : (parsed.candidate
             ? (normalizedCandidate
               ? "normalized rejected: no punctuated story"
               : "rejected: no punctuated story")
-            : "absent: no punctuated story")));
+            : "absent: no punctuated story"))));
 
       CC.last.operationOutcome = "None";
       CC.last.operationDrainChange = "No drain change";
@@ -16885,12 +18023,15 @@ function CharacterContinuity(hook, incomingText) {
           ? "cutoff"
           : (parsed.malformed
           ? "malformed"
-          : (parsed.unauthorized || parsed.candidate ? "rejected" : "unchanged"));
+          : (parsed.unauthorized
+            ? "rejected"
+            : (parsed.declined ? "declined" : (parsed.candidate ? "rejected" : "omitted"))));
         applyOperationOutcomeDrain(owner, plan, parsed.candidate, null, outcome);
       }
 
       CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
       CC.last.error = "The response did not finish terminally punctuated story prose.";
+      recordGenuineOutputResolution(plan);
       return " ";
     }
 
@@ -16913,8 +18054,14 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.candidate = "cutoff stripped";
       CC.last.warning = [CC.last.warning, parsed.reason].filter(Boolean).join(" ");
       CC.last.error = "";
+    } else if (parsed.declined) {
+      CC.last.candidate = "declined";
+      CC.last.error = "";
     } else if (!parsed.candidate) {
-      CC.last.candidate = plan.taskDelivered ? "absent/no update" : "not requested";
+      CC.last.candidate = plan.taskDelivered ? "omitted" : "not requested";
+      CC.last.error = plan.taskDelivered
+        ? "The model omitted the mandatory final CCO resolution."
+        : "";
     } else if (!owner || plan.task !== "operation" || !plan.taskDelivered) {
       result = { ok: false, error: "The parsed operation had no authorized fixed owner or delivered task." };
     } else if (parsed.candidate.kind !== keyOf(plan.selectedOperationKind)) {
@@ -17077,12 +18224,16 @@ function CharacterContinuity(hook, incomingText) {
         ? "malformed"
         : (parsed.unauthorized
           ? "rejected"
-          : (!parsed.candidate
-            ? "unchanged"
-            : (result && result.ok ? "success" : (result && result.unchanged ? "unchanged" : "rejected")))));
+          : (parsed.declined
+            ? "declined"
+            : (!parsed.candidate
+              ? "omitted"
+              : (result && result.ok
+                ? "success"
+                : (result && result.unchanged ? "unchanged" : "rejected"))))));
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
     }
-    if (cleanupNotes.length && parsed.candidate) {
+    if (cleanupNotes.length && (parsed.candidate || parsed.declined)) {
       CC.last.warning = [CC.last.warning, normalizedCandidate
         ? "A structured output fallback was normalized and validated before its hidden operation and story were processed."
         : "CC output residue was stripped before the valid CCO record and story were processed."]
@@ -17112,9 +18263,12 @@ function CharacterContinuity(hook, incomingText) {
         + parsed.candidate.kind + " operation committed transactionally."
       : result && result.unchanged
       ? "Punctuated story prose survived; the proposed operation already matched and was not refreshed."
-      : "Punctuated story prose survived; " + (CC.last.candidate === "absent/no update"
-        ? "Names, State, Relationships, Views, and Experiences remained unchanged."
-        : (CC.last.candidate === "not requested" ? "no operation was scheduled." : "no continuity operation was applied."));
+      : "Punctuated story prose survived; " + (CC.last.candidate === "declined"
+        ? "the exact decline resolution was accepted and no continuity operation was applied."
+        : (CC.last.candidate === "omitted"
+          ? "the mandatory CCO resolution was omitted and no continuity operation was applied."
+        : (CC.last.candidate === "not requested" ? "no operation was scheduled." : "no continuity operation was applied.")));
+    recordGenuineOutputResolution(plan);
     return story;
   }
 
@@ -17421,6 +18575,88 @@ function CharacterContinuity(hook, incomingText) {
       + (Number(source.selectedNet) || 0);
   }
 
+  function pendingOperationRetryStatus() {
+    const current = CC.currentPlan && CC.currentPlan.pendingOperationRetry === true
+      ? CC.currentPlan
+      : null;
+    const stored = normalizePendingOperationRetry(CC.pendingOperationRetry);
+    const source = current || (stored.active ? stored.plan : null);
+    if (!source) return "None";
+    const ownerKey = normalizedTargetKey(source.ownerKey || source.retryFocusKey || stored.ownerKey);
+    const owner = characters.find(character => character.key === ownerKey) || null;
+    const kind = operationKindLabel(source.selectedOperationKind);
+    const evidenceIds = unique(
+      Array.isArray(source.evidenceIds) && source.evidenceIds.length
+        ? source.evidenceIds
+        : source.retryEvidenceIds,
+      40
+    );
+    const state = current
+      ? (source.taskDelivered ? "delivered this pass" : "queued; deferred this pass")
+      : "queued";
+    const sourceInput = Math.max(0, Math.floor(Number(
+      source.pendingRetrySourceInputCount || stored.sourceInputCount
+    ) || 0));
+    return state + " | " + kind + " for " + (owner ? owner.name : ownerKey || "Unknown")
+      + " | evidence " + (evidenceIds.join(",") || "None")
+      + " | source input " + (sourceInput || "Unknown");
+  }
+
+  function currentPassStatus() {
+    const plan = CC.currentPlan && typeof CC.currentPlan === "object" ? CC.currentPlan : {};
+    if (hook === "input") return plan.retry ? "Retry input — awaiting context" : "Genuine input — awaiting context";
+    if (hook === "output") {
+      return plan.taskDelivered
+        ? "Output — genuine-input operation resolution"
+        : "Output — story only; no operation task was delivered";
+    }
+    if (hook === "context" || hook === "contextAppend") {
+      if (plan.kind === "continue" && !plan.opportunity) {
+        return "Continue — portrayal only; operation scoring disabled";
+      }
+      if (plan.retry) return "Retry context — frozen operation opportunity reused";
+      if (plan.opening) return "Opening context — no operation opportunity";
+      return "Genuine-input context — operation opportunity";
+    }
+    return hook + " — no operation opportunity";
+  }
+
+  function recordedCandidateStatus(candidate) {
+    const source = recordedOperationCandidate(candidate);
+    if (!source) return "None";
+    const specificity = [source.targetKey, source.field, source.destination].filter(Boolean).join(" → ");
+    return (specificity || "unspecified target")
+      + " | sources " + (source.sourceIds.join(",") || "None")
+      + " | signature " + (source.evidenceSignature || "None");
+  }
+
+  function lastGenuineTaskStatus() {
+    const record = normalizeLastGenuineOperation(CC.lastGenuineOperation);
+    if (!record.inputCount) return "None";
+    if (!record.taskDelivered) {
+      return "none for genuine input " + record.inputCount
+        + (record.deferredReason ? " — " + record.deferredReason : "");
+    }
+    return operationKindLabel(record.operationKind) + " for " + (record.ownerName || record.ownerKey || "Unknown")
+      + " | evidence " + (record.evidenceIds.join(",") || "None")
+      + " | owner opportunity " + (record.ownerOpportunity || "None");
+  }
+
+  function lastGenuineSelectionStatus() {
+    const record = normalizeLastGenuineOperation(CC.lastGenuineOperation);
+    if (!record.inputCount || !record.selectionFrozen) return "Not scored";
+    return operationKindLabel(record.operationKind) + " | gain " + record.selectedGain
+      + " | drain " + record.selectedDrain + " | net " + record.selectedNet
+      + " | candidate " + recordedCandidateStatus(record.selectedCandidate);
+  }
+
+  function lastGenuineResolutionStatus() {
+    const record = normalizeLastGenuineOperation(CC.lastGenuineOperation);
+    if (!record.inputCount) return "None";
+    return record.resolution + " | parser " + record.parserResult
+      + " | candidate " + record.candidateResult;
+  }
+
   function operationCandidateDebugRows(plan) {
     const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : {};
     if (source.operationSelectionFrozen !== true) return ["Operation selection: Not scored"];
@@ -17678,10 +18914,21 @@ function CharacterContinuity(hook, incomingText) {
       "Evidence: " + (characters.map(pendingEvidenceStatus).join("; ") || "None") + " | Ledger " + CC.evidence.length + "/" + settings.MAX_EVIDENCE_ITEMS,
       "State clock / lifetime: " + CC.stateClock + " / " + runtime.stateLifetime,
       "Story turns / genuine inputs: " + CC.visibleGenerationCount + " / " + CC.inputCount,
-      "Last task: " + CC.last.task + (CC.last.owner ? " for " + CC.last.owner : ""),
-      "Selected operation: " + selectedOperationStatus(CC.currentPlan),
-      "Last operation outcome: " + (CC.last.operationOutcome || "None")
+      "Current pass: " + currentPassStatus(),
+      "Current task: " + CC.last.task + (CC.last.owner ? " for " + CC.last.owner : ""),
+      "Current selected operation: " + selectedOperationStatus(CC.currentPlan),
+      "Current operation outcome: " + (CC.last.operationOutcome || "None")
         + " | " + (CC.last.operationDrainChange || "No drain change"),
+      "Last genuine task: " + lastGenuineTaskStatus(),
+      "Last genuine selection: " + lastGenuineSelectionStatus(),
+      "Last genuine resolution: " + lastGenuineResolutionStatus(),
+      "Last genuine mutation / drain: " + (CC.lastGenuineOperation.mutationResult || "None")
+        + " | " + (CC.lastGenuineOperation.drainChange || "No drain change"),
+      "Last genuine output chars raw/prose/CCO: " + (CC.lastGenuineOperation.outputRawChars || 0) + " / "
+        + (CC.lastGenuineOperation.outputStoryChars || 0) + " / "
+        + (CC.lastGenuineOperation.outputRecordChars || 0)
+        + " | CCO position " + (CC.lastGenuineOperation.outputRecordPosition || "none"),
+      "Pending operation retry: " + pendingOperationRetryStatus(),
       "Operation drains: " + CC.operationState.drains.filter(record => Number(record.value) > 0).length
         + "/" + settings.MAX_OPERATION_DRAIN_RECORDS + " active | last decay " + (CC.last.operationDecay || "None"),
       "Provenance: " + (() => {
@@ -17694,7 +18941,7 @@ function CharacterContinuity(hook, incomingText) {
           + " | Relationship narrow uses " + snapshot.relationshipUses
           + " | View narrow uses " + snapshot.viewUses;
       })(),
-      "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
+      "Current candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
       "Portrayal packet: " + (CC.last.portrayalTier || "none"),
@@ -17706,17 +18953,39 @@ function CharacterContinuity(hook, incomingText) {
       "Retry / Continue / fallback: " + (CC.last.retry ? "Yes" : "No") + " / " + (CC.last.continue ? "Yes" : "No") + " / " + (CC.last.gracefulFallback ? "Yes" : "No"),
       "Last context: " + CC.last.context,
       "Last output: " + CC.last.output,
-      "Output chars raw/prose/CCO: " + (CC.last.outputRawChars || 0) + " / "
+      "Current output chars raw/prose/CCO: " + (CC.last.outputRawChars || 0) + " / "
         + (CC.last.outputStoryChars || 0) + " / " + (CC.last.outputRecordChars || 0)
         + " | CCO position " + (CC.last.outputRecordPosition || "none"),
       "Warning: " + warning,
       "Version: " + settings.VERSION
     ].join("\n");
-    upsertCard(settings.STATUS_TITLE, entry);
+    const statusMatches = managedCardMatches(settings.STATUS_TITLE);
+    if (statusMatches.length > 1) {
+      debug("Could not write Status because multiple physical CC — Status cards were present.");
+      return false;
+    }
+    const statusCard = statusMatches.length === 1
+      ? saveCard(statusMatches[0], entry, settings.STATUS_TITLE)
+      : addCard(settings.STATUS_TITLE, entry);
+    if (!statusCard || entryOf(statusCard) !== entry
+      || !managedCardIdentityMatches(statusCard, settings.STATUS_TITLE)) {
+      return false;
+    }
 
-    if (!runtime.debug) return;
+    if (!runtime.debug) return true;
     const debugRows = [
-      "Last task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
+      "Current pass: " + currentPassStatus(),
+      "Current task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
+      "Last genuine task: " + lastGenuineTaskStatus(),
+      "Last genuine selection: " + lastGenuineSelectionStatus(),
+      "Last genuine resolution: " + lastGenuineResolutionStatus(),
+      "Last genuine mutation / drain: " + (CC.lastGenuineOperation.mutationResult || "None")
+        + " / " + (CC.lastGenuineOperation.drainChange || "No drain change"),
+      "Last genuine output chars raw/prose/CCO: " + (CC.lastGenuineOperation.outputRawChars || 0) + " / "
+        + (CC.lastGenuineOperation.outputStoryChars || 0) + " / "
+        + (CC.lastGenuineOperation.outputRecordChars || 0)
+        + " | CCO position " + (CC.lastGenuineOperation.outputRecordPosition || "none"),
+      "Pending operation retry: " + pendingOperationRetryStatus(),
       "Prepared / processed / dormant-skipped: " + preparedProfileCount + " / "
         + characters.length + " / " + rosterSkippedProfileCount,
       "Registered / roster / scene / model / focus: " + characters.length + " / "
@@ -17820,18 +19089,22 @@ function CharacterContinuity(hook, incomingText) {
     const priorityDebugRows = [
       "Error: " + (CC.last.error || "None"),
       "CCO parse: " + CC.last.protocol,
-      "Last task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
-      "Last candidate / update: " + CC.last.candidate + " / " + CC.last.update,
-      "Operation outcome / drain: " + (CC.last.operationOutcome || "None") + " / " + (CC.last.operationDrainChange || "None"),
+      "Current pass: " + currentPassStatus(),
+      "Current task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
+      "Current candidate / update: " + CC.last.candidate + " / " + CC.last.update,
+      "Current operation outcome / drain: " + (CC.last.operationOutcome || "None") + " / " + (CC.last.operationDrainChange || "None"),
+      "Last genuine task: " + lastGenuineTaskStatus(),
+      "Last genuine resolution: " + lastGenuineResolutionStatus(),
       "Last Name: " + (CC.last.lastName || "None"),
       "Last Relationship / change: " + (CC.last.lastRelationship || "None") + " / " + (CC.last.relationshipChange || "None"),
       "Last Turning Point / change: " + (CC.last.lastTurningPoint || "None") + " / " + (CC.last.turningPointChange || "None")
     ];
     const repeatedPriorityLabels = [
-      "Error:", "CCO parse:", "Last task / owner:", "Last candidate / update:", "Operation outcome / drain:",
+      "Error:", "CCO parse:", "Current pass:", "Current task / owner:", "Current candidate / update:",
+      "Current operation outcome / drain:", "Last genuine task:", "Last genuine resolution:",
       "Last Name:", "Last Relationship / change:", "Last Turning Point / change:"
     ];
-    writeDebugPages(priorityDebugRows.concat(debugRows.filter(row =>
+    return writeDebugPages(priorityDebugRows.concat(debugRows.filter(row =>
       !repeatedPriorityLabels.some(label => textOf(row).startsWith(label))
     )));
   }

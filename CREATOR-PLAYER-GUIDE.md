@@ -4,7 +4,7 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; CC selects, validates, and saves narrow continuity changes when the generated evidence supports them.
 
-The current package is **v1.82**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
+The current package is **v1.83**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
 
 ## Before you begin
 
@@ -454,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v1.82 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v1.83 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -524,16 +524,18 @@ A managed State card contains temporary fields such as Thought, Feeling, Goal, T
 Its lifecycle is:
 
 1. CC creates the State card when an NPC activates.
-2. On an eligible turn, CC gives the model a narrow continuity task.
-3. The generated output may include a hidden `(CCO|...)` candidate.
+2. On an eligible turn with a supported change or confirmation, CC gives the model a narrow continuity task. Mere participation does not create a baseline State task.
+3. The generated output must end with one hidden `(CCO|...)` resolution: either a completed State candidate or an explicit no-change result bound to the frozen task and evidence.
 4. The Output connector passes the generated text back through CC.
-5. CC validates and saves an accepted candidate to the State card.
+5. CC validates the resolution and saves an accepted State candidate; an explicit no-change result writes nothing.
 6. CC removes the hidden record before returning visible story text.
 7. The cache-compatible Context connector can later append a readable private-State projection for the model to use when relevant.
 
 CC keeps raw `Triggers` in the managed State card because they support validation and field derivation. It omits that redundant `Triggers` line from the model-facing State projection; the derived State can influence portrayal without making the model restate or visibly perform every cause. Unused continuity may remain latent on any given turn.
 
-An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, or the candidate may have failed validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
+An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, the model may have explicitly declined the proposed change, or the candidate may have failed validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
+
+The final resolution is mandatory, but a mutation is not. A valid no-change result leaves cards and evidence untouched and is reported as `declined`. If the model supplies story prose but omits the final resolution, CC reports `omitted`, applies no semantic drain, retains the evidence, and allows one bounded retry of that exact opportunity. A cut-off protocol fragment remains penalty-free and retryable. These outcomes let Status distinguish a considered no-change decision from a model that ignored the task.
 
 ### Structured-output fallback handling
 
@@ -677,9 +679,16 @@ Useful lines include:
 
 - `Error`
 - `CCO parse`
-- `Last task / owner`
-- `Last candidate / update`
-- `Operation outcome / drain`
+- `Current pass`
+- `Current task`
+- `Current selected operation`
+- `Last genuine task`
+- `Last genuine selection`
+- `Last genuine resolution`
+- `Last genuine mutation / drain`
+- `Last genuine output chars raw/prose/CCO`
+- `Pending operation retry`
+- `Current candidate / update`
 - `Active NPC slots`
 - `Card title migration`
 - `Card wrapper migration`

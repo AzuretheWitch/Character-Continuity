@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v1.82**.
+This reference describes **v1.83**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -58,6 +58,8 @@ If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` an
 The budget controls CC's complete model-facing continuity packet, not the total amount of information saved in Story Cards. The packet includes portrayal rules, selected character continuity, and an operation task when one is delivered. CC selects relevant records rather than inserting every record on every turn.
 
 An operation task may use at most 50% of the configured continuity budget. At the default 2,000-token budget, its ceiling is 1,000 tokens. The complete packet still has to fit both the configured budget and the smaller effective allowance available in the platform context that turn, so an operation may be deferred when the full packet cannot fit safely.
+
+When a task is delivered, its final hidden resolution is mandatory: the model must return either the completed operation record or an explicit no-change result tied to that frozen task and its evidence. A declined operation does not mutate continuity. An omitted resolution is diagnosed separately and receives one bounded retry; a portrayal-only Continue pass performs no operation scoring.
 
 In optimized append-only context, `info.maxChars` is treated as a hard returned-text ceiling; CC does not assume the platform's internal overflow area is writable append capacity. Under pressure, CC tries complete full, compact, and emergency focused portrayal tiers. Optional projections and operation tasks may be omitted or deferred, but CC does not intentionally return a partial continuity packet. `CC — Status` reports the portrayal tier and any model omissions.
 
