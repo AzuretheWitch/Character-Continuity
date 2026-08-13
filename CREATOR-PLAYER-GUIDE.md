@@ -4,7 +4,7 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; CC selects, validates, and saves narrow continuity changes when the generated evidence supports them.
 
-The current package is **Character Continuity Stable v1.0.80 Cache-Compatible Beta 7**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
+The current package is **v1.82**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
 
 ## Before you begin
 
@@ -27,9 +27,9 @@ Do not manually write State or raw `(CCO|...)` control records.
 | Deliberately revise Outer or Inner | Yes | Yes, for their own Adventure |
 | Author an optional Turning Point tracker and its five stage cards | Yes | Yes, for their own Adventure |
 | Manually write State or hidden CCO records | No | No |
-| Let Names, Relationships, Views, Experiences, and Turning Point routing evolve after activation | CC | CC |
+| Let Names, Relationships, Views, Experiences, and Turning Point progress evolve after activation | CC | CC |
 
-Outer and Inner are the creator-owned foundation. State is managed by CC. Names, Relationships, Views, and Experiences can begin with creator-authored baselines, then become managed continuity during play. Turning Points are optional creator-authored arcs: the creator owns each definition and all five stage-card entries, while CC manages only `Progress`, `Active card`, and `Stage trigger` during play.
+Outer and Inner are the creator-owned foundation. State is managed by CC. Names, Relationships, Views, and Experiences can begin with creator-authored baselines, then become managed continuity during play. Turning Points are optional creator-authored arcs: the creator owns each definition, optional definitive `Breakthrough`, and all five stage-card entries, while CC manages only `Progress`, `Active card`, and `Stage trigger` during play.
 
 ## Creator workflow
 
@@ -41,11 +41,11 @@ For a Scenario intended for other players:
    - directly author completed Outer and Inner cards in the Scenario, or
    - use onboarding in a private test Adventure.
 4. Add any desired starting Names, Views, Relationships, or Experiences.
-5. Optionally author each NPC's Turning Point tracker and five matching stage Lore cards. Turning Points are separate from onboarding.
+5. Optionally author each NPC's Turning Point tracker and five matching stage Story Cards. Turning Points are separate from onboarding.
 6. Start a fresh test Adventure.
 7. Confirm the roster, context budget, Turning Point mode, and version in `CC — Status`.
 8. Test at least one supported State update.
-9. Test each configured Turning Point's active-stage routing and, when practical, one supported progress update.
+9. Test each configured Turning Point's active-stage injection and, when practical, one supported progress update.
 10. Test onboarding if players will be allowed to add NPCs.
 11. Confirm that no raw `(CCO|...)` record appears in visible story history.
 
@@ -119,7 +119,7 @@ CC does **not** create `Mira Vale's State` while onboarding is pending.
 
 All character-owned cards use possessive titles, and wrapped continuity entries use split wrappers. The current build recognizes legacy em-dash titles and combined openings such as `{ Mira Vale's Outer:`, then attempts to migrate both in place. `CC — Debug` reports these results on its `Card title migration` and `Card wrapper migration` lines.
 
-Turning Points are not a seventh onboarding card. If this NPC needs one, activate and verify the six-card pack first, then author the tracker and five stage Lore cards described in [Turning Points](#turning-points).
+Turning Points are not a seventh onboarding card. If this NPC needs one, activate and verify the six-card pack first, then author the tracker and five stage Story Cards described in [Turning Points](#turning-points).
 
 ### 3. Complete Outer
 
@@ -359,8 +359,8 @@ Removing a roster name does not delete the NPC's continuity cards. Re-enter the 
 - Edit **Player's Identity** when the Player character's name or pronouns need correction.
 - Edit **CC — Settings** for runtime behavior.
 - Edit **CC — Active NPCs** for onboarding, removal, or reconnection.
-- In an optional **Turning Points** tracker, treat `Turning Point`, `ID`, `Direction`, and `Stage cards` as creator-owned definition fields. Let CC manage `Progress`, `Active card`, and `Stage trigger` after setup.
-- Let CC manage **State**, **Names**, **Relationships**, **Views**, **Experiences**, and Turning Point routing fields during ordinary play.
+- In an optional **Turning Points** tracker, treat `Turning Point`, `ID`, `Direction`, `Stage cards`, and the optional final `Breakthrough` as creator-owned definition fields. Let CC manage `Progress`, `Active card`, and `Stage trigger` after setup.
+- Let CC manage **State**, **Names**, **Relationships**, **Views**, **Experiences**, and Turning Point progress fields during ordinary play.
 
 If you intentionally edit a managed continuity card, preserve its exact wrapper, headings, complete record groups, and canonical names. Invalid records are preserved for inspection but excluded from model context and automatic updates.
 
@@ -370,12 +370,14 @@ Turning Points are optional creator-authored arcs for durable character change. 
 
 Each Turning Point needs:
 
-1. one seven-field record in `Name's Turning Points`; and
-2. five creator-written Lore cards, one for each stage.
+1. one record with seven required fields, plus an optional final `Breakthrough` field, in `Name's Turning Points`; and
+2. five creator-written Story Cards, one for each stage.
 
 ### 1. Author the tracker record
 
-Create a Story Card titled exactly `Mira Vale's Turning Points`. A complete starting record can look like this:
+Create a Story Card titled exactly `Mira Vale's Turning Points`. Leave this router Story Card's own trigger/key blank. CC discovers the router by its exact title; an ordinary scene trigger could cause the platform to expose the private router Entry independently of CC. The `Stage trigger:` line inside the Entry is a managed record field, not an instruction to activate the router itself. CC preserves the router's creator-assigned key and type during progress transactions.
+
+A complete starting record can look like this:
 
 ```text
 {
@@ -387,10 +389,11 @@ Progress: 5 (Dormant) — Mira assumes that every offer of safety carries a hidd
 Stage cards: Mira Vale's Choosing Trust
 Active card: Mira Vale's Choosing Trust — Dormant
 Stage trigger: __CC_TP_MIRA_VALE_CHOOSING_TRUST_DORMANT__
+Breakthrough: Mira knowingly accepts meaningful help while retaining the freedom to refuse or set its terms.
 }
 ```
 
-The seven fields must remain in that order:
+The seven required fields must remain in that order. If supplied, `Breakthrough` must be the eighth and final field:
 
 | Field | Owner and format |
 | --- | --- |
@@ -398,9 +401,10 @@ The seven fields must remain in that order:
 | `ID` | Creator-owned stable ID: lowercase letters, numbers, and underscores; begin with a letter or number. Do not change it after play begins. |
 | `Direction` | Creator-owned classification: `Growth`, `Decline`, `Mixed`, or `Neutral`. |
 | `Progress` | Initial score, matching stage, and a concrete current-baseline description in `score (Stage) — description` form. CC manages this field after setup. |
-| `Stage cards` | Creator-owned title prefix shared by all five stage Lore cards. |
+| `Stage cards` | Creator-owned title prefix shared by all five stage Story Cards. |
 | `Active card` | The prefix plus the stage belonging to the current score. CC manages this field after setup. |
 | `Stage trigger` | The private key for the current stage. CC manages this field after setup. |
+| `Breakthrough` | Optional but recommended creator-owned definitive condition for establishing Achieved. CC preserves this field and does not rewrite it. |
 
 Progress uses these fixed ranges:
 
@@ -414,7 +418,7 @@ Progress uses these fixed ranges:
 
 The stage name written inside `Progress` must match the score. CC calculates the expected stage, `Active card`, and `Stage trigger`, reports mismatches, and preserves those deterministic values during managed writes. Enter the matching values during setup. After setup, do not manually advance those three managed fields to force a story outcome; change the creator-owned definition or starting baseline only when you intentionally redesign the arc.
 
-To define more than one Turning Point for the same NPC, repeat the complete seven-field group with a distinct stable `ID`. Keep the complete page at or below 1,000 characters; use numbered `Name's Turning Points 2` pages when needed.
+To define more than one Turning Point for the same NPC, repeat the complete record with a distinct stable `ID`. Keep the complete page at or below 1,000 characters; use numbered `Name's Turning Points 2` pages when needed.
 
 ### 2. Choose the Direction and mode
 
@@ -426,13 +430,13 @@ The `Turning Point mode` setting controls which Directions may receive automatic
 | --- | --- |
 | `Growth-only` | `Growth` only |
 | `All directions` | `Growth`, `Decline`, `Mixed`, and `Neutral` |
-| `Disabled` | None; existing routing and stage portrayal remain available. |
+| `Disabled` | None; existing validated current-stage selection and portrayal remain available. |
 
 `Growth-only` is the default. See [Configuration](CONFIGURATION.md#turning-point-modes) for the full setting behavior.
 
-### 3. Author all five stage Lore cards
+### 3. Author all five stage Story Cards
 
-Using the sample `Stage cards` prefix, create Lore cards with these exact titles and private trigger keys:
+Using the sample `Stage cards` prefix, create Story Cards with these exact titles and private trigger keys:
 
 | Story Card title | Trigger/key |
 | --- | --- |
@@ -450,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Put the corresponding private key in that Lore card's trigger/key field. Do not replace it with an ordinary scene trigger: CC supplies only the active private key so the platform routes only the current stage card. Each stage card must stay at or below 1,000 characters.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v1.82 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -461,7 +465,7 @@ Entry: Mira has begun to recognize help that carries no hidden bargain. She may 
 }
 ```
 
-The Achieved card should include one explicit, definitive `Breakthrough:` line:
+The recommended definitive `Breakthrough:` condition belongs in the router record, as shown above. For compatibility, an older setup may instead keep that line in the Achieved card:
 
 ```text
 {
@@ -471,9 +475,25 @@ Breakthrough: Mira knowingly accepts meaningful help while retaining the freedom
 }
 ```
 
-CC requires completed story evidence satisfying the breakthrough condition before it can establish Achieved. Keep the condition specific enough to validate but flexible enough to occur through more than one exact scene. If you separate requirements with semicolons, each clause must be supported. Without an explicit `Breakthrough:` field, the build can fall back to the Achieved `Entry`, but the explicit field is recommended because it states the decisive condition unambiguously.
+CC requires completed story evidence satisfying the breakthrough condition before it can establish Achieved. Keep the condition specific enough to validate but flexible enough to occur through more than one exact scene. If you separate requirements with semicolons, each clause must be supported.
 
-### 4. Understand progress movement
+Condition precedence is deterministic:
+
+1. the router record's final `Breakthrough` field;
+2. a `Breakthrough` line in the Achieved stage card; then
+3. the Achieved `Entry` as a legacy fallback.
+
+The router field is preferred because it keeps the definitive mechanical condition out of ordinary portrayal context and separate from the current stage baseline. A selected Turning Point operation may still supply that condition to the model inside its narrow evidence-validation task.
+
+### 4. Understand current-stage injection and optimized cache
+
+CC never injects the whole Turning Point router as portrayal context. For every valid current Turning Point belonging to a model-facing NPC, it supplies the exact current stage Entry inside a tagged `TP STAGE` block, or reselects an identical matching block already retained by optimized cache. A compact `CURRENT TP` line identifies the stable development and its current Entry revision. A separately selected Turning Point operation can provide a narrow router-derived task packet containing the title, Direction, current Progress, relevant current/comparison stages, and definitive condition.
+
+Optimized context is append-only, so a previous stage block may remain physically visible in cached context after progress crosses a boundary. The authority rule in the newest CC portrayal block selects only the matching current handle and revision and supersedes every earlier revision or untagged stage passage for that development. If the matching current block is invalid or cannot be supplied, the model is told to apply no stage guidance rather than reuse stale guidance.
+
+`CURRENT TP` and `TP STAGE ... BEGIN/END` are therefore expected internal controls in the Context Viewer. They do not expose the router, progress score, Direction, stable ID, active-card title, or private trigger, and CC strips them if a model echoes them into visible output.
+
+### 5. Understand progress movement
 
 CC can propose only one narrow continuity operation on a turn, and every Turning Point update must pass the same completed-evidence and transaction checks as other managed continuity.
 
@@ -481,17 +501,19 @@ CC can propose only one narrow continuity operation on a turn, and every Turning
 - **Breakthrough:** moves an unachieved Turning Point to 35 when completed evidence satisfies the Achieved stage and every part of its definitive `Breakthrough:` condition.
 - **Integration:** adds 2 after Achieved when completed evidence shows that the change is sustained, habitual, or part of ordinary life, up to 49.
 
-CC updates only `Progress`, `Active card`, and `Stage trigger`. It does not rewrite the Turning Point's title, stable ID, Direction, stage-card prefix, or any creator-written stage entry.
+CC updates only `Progress`, `Active card`, and `Stage trigger`. It does not rewrite the Turning Point's title, stable ID, Direction, stage-card prefix, optional Breakthrough condition, or any creator-written stage Entry.
 
-### 5. Verify the setup
+Each progress write is transactional. CC verifies the complete router page, title, keys, type, and reparsed target record after writing. If the Story Card API returns a partial or mismatched write, CC rejects the update and attempts to restore the whole prior page rather than leave a partly advanced router.
+
+### 6. Verify the setup
 
 Start a fresh test Adventure and inspect `CC — Status`. With `Debug: true`, `CC — Debug` also reports Turning Point pages, stage cards, diagnostics, and the last change. Common setup failures are:
 
-- a missing or misspelled stage-card title;
+- a missing, misspelled, or duplicated physical stage-card title;
 - a stage card without its exact private trigger key;
 - a `Progress` score that does not match its stage;
 - a changed or duplicated stable `ID`;
-- a malformed or reordered seven-field record;
+- a malformed or reordered required field, or a `Breakthrough` field placed anywhere except last;
 - a tracker page or stage card over its 1,000-character limit; or
 - a Direction excluded by the current `Turning Point mode`.
 
@@ -617,21 +639,23 @@ CC activates only scene-relevant roster NPCs. Mention or interact with the NPC, 
 
 ### A card has an internal-looking trigger
 
-Leave it in place. CC uses managed keys to preserve card identity across script hooks. Turning Point stage cards intentionally use their stage-specific `__CC_TP_...__` keys so only the active creator-written stage is routed. Ordinary scene triggers are not required for CC-managed context injection.
+Leave it in place. CC uses managed keys to preserve card identity across script hooks. Turning Point stage cards intentionally retain their exact stage-specific `__CC_TP_...__` validation key. CC directly injects only the validated current stage Entry, so the private key is not exposed to the model or used to activate the card through native trigger chaining. Ordinary scene triggers are not required for CC-managed context injection.
 
 ### Relationship development feels too fast or too slow
 
 Change `Relationship pace` to `Slowburn`, `Balanced`, or `Fast`. Use `Custom` only when you want direct control over event values and maximum stage movement. See [Configuration](CONFIGURATION.md#relationship-pace-presets).
 
-### A Turning Point does not advance or route its stage card
+### A Turning Point does not advance or supply its current stage
 
-- Confirm the record has all seven fields in the exact order shown in [Turning Points](#turning-points).
+- Confirm the record has all seven required fields in the exact order shown in [Turning Points](#turning-points), with any optional `Breakthrough` field eighth and last.
 - Confirm `Progress` uses the correct score/stage pair and includes a current-baseline description.
 - Confirm all five stage-card titles use the exact `Stage cards` prefix and suffixes.
+- Confirm each stage-card title resolves to exactly one physical Story Card.
 - Confirm every stage card contains its exact private trigger/key.
 - Confirm `Turning Point mode` permits the record's Direction.
 - Remember that Support requires completed durable movement, Breakthrough requires completed evidence satisfying the Achieved condition, and Integration requires sustained change after Achieved.
-- Enable Debug and read `Turning Point pages`, `Turning Point stage cards`, `Turning Point diagnostics`, and `Last Turning Point / change`.
+- Enable Debug and read `Turning Point pages`, `Turning Point stage cards`, `Turning Point diagnostics`, `Selected Turning Point stages`, `Omitted Turning Point stages`, and `Last Turning Point / change`.
+- In the Context Viewer, confirm the newest `CURRENT TP` line has one matching `TP STAGE` block. Older cached revisions can remain physically present but are not authoritative.
 
 ### More diagnostics are needed
 
@@ -665,6 +689,8 @@ Useful lines include:
 - `Turning Point pages`
 - `Turning Point stage cards`
 - `Turning Point diagnostics`
+- `Selected Turning Point stages`
+- `Omitted Turning Point stages`
 - `Last Turning Point / change`
 - `Components`
 - `Budget configured / effective / used / headroom`

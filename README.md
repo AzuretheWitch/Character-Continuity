@@ -4,6 +4,8 @@ Character Continuity, or **CC**, is an AI Dungeon companion script for keeping p
 
 CC gives each registered NPC a stable creator-authored foundation, a temporary private State, directional Relationships and Views, usable Names, persistent Experiences, and optional creator-authored Turning Points. It supplies only scene-relevant continuity to the model and validates every automatic update before saving it.
 
+The current package is **v1.82**.
+
 The maintained release is **cache-compatible only**. Install the four canonical files named `Library`, `Input`, `Context`, and `Output`; the Context connector must begin with `// @cache-compatible` and use the `contextAppend` hook. Legacy non-cache Context installations are no longer supported.
 
 ## Documentation
@@ -27,8 +29,8 @@ CC separates stable character foundations from continuity that should change dur
 | `Name's Relationships` | Creator baseline, then CC | Tracks the NPC's directional Role, Trust, Closeness, Boundaries, and Conflict. |
 | `Name's Views` | Creator baseline, then CC | Tracks what the NPC Loves, Likes, feels Neutral toward, Dislikes, or Hates. |
 | `Name's Experiences` | Creator baseline, then CC | Stores lasting events that remain important after temporary State expires. |
-| `Name's Turning Points` | Creator definition, then CC routing | Tracks optional durable change through a stable ID, Direction, Progress, active stage card, and private stage trigger. |
-| `Stage-card prefix — Stage` | Creator | Defines portrayal for one of the five Turning Point stages: Dormant, Emerging, Near Breakthrough, Achieved, or Integrating. |
+| `Name's Turning Points` | Creator definition, then CC progress | Tracks optional durable change through a stable ID, Direction, Progress, active stage card, private stage key, and optional definitive Breakthrough condition. |
+| `Stage-card prefix — Stage` | Creator | Defines portrayal for one of the five Turning Point stages: Dormant, Emerging, Near Breakthrough, Achieved, or Integrating. CC preserves its creator-assigned Story Card type. |
 | `CC — Settings` | Creator or player | Controls CC's editable runtime settings. |
 | `CC — Active NPCs` | Creator or player | Holds the five stable `N1`–`N5` active-roster slots and starts onboarding. |
 | `CC — Status` | CC | Summarizes the current roster, State, latest operation, warnings, and version. |
@@ -36,7 +38,7 @@ CC separates stable character foundations from continuity that should change dur
 
 `Outer` and `Inner` remain the NPC's creator-authored foundation. CC may shorten an overlong copy when building model context, but story events do not rewrite those cards.
 
-All character-owned Story Card titles use the possessive format. Wrapped continuity entries place the opening `{` and possessive header on separate lines. Current builds recognize legacy em-dash card titles and combined entry openings such as `{ Name's Outer:`, then attempt to migrate both in place without deleting or recreating the card.
+All character-owned Story Card titles use the possessive format. Wrapped continuity entries place the opening `{` and possessive header on separate lines. Current builds recognize legacy em-dash card titles and combined entry openings such as `{ Name's Outer:`, then attempt to migrate both in place without deleting or recreating the card. Turning Point router cards are deliberately excluded from ordinary managed-key/type migration so their creator-assigned keys and type remain intact; give those routers their exact possessive titles during setup.
 
 ## Temporary private State
 
@@ -113,7 +115,7 @@ This prevents a passing moment from becoming permanent memory while allowing gen
 
 Turning Points let a creator define durable stages of an NPC's change without asking CC to invent the arc. They are optional and are not part of the six-card onboarding pack.
 
-For each Turning Point, the creator writes one record in `Name's Turning Points` and five matching Lore cards:
+For each Turning Point, the creator writes one record in `Name's Turning Points` and five matching Story Cards:
 
 - **Dormant:** progress 0–9
 - **Emerging:** progress 10–19
@@ -121,9 +123,13 @@ For each Turning Point, the creator writes one record in `Name's Turning Points`
 - **Achieved:** progress 30–39
 - **Integrating:** progress 40–49
 
-The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The Achieved card should include an explicit `Breakthrough:` condition.
+The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v1.82.
 
-The creator owns the Turning Point's meaning, Direction, stable ID, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`, then routes the creator-written card for the active stage through a private trigger key. The default `Growth-only` setting processes Growth Turning Points; see the [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md#turning-points) for setup and the [Configuration guide](CONFIGURATION.md) for mode controls.
+The creator owns the Turning Point's meaning, Direction, stable ID, optional Breakthrough condition, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`. Keep the router Story Card's own trigger/key blank so the platform does not natively expose its private Entry; the managed `Stage trigger:` line inside that Entry is a separate data field. CC validates the exact private key on the current stage card, then directly supplies that card's Entry in a tagged model-facing block; it does not expose the whole router or rely on native trigger chaining. When a Turning Point operation is selected, its narrow operation task may still supply the relevant current/comparison stages and definitive condition for evidence validation.
+
+With optimized append-only context, an older stage block may remain physically visible in cached context. Each new CC portrayal block includes a `CURRENT TP` handle and revision selecting the only authoritative matching `TP STAGE` block. That newest revision supersedes older tagged or untagged stage passages. If the current matching block is unavailable, the model is told to apply no stage guidance rather than reuse stale guidance. These controls are expected in the Context Viewer and are stripped if a model echoes them into output.
+
+The default `Growth-only` setting processes Growth Turning Points; see the [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md#turning-points) for setup and the [Configuration guide](CONFIGURATION.md) for mode controls.
 
 ## Active cast
 
@@ -172,7 +178,7 @@ Retry restores the discarded generation's pre-turn snapshot, including:
 - Names, Relationships, Turning Points, Views, and Experiences
 - operation meters and provenance
 
-CC also uses a bounded context budget and selects scene-relevant continuity instead of loading every saved record every turn.
+CC also uses a bounded context budget and selects scene-relevant continuity instead of loading every saved record every turn. In cache-compatible mode it fits complete portrayal packets in full, compact, or emergency focused tiers; it defers optional material or an operation rather than return a cut-off continuity block.
 
 ## Scope
 
