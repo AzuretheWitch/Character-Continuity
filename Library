@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v1.99",
+  VERSION: "v2.00",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -52,6 +52,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
   MAX_OPERATION_TASK_TOKENS: 1200,
+  MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   MODEL_STATE_VALUE_CHARS: 100,
   MODEL_OPERATION_EXPLANATION_CHARS: 150,
@@ -77,7 +78,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 2,
+  MAINTENANCE_SCHEMA_VERSION: 3,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -3233,6 +3234,8 @@ function CharacterContinuity(hook, incomingText) {
   const PROVENANCE_KINDS = { S: "state", X: "experience", R: "relationship", V: "view" };
   const OPERATION_KINDS = ["name", "state", "relationship", "view", "turning", "experience"];
   const MODEL_OPERATION_KINDS = ["name", "state", "relationship", "view", "turning"];
+  const ASSESSMENT_OPERATION_KIND = "assessment";
+  const TASK_OPERATION_KINDS = MODEL_OPERATION_KINDS.concat([ASSESSMENT_OPERATION_KIND]);
 
   function provenanceId(value) {
     const id = textOf(value).trim().toUpperCase();
@@ -4176,8 +4179,9 @@ function CharacterContinuity(hook, incomingText) {
     const sourceIds = unique(Array.isArray(candidate.sourceIds) ? candidate.sourceIds : [], 40)
       .map(continuitySourceId)
       .filter(Boolean);
-    if (!MODEL_OPERATION_KINDS.includes(kind) || !targetKey || !sourceIds.length
+    if (!TASK_OPERATION_KINDS.includes(kind) || !targetKey || !sourceIds.length
       || !line(candidate.evidenceSignature, 500)) return false;
+    if (kind === ASSESSMENT_OPERATION_KIND) return targetKey === "self";
     if (kind === "state") {
       return triggerList(candidate.stateTriggers || []).length > 0;
     }
@@ -4205,8 +4209,9 @@ function CharacterContinuity(hook, incomingText) {
   function clearIncompleteForcedOperationPlan(plan) {
     if (!plan || typeof plan !== "object" || Array.isArray(plan)
       || plan.operationSelectionFrozen !== true
-      || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
-      || forcedOperationCandidateComplete(plan.selectedCandidate)) return false;
+      || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) return false;
+    // v2.00 retires JavaScript-frozen semantic operation choices. Any carried
+    // v1.x plan is cleared and rebuilt as a model-authored assessment.
     plan.operationSelectionFrozen = false;
     plan.selectedOperationKind = "";
     plan.selectedCandidate = null;
@@ -4245,7 +4250,7 @@ function CharacterContinuity(hook, incomingText) {
       : null;
     scrubLegacyOperationTaskText(plan);
     const active = source.active === true && !!plan && plan.taskDelivered === true
-      && plan.task === "operation" && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+      && plan.task === "operation" && TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
       && forcedOperationCandidateComplete(plan.selectedCandidate)
       && !!line(plan.selectedEvidenceSignature, 500);
     return active ? {
@@ -8871,6 +8876,8 @@ function CharacterContinuity(hook, incomingText) {
       usedNamesBy: source.usedNamesBy && typeof source.usedNamesBy === "object" && !Array.isArray(source.usedNamesBy)
         ? source.usedNamesBy
         : {},
+      assessedNoChangeBy: source.assessedNoChangeBy && typeof source.assessedNoChangeBy === "object"
+        && !Array.isArray(source.assessedNoChangeBy) ? source.assessedNoChangeBy : {},
       anchor: source.anchor && typeof source.anchor === "object" && !Array.isArray(source.anchor) ? source.anchor : null
     };
   }
@@ -8901,6 +8908,7 @@ function CharacterContinuity(hook, incomingText) {
       usedRelationshipsBy: {},
       usedTurningPointsBy: {},
       usedNamesBy: {},
+      assessedNoChangeBy: {},
       anchor: evidenceAnchor(value)
     };
     CC.evidence.push(item);
@@ -9020,6 +9028,15 @@ function CharacterContinuity(hook, incomingText) {
         item.usedNamesBy[subjectKey] = {};
       }
       item.usedNamesBy[subjectKey][aliasKey] = true;
+    });
+  }
+
+  function markNoChangeAssessment(items, owner, opportunity) {
+    (Array.isArray(items) ? items : []).forEach(item => {
+      if (!item || !/^E\d+$/.test(textOf(item.id)) || !owner) return;
+      if (!item.assessedNoChangeBy || typeof item.assessedNoChangeBy !== "object"
+        || Array.isArray(item.assessedNoChangeBy)) item.assessedNoChangeBy = {};
+      item.assessedNoChangeBy[owner.key] = Math.max(0, Math.floor(Number(opportunity) || 0));
     });
   }
 
@@ -9600,6 +9617,7 @@ function CharacterContinuity(hook, incomingText) {
     if (source.operationSelectionFrozen !== true) return {};
     return {
       operationSelectionFrozen: true,
+      semanticAssessment: source.semanticAssessment === true,
       selectedOperationKind: line(source.selectedOperationKind, 40),
       selectedCandidate: clone(source.selectedCandidate),
       operationCandidates: clone(Array.isArray(source.operationCandidates) ? source.operationCandidates : []),
@@ -9615,7 +9633,7 @@ function CharacterContinuity(hook, incomingText) {
   function pendingOperationRetryFromPlan(plan) {
     const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : null;
     if (!source || source.taskDelivered !== true || source.task !== "operation"
-      || !MODEL_OPERATION_KINDS.includes(keyOf(source.selectedOperationKind))
+      || !TASK_OPERATION_KINDS.includes(keyOf(source.selectedOperationKind))
       || !line(source.selectedEvidenceSignature, 500)) return blankPendingOperationRetry();
     const pendingPlan = {
       task: "operation",
@@ -9692,6 +9710,8 @@ function CharacterContinuity(hook, incomingText) {
     plan.retryOperationTaskText = "";
     plan.retryOperationTaskKind = "";
     plan.operationSelectionFrozen = false;
+    plan.semanticAssessment = false;
+    delete plan.semanticAssessmentResolved;
     plan.selectedOperationKind = "";
     plan.selectedCandidate = null;
     plan.operationCandidates = [];
@@ -9709,7 +9729,19 @@ function CharacterContinuity(hook, incomingText) {
     const owner = characters.find(character => character.key === plan.retryFocusKey) || null;
     const kind = keyOf(plan.selectedOperationKind);
     const ids = unique(Array.isArray(plan.retryEvidenceIds) ? plan.retryEvidenceIds : [], 40);
-    if (!owner || !MODEL_OPERATION_KINDS.includes(kind) || !ids.length) return false;
+    if (!owner || !TASK_OPERATION_KINDS.includes(kind) || !ids.length) return false;
+    if (kind === ASSESSMENT_OPERATION_KIND) {
+      const frozen = plan.retryEvidenceEligibility && typeof plan.retryEvidenceEligibility === "object"
+        ? plan.retryEvidenceEligibility
+        : {};
+      return ids.every(id => {
+        const item = evidenceForId(id);
+        const eligibility = frozen[id];
+        return !!(item && /^E\d+$/.test(id) && eligibility
+          && ["name", "state", "relationship", "view", "turning"].some(field => eligibility[field] === true)
+          && !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]));
+      });
+    }
     const rawIds = ids.filter(id => /^E\d+$/.test(id));
     if (rawIds.length) {
       const currentOpportunity = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0);
@@ -10092,8 +10124,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function commitDeliveredOperationOpportunity(plan) {
-    if (!plan || plan.taskDelivered !== true || plan.task !== "operation"
-      || plan.opportunityCounted === true) return false;
+    if (!plan || plan.opportunity !== true || plan.opportunityCounted === true) return false;
     const owner = characters.find(character => character.key === plan.ownerKey) || null;
     if (!owner) return false;
     const current = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0);
@@ -10320,6 +10351,45 @@ function CharacterContinuity(hook, incomingText) {
         const rightRecent = anchorInText(right.item.anchor, recent) ? 1 : 0;
         if (rightRecent !== leftRecent) return rightRecent - leftRecent;
         if (right.age !== left.age) return right.age - left.age;
+        return right.item.number - left.item.number;
+      });
+  }
+
+  function semanticAssessmentEvidence(owner, recent, currentInputId = "", frozenIds = [], opportunityOverride = null) {
+    if (!owner) return [];
+    const frozen = Array.isArray(frozenIds) && frozenIds.length ? new Set(frozenIds) : null;
+    const order = frozen ? new Map(frozenIds.map((id, index) => [id, index])) : null;
+    const maximumAge = Math.max(
+      settings.VIEW_EVIDENCE_OPPORTUNITIES,
+      settings.RELATIONSHIP_EVIDENCE_OPPORTUNITIES,
+      settings.TURNING_POINT_EVIDENCE_OPPORTUNITIES,
+      settings.NAME_EVIDENCE_OPPORTUNITIES
+    );
+    return CC.evidence
+      .filter(item => item && /^E\d+$/.test(item.id) && (!frozen || frozen.has(item.id)))
+      .filter(item => openingEvidenceEligible(item, recent))
+      .filter(item => viewEvidenceAge(item, owner, opportunityOverride) < maximumAge)
+      .filter(item => !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]))
+      .map(item => ({
+        item,
+        // Raw E# rows carry no scripted semantic classification. Every direct
+        // operation form may cite them; the model supplies the meaning.
+        nameEligible: true,
+        stateEligible: true,
+        relationshipEligible: true,
+        viewEligible: true,
+        turningEligible: true,
+        age: viewEvidenceAge(item, owner, opportunityOverride)
+      }))
+      .sort((left, right) => {
+        if (order) return (order.get(left.item.id) ?? Number.MAX_SAFE_INTEGER)
+          - (order.get(right.item.id) ?? Number.MAX_SAFE_INTEGER);
+        const leftCurrent = left.item.id === currentInputId ? 1 : 0;
+        const rightCurrent = right.item.id === currentInputId ? 1 : 0;
+        if (rightCurrent !== leftCurrent) return rightCurrent - leftCurrent;
+        const leftRecent = anchorInText(left.item.anchor, recent) ? 1 : 0;
+        const rightRecent = anchorInText(right.item.anchor, recent) ? 1 : 0;
+        if (rightRecent !== leftRecent) return rightRecent - leftRecent;
         return right.item.number - left.item.number;
       });
   }
@@ -10573,9 +10643,8 @@ function CharacterContinuity(hook, incomingText) {
       { code: "P", key: "player", name: player.name, mode: "known", relationship: true, nameSubject: true }
     ];
     special.forEach(target => {
-      const relevant = target.key === "self"
-        ? true
-        : (!!activeByTarget.player || !!buriedByTarget.player || !!relationshipByTarget.player
+      const relevant = target.key === "self" || target.key === "player"
+        || (!!activeByTarget.player || !!buriedByTarget.player || !!relationshipByTarget.player
           || interactionScore(owner, currentInput) > 0
           || CC.conversationKey === owner.key
           || operationTargetMentioned(owner, target, targetSource));
@@ -12419,54 +12488,69 @@ function CharacterContinuity(hook, incomingText) {
       if (!Array.isArray(plan.routingTargets) || !plan.routingTargets.length) {
         plan.routingTargets = clone(Array.isArray(targets) ? targets : []);
       }
-      syncOperationMeters(owner, (Array.isArray(plan.operationCandidates) ? plan.operationCandidates : [])
-        .filter(candidate => candidate.modelAnswerTemplateReady !== false));
       return;
     }
     const scoringOpportunity = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) + 1;
-    const candidates = operationCandidatesForOwner(
-      owner, targets, evidenceCandidates, currentInputId, recent, scoringOpportunity
+    const diagnosticCandidates = MODEL_OPERATION_KINDS.map(kind => ({
+      ...blankScoringCandidate(kind, owner),
+      diagnosticOnly: true,
+      ownerOpportunity: scoringOpportunity,
+      reasons: ["Semantic detection is delegated to the model-authored assessment."]
+    }));
+    const reviewable = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
+      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
+      .filter(candidate => !(candidate.item.assessedNoChangeBy
+        && candidate.item.assessedNoChangeBy[owner.key]))
+      .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+    const sourceIds = reviewable.map(candidate => candidate.item.id);
+    const selected = sourceIds.length ? {
+      kind: ASSESSMENT_OPERATION_KIND,
+      ownerKey: owner.key,
+      targetKey: "self",
+      field: "",
+      destination: "",
+      sourceIds,
+      storyEvidenceIds: sourceIds.slice(),
+      sourceMetadata: {},
+      evidenceSignature: "",
+      gain: 0,
+      drain: 0,
+      net: 0,
+      currentRelevance: reviewable.length
+        ? Math.max(...reviewable.map(candidate => operationCurrentRelevance(
+          candidate.item, currentInputId, recent
+        )))
+        : 0,
+      lastServedOpportunity: -1,
+      oldestEvidenceOrder: reviewable.length
+        ? Math.min(...reviewable.map(candidate => candidate.item.number))
+        : 0,
+      direct: true,
+      derived: false,
+      allowedFields: [],
+      allowedDestinations: [],
+      allowedModes: [],
+      managedSignature: "",
+      reasons: ["Fresh completed evidence is ready for model-authored semantic assessment."]
+    } : null;
+    if (selected) selected.evidenceSignature = operationEvidenceSignature(
+      selected,
+      reviewable.map(candidate => candidate.item)
     );
-    const preparedCandidates = candidates.map(candidate => {
-      const templateReady = !!modelAnswerTaskForCandidate(
-        owner,
-        targets,
-        evidenceCandidates,
-        currentInputId,
-        recent,
-        plan.relationshipPace || runtime.relationshipPace,
-        candidate,
-        candidate.sourceIds
-      );
-      return {
-        ...candidate,
-        modelAnswerTemplateReady: templateReady,
-        reasons: templateReady
-          ? clone(candidate.reasons || [])
-          : clone(candidate.reasons || []).concat(
-            "Skipped because the current evidence and managed cards could not construct a complete model-answer template."
-          )
-      };
-    });
-    const deliverableCandidates = preparedCandidates.filter(candidate => candidate.modelAnswerTemplateReady === true);
-    const selection = selectOperationCandidate(deliverableCandidates);
-    const selected = selection.selected;
     plan.operationSelectionFrozen = true;
-    plan.selectedOperationKind = selected ? selected.kind : "";
+    plan.semanticAssessment = !!selected;
+    plan.selectedOperationKind = selected ? ASSESSMENT_OPERATION_KIND : "";
     plan.selectedCandidate = selected ? clone(selected) : null;
-    plan.operationCandidates = clone(preparedCandidates);
+    plan.operationCandidates = clone(diagnosticCandidates);
     plan.selectedEvidenceSignature = selected ? selected.evidenceSignature : "";
-    plan.selectedGain = selected ? selected.gain : 0;
-    plan.selectedDrain = selected ? selected.drain : 0;
-    plan.selectedNet = selected ? selected.net : 0;
+    plan.selectedGain = 0;
+    plan.selectedDrain = 0;
+    plan.selectedNet = 0;
     plan.routingTargets = selected ? clone(Array.isArray(targets) ? targets : []) : [];
-    plan.selectionReasons = clone(selection.reasons).concat(
-      !selected && preparedCandidates.some(candidate => candidate.net > 0 && !candidate.modelAnswerTemplateReady)
-        ? ["Positive candidates without a complete current model-answer template were skipped."]
-        : []
-    );
-    plan.operationTieBreak = selection.tieBreak;
-    syncOperationMeters(owner, deliverableCandidates);
+    plan.selectionReasons = selected
+      ? ["A bounded model-authored semantic assessment was scheduled over fresh completed evidence."]
+      : ["No unreviewed completed evidence remained eligible for semantic assessment."];
+    plan.operationTieBreak = "The model selects semantic meaning; JavaScript supplies structure and legal mechanics only.";
   }
 
   function operationOpportunityFrozen(plan) {
@@ -12495,6 +12579,9 @@ function CharacterContinuity(hook, incomingText) {
 
   function operationEvidenceLimit(kind, selectedCandidate) {
     const normalized = keyOf(kind);
+    if (normalized === ASSESSMENT_OPERATION_KIND) {
+      return Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1);
+    }
     const direct = selectedCandidate && selectedCandidate.direct === true;
     if (normalized === "name") return direct ? 1 : 3;
     if (["state", "relationship", "view", "turning"].includes(normalized)) return direct ? 1 : 2;
@@ -12511,6 +12598,7 @@ function CharacterContinuity(hook, incomingText) {
       .filter(value => {
         const id = continuitySourceId(value);
         if (!id) return false;
+        if (normalized === ASSESSMENT_OPERATION_KIND) return /^E\d+$/.test(id);
         if (normalized === "relationship") {
           return selectedCandidate && selectedCandidate.direct === true
             ? /^E\d+$/.test(id)
@@ -13039,8 +13127,134 @@ function CharacterContinuity(hook, incomingText) {
     return ["<SYSTEM>", ...currentOperationAuthorityLines(), ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
   }
 
+  function assessmentEvidenceCodes(candidate) {
+    return candidate && candidate.item ? ["S", "N", "R", "V", "T"] : [];
+  }
+
+  function assessmentTurningPointChoices(owner) {
+    if (!owner || runtime.turningPointMode === "disabled") return [];
+    refreshTurningPointsStore();
+    const ownerData = turningPointsForOwner(owner.key);
+    if (!ownerData) return [];
+    return ownerData.contextRecords.map(record => {
+      if (!turningPointDirectionAllowed(record)) return null;
+      const score = record.progress.score;
+      const modes = [];
+      const references = [];
+      const nextStage = turningPointNextStage(record);
+      if (score < 29 && turningPointStageCardValid(record, owner, nextStage)) {
+        modes.push("Support");
+        const card = turningPointStageCard(record, nextStage);
+        references.push("Support=" + shortenProfileValue(
+          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), 110
+        ));
+      }
+      const achieved = TURNING_POINT_STAGES[3];
+      const breakthrough = turningPointBreakthroughCondition(record);
+      if (score < 30 && turningPointStageCardValid(record, owner, achieved)
+        && breakthrough && breakthrough.text && !breakthrough.invalid) {
+        modes.push("Breakthrough");
+        references.push("Breakthrough=" + shortenProfileValue(breakthrough.text, 110));
+      }
+      const integrating = TURNING_POINT_STAGES[4];
+      if (score >= 30 && score < integrating.maximum
+        && turningPointStageCardValid(record, owner, integrating)) {
+        modes.push("Integration");
+        const card = turningPointStageCard(record, integrating);
+        references.push("Integration=" + shortenProfileValue(
+          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), 110
+        ));
+      }
+      return modes.length ? {
+        id: record.id,
+        title: record.title,
+        progress: record.progress.normalized,
+        modes,
+        references,
+        managedSignature: turningPointManagedSignature(owner.key, record)
+      } : null;
+    }).filter(Boolean);
+  }
+
+  function semanticAssessmentTask(owner, targets, evidenceCandidates) {
+    const evidence = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
+      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
+      .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+    if (!owner || !evidence.length) return "";
+    const evidenceIds = evidence.map(candidate => candidate.item.id);
+    const evidenceField = evidenceIds.join(",");
+    const rows = evidence.map(candidate => {
+      const codes = assessmentEvidenceCodes(candidate);
+      const snippet = operationEvidenceSnippet(owner, null, "", candidate.item.text, null);
+      return candidate.item.id + "[" + codes.join("") + "]: " + snippet;
+    });
+    const stateTargets = operationTargetsForKind("state", targets);
+    const nameTargets = operationTargetsForKind("name", targets);
+    const relationshipTargets = operationTargetsForKind("relationship", targets);
+    const viewTargets = operationTargetsForKind("view", targets);
+    const turningChoices = evidence.some(candidate => candidate.turningEligible === true)
+      ? assessmentTurningPointChoices(owner)
+      : [];
+    const forms = [
+      "K unchanged: (CCO|K|S|" + evidenceField + "|Explanation)"
+    ];
+    if (stateTargets.length && evidence.some(candidate => candidate.stateEligible === true)) {
+      forms.push("S State: (CCO|S|AboutCode|EvidenceIDs|TriggerList|Situation|Thought)");
+    }
+    if (nameTargets.length && evidence.some(candidate => candidate.nameEligible === true)) {
+      forms.push("N Name: (CCO|N|SubjectCode|EvidenceIDs|Alias|Transition|Use|Explanation)");
+    }
+    if (relationshipTargets.length && evidence.some(candidate => candidate.relationshipEligible === true)) {
+      forms.push("R Relationship: (CCO|R|TargetCode|EvidenceIDs|Field|D|Destination|Explanation)");
+    }
+    if (viewTargets.length && evidence.some(candidate => candidate.viewEligible === true)) {
+      forms.push("V View: (CCO|V|TargetCode|EvidenceIDs|Destination|Mode|Explanation)");
+    }
+    if (turningChoices.length) {
+      forms.push("T Turning Point: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
+    }
+    const targetRows = [
+      stateTargets.length ? "State About codes: " + stateTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      nameTargets.length ? "Name Subject and Use codes: " + nameTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      relationshipTargets.length ? "Relationship targets: " + relationshipTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      viewTargets.length ? "View targets: " + viewTargets.map(target => target.code + "=" + target.name
+        + (target.mode === "buried" ? "[buried]" : (target.mode === "recovering" ? "[recovering]" : ""))).join(", ") : ""
+    ].filter(Boolean);
+    const relationshipDestinations = RELATIONSHIP_FIELDS.map(field => field + "="
+      + relationshipOperationDestinations(field, null).join("/")).join("; ");
+    const turningRows = turningChoices.map(choice => "TP " + choice.id + " " + choice.title
+      + " | current " + choice.progress + " | movements " + choice.modes.join("/")
+      + " | " + choice.references.join("; "));
+    const rules = [
+      "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
+      "Use this final CC CURRENT ASSESSMENT block as the complete output task for this response.",
+      "Assess the supplied completed evidence for " + owner.name + ". Select the continuity meaning and supply every operation detail.",
+      "Each raw Evidence row can support any available operation form. Select one or more supplied IDs for an operation and preserve their supplied order. K copies the complete supplied ID list and records a completed assessment with continuity unchanged.",
+      "Evidence:",
+      ...rows,
+      ...targetRows,
+      "State TriggerList selects 1-3 codes: " + TRIGGER_CODES.join(",") + ". Situation is a concise completed event; Thought is direct first-person inner speech.",
+      "Name Transition: Observed, Adopted, Retired, Rejected, Reactivated, or Replace=OldAlias. Use: General, None, or comma-separated Name codes.",
+      "Relationship fields and destinations: " + relationshipDestinations + ". D records a completed direct event.",
+      "View destinations: " + VIEW_CATEGORIES.join("/") + ", plus Buried for an active known view or Recovered for a buried view. Mode O records a directly established durable judgment; M records bounded movement toward the destination.",
+      ...turningRows,
+      "Explanation is one concise plain-text clause grounded in the cited evidence. Complete descriptive fields with plain text that keeps the record separators distinct.",
+      "Available record forms:",
+      ...forms,
+      "Output order:",
+      "1. Complete exactly one available CCO record as the first nonblank output line.",
+      "2. Continue with complete story prose from the next line."
+    ];
+    return ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
+  }
+
   function operationTaskUsesForcedContract(value) {
     const source = textOf(value);
+    const assessmentContract = /(?:^|\n)CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX\b/i.test(source)
+      && /K unchanged:\s*\(CCO\|K\|S\|[^\n]+\|Explanation\)/i.test(source)
+      && /Available record forms:\s*[\s\S]*\(CCO\|[KSNRVT]\|/i.test(source)
+      && /Output order:\s*\n1\. Complete exactly one available CCO record as the first nonblank output line\.\s*\n2\. Continue with complete story prose from the next line\./i.test(source);
+    if (assessmentContract) return true;
     const legacyCompletionContract = source.includes(
       "Complete this scheduled continuity operation by replacing every capitalized placeholder with a concise completed value;"
     ) || source.includes(
@@ -13058,7 +13272,7 @@ function CharacterContinuity(hook, incomingText) {
   function positiveOperationRetryTask(value) {
     let source = textOf(value).trim();
     if (!source) return "";
-    if (!/(?:^|\n)CC CURRENT OPERATION\b/i.test(source)) {
+    if (!/(?:^|\n)CC CURRENT (?:OPERATION|ASSESSMENT)\b/i.test(source)) {
       source = source.replace(/<SYSTEM>\s*/i, match =>
         match + currentOperationAuthorityLines().join("\n") + "\n"
       );
@@ -13237,7 +13451,7 @@ function CharacterContinuity(hook, incomingText) {
     let portrayalTier = "full";
     const operationCandidateReady = !!(
       plan && plan.opportunity && !CC.recoveryPending
-      && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+      && TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
       && plan.selectedCandidate
     );
     // The configured continuity budget is the sole script-side total context
@@ -13567,18 +13781,20 @@ function CharacterContinuity(hook, incomingText) {
     else if (operationOpportunityFrozen(plan) && Array.isArray(plan.targets) && plan.targets.length) targets = clone(plan.targets);
     else if (plan.operationSelectionFrozen === true
       && Array.isArray(plan.routingTargets) && plan.routingTargets.length) targets = clone(plan.routingTargets);
-    const selectedOperationKind = MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+    const selectedOperationKind = TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
       ? keyOf(plan.selectedOperationKind)
       : "";
     const operationTaskTokenBudget = Math.min(
       continuityEffectiveBudget,
       settings.MAX_OPERATION_TASK_TOKENS
     );
-    targets = operationTargetsForKind(selectedOperationKind, targets);
+    if (selectedOperationKind !== ASSESSMENT_OPERATION_KIND) {
+      targets = operationTargetsForKind(selectedOperationKind, targets);
+    }
     const selectedOperationTargetKey = normalizedTargetKey(
       plan.selectedCandidate && plan.selectedCandidate.targetKey
     );
-    if (selectedOperationTargetKey) {
+    if (selectedOperationTargetKey && selectedOperationKind !== ASSESSMENT_OPERATION_KIND) {
       if (selectedOperationKind === "name") {
         targets = targets.slice().sort((left, right) => {
           const leftSelected = normalizedTargetKey(left.key) === selectedOperationTargetKey ? 0 : 1;
@@ -13598,17 +13814,34 @@ function CharacterContinuity(hook, incomingText) {
     const derivedViewEvidence = selectedOperationKind === "view"
       ? viewDerivedEvidenceCandidates(focus, targets, frozenOpportunity, frozenDerivedPacket)
       : [];
-    const operationSources = allEvidence.concat(derivedRelationshipEvidence, derivedViewEvidence);
+    const assessmentSources = selectedOperationKind === ASSESSMENT_OPERATION_KIND
+      ? semanticAssessmentEvidence(
+        focus,
+        recent,
+        plan.inputEvidenceId || "",
+        frozenEvidenceIds,
+        frozenOpportunity
+      )
+      : [];
+    const operationSources = selectedOperationKind === ASSESSMENT_OPERATION_KIND
+      ? assessmentSources
+      : allEvidence.concat(derivedRelationshipEvidence, derivedViewEvidence);
     const frozenTaskEvidenceIds = (plan.retry || plan.pendingOperationRetry)
       && Array.isArray(plan.retryEvidenceIds) && plan.retryEvidenceIds.length
       ? plan.retryEvidenceIds
       : (operationOpportunityFrozen(plan) && Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []);
-    const operationEvidence = operationEvidenceCandidatesForKind(
-      selectedOperationKind,
-      operationSources,
-      plan.selectedCandidate,
-      frozenTaskEvidenceIds
-    );
+    const operationEvidence = selectedOperationKind === ASSESSMENT_OPERATION_KIND
+      ? operationSources.filter(candidate => operationPacketSourceIds(
+        selectedOperationKind,
+        plan.selectedCandidate,
+        frozenTaskEvidenceIds
+      ).includes(candidate.item.id))
+      : operationEvidenceCandidatesForKind(
+        selectedOperationKind,
+        operationSources,
+        plan.selectedCandidate,
+        frozenTaskEvidenceIds
+      );
 
     const fitOperationByEvictingOptionalContext = proposedTail => {
       let working = components.slice();
@@ -13833,10 +14066,12 @@ function CharacterContinuity(hook, incomingText) {
       && operationEvidence.length && targets.length && selectedTargetAvailable
       && requiredEvidence.length === selectedSourceIds.length) {
       let proposedEvidence = requiredEvidence.length ? requiredEvidence : [operationEvidence[0]];
-      let proposedTail = operationTaskForKind(
-        selectedOperationKind, focus, targets, proposedEvidence, plan.inputEvidenceId || "", recent,
-        plan.relationshipPace || runtime.relationshipPace, plan.selectedCandidate
-      );
+      let proposedTail = selectedOperationKind === ASSESSMENT_OPERATION_KIND
+        ? semanticAssessmentTask(focus, targets, proposedEvidence)
+        : operationTaskForKind(
+          selectedOperationKind, focus, targets, proposedEvidence, plan.inputEvidenceId || "", recent,
+          plan.relationshipPace || runtime.relationshipPace, plan.selectedCandidate
+        );
       const completeTaskAvailable = !!textOf(proposedTail).trim();
       const taskWithinBudget = completeTaskAvailable
         && estimateTokens(proposedTail) <= operationTaskTokenBudget;
@@ -13848,10 +14083,14 @@ function CharacterContinuity(hook, incomingText) {
         tail = proposedTail;
         taskDelivered = true;
       } else taskDeferredReason = completeTaskAvailable
-        ? "The complete operation-specific packet did not fit safely."
-        : "The selected candidate no longer matched an explicit scripted operation template.";
+        ? "The complete " + (selectedOperationKind === ASSESSMENT_OPERATION_KIND
+          ? "semantic assessment"
+          : "operation-specific") + " packet did not fit safely."
+        : (selectedOperationKind === ASSESSMENT_OPERATION_KIND
+          ? "No complete semantic assessment contract could be constructed from the supplied mechanics."
+          : "The selected candidate no longer matched an explicit scripted operation template.");
     } else if (plan.opportunity && !CC.recoveryPending && !selectedOperationKind) {
-      taskDeferredReason = "No operation had positive grounded net.";
+      taskDeferredReason = "No unreviewed completed evidence remained eligible for semantic assessment.";
     } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && !targets.length) {
       taskDeferredReason = "No legal target was available for the frozen operation kind.";
     } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && !selectedTargetAvailable) {
@@ -14012,10 +14251,16 @@ function CharacterContinuity(hook, incomingText) {
       turningPointsTokens: byType("turningPoints") + byType("turningPointAuthority"),
       viewsTokens: byType("views"),
       experiencesTokens: byType("experiences"),
-      evidenceTokens: taskDelivered ? estimateTokens(evidencePacketForKind(
-        focus, selectedOperationKind, selectedEvidence, plan.inputEvidenceId || "", recent,
-        targets[0] || null, plan.selectedCandidate
-      )) : 0,
+      evidenceTokens: taskDelivered ? estimateTokens(
+        selectedOperationKind === ASSESSMENT_OPERATION_KIND
+          ? selectedEvidence.map(candidate => candidate.item.id + "["
+            + assessmentEvidenceCodes(candidate).join("") + "]: "
+            + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
+          : evidencePacketForKind(
+            focus, selectedOperationKind, selectedEvidence, plan.inputEvidenceId || "", recent,
+            targets[0] || null, plan.selectedCandidate
+          )
+      ) : 0,
       taskTokens: estimateTokens(tail),
       taskText: taskDelivered ? tail : "",
       taskKind: taskDelivered ? selectedOperationKind : "",
@@ -15913,7 +16158,8 @@ function CharacterContinuity(hook, incomingText) {
       + (recordPosition === "leading"
         ? " Exact leading CCO position confirmed."
         : " Legacy terminal CCO position accepted; first-line form is preferred.");
-    if (!plan || !plan.taskDelivered || plan.task !== "operation" || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) {
+    if (!plan || !plan.taskDelivered || plan.task !== "operation"
+      || !TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) {
       return {
         story, candidate: null, malformed: false, unauthorized: true, hadProtocol: true,
         reason: "A CCO record appeared when no operation kind was authorized.", raw: line(raw, 300)
@@ -15923,19 +16169,80 @@ function CharacterContinuity(hook, incomingText) {
     if (rawParts[0] !== "CCO") {
       return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The protocol name was not exactly CCO.", raw: line(raw, 300) };
     }
+    const assessmentTask = keyOf(plan.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      && plan.semanticAssessment === true;
     if (textOf(rawParts[1]).trim().toUpperCase() === "K") {
+      if (!assessmentTask) {
+        return {
+          story, candidate: null, malformed: false, unauthorized: true, hadProtocol: true,
+          reason: "A K assessment record appeared outside a current semantic assessment task.",
+          raw: line(raw, 300)
+        };
+      }
+      if (rawParts.length !== 5 || textOf(rawParts[2]).trim().toUpperCase() !== "S") {
+        return {
+          story, candidate: null, malformed: true, hadProtocol: true,
+          reason: "The K assessment record did not contain exactly five fields with the fixed S owner code.",
+          raw: line(raw, 300)
+        };
+      }
+      const suppliedParts = textOf(rawParts[3]).split(",").map(value => value.trim().toUpperCase())
+        .filter(Boolean);
+      const evidenceIds = unique(suppliedParts, 20);
+      const frozenEvidenceIds = unique(Array.isArray(plan.evidenceIds) ? plan.evidenceIds : [], 20)
+        .map(value => textOf(value).toUpperCase());
+      const explanationField = exactStateFieldValue(rawParts[4], "Explanation");
+      const explanationSource = wholeLine(explanationField.value, 0);
+      const explanationReserved = /[{}\[\]|()\r\n]/.test(explanationSource);
+      const explanation = explanationReserved
+        ? ""
+        : compactLineAtBoundary(explanationSource, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      if (!evidenceIds.length || suppliedParts.length !== evidenceIds.length
+        || JSON.stringify(evidenceIds) !== JSON.stringify(frozenEvidenceIds)) {
+        return {
+          story, candidate: null, malformed: false, stale: true, hadProtocol: true,
+          reason: "The K assessment record did not copy the complete supplied evidence list in its supplied order.",
+          raw: line(raw, 300)
+        };
+      }
+      if (!explanationSource || explanationReserved || keyOf(explanationSource) === "explanation") {
+        return {
+          story, candidate: null, malformed: true, hadProtocol: true,
+          reason: "The K assessment explanation was incomplete or used reserved record characters.",
+          raw: line(raw, 300)
+        };
+      }
       return {
-        story, candidate: null, malformed: false, unauthorized: true, hadProtocol: true,
-        reason: "The K no-change record is not authorized. The scheduled "
-          + operationKindLabel(plan.selectedOperationKind) + " operation required its completed normal CCO record.",
-        raw: line(raw, 300)
+        story, malformed: false, hadProtocol: true,
+        reason: "CCO completed no-change assessment parsed." + protocolPresentationNote
+          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
+          + (explanation !== explanationSource
+            ? " The complete Explanation was compacted at a word boundary before storage."
+            : ""),
+        raw: reportedRaw,
+        candidate: {
+          kind: ASSESSMENT_OPERATION_KIND,
+          noChange: true,
+          targetCode: "S",
+          evidenceIds,
+          explanation
+        }
       };
     }
-    const routing = canonicalizeFrozenOperationRouting(rawParts, plan);
+    const routing = assessmentTask
+      ? { parts: rawParts, changed: [], ownerNameInTarget: false, expandedOwnerTargetRouting: "",
+        duplicatedTargetRouting: "", turningTransportCanonicalized: [] }
+      : canonicalizeFrozenOperationRouting(rawParts, plan);
     const parts = routing.parts;
     const kind = textOf(parts[1]).toUpperCase();
     const parsedOperationKind = authorizedOperationKindFromCode(kind);
-    if (parsedOperationKind && parsedOperationKind !== keyOf(plan.selectedOperationKind)) {
+    if (!parsedOperationKind) {
+      return {
+        story, candidate: null, malformed: true, hadProtocol: true,
+        reason: "The CCO operation kind was not S, N, R, V, or T.", raw: line(raw, 300)
+      };
+    }
+    if (!assessmentTask && parsedOperationKind !== keyOf(plan.selectedOperationKind)) {
       return {
         story, candidate: null, malformed: false, stale: true, hadProtocol: true,
         reason: "A complete CCO record carried a different operation kind and was treated as stale transport; the current frozen operation remains "
@@ -15943,7 +16250,7 @@ function CharacterContinuity(hook, incomingText) {
       };
     }
     const evidenceIds = unique(textOf(parts[3]).split(",").map(value => value.trim().toUpperCase()), 20);
-    const authorizedKind = keyOf(plan.selectedOperationKind);
+    const authorizedKind = assessmentTask ? parsedOperationKind : keyOf(plan.selectedOperationKind);
     if (!evidenceIds.length || evidenceIds.some(id => !continuitySourceId(id))) {
       return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The CCO record cited no valid source IDs.", raw: line(raw, 300) };
     }
@@ -15954,19 +16261,32 @@ function CharacterContinuity(hook, incomingText) {
           + operationKindLabel(authorizedKind) + " operation.", raw: line(raw, 300)
       };
     }
-    const frozenEvidenceIds = operationPacketSourceIds(
-      authorizedKind,
-      plan.selectedCandidate,
-      Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []
-    );
+    const frozenEvidenceIds = assessmentTask
+      ? unique(Array.isArray(plan.evidenceIds) ? plan.evidenceIds : [], 20)
+        .map(value => textOf(value).toUpperCase())
+      : operationPacketSourceIds(
+        authorizedKind,
+        plan.selectedCandidate,
+        Array.isArray(plan.evidenceIds) ? plan.evidenceIds : []
+      );
     const suppliedEvidenceParts = textOf(parts[3]).split(",").map(value => value.trim().toUpperCase())
       .filter(Boolean);
-    if (suppliedEvidenceParts.length !== evidenceIds.length
-      || JSON.stringify(evidenceIds) !== JSON.stringify(frozenEvidenceIds)) {
+    const suppliedPositions = evidenceIds.map(id => frozenEvidenceIds.indexOf(id));
+    const assessmentEvidenceValid = assessmentTask
+      && suppliedEvidenceParts.length === evidenceIds.length
+      && evidenceIds.length > 0
+      && suppliedPositions.every(index => index >= 0)
+      && suppliedPositions.every((index, position) => position === 0 || index > suppliedPositions[position - 1]);
+    const fixedEvidenceValid = !assessmentTask
+      && suppliedEvidenceParts.length === evidenceIds.length
+      && JSON.stringify(evidenceIds) === JSON.stringify(frozenEvidenceIds);
+    if (!assessmentEvidenceValid && !fixedEvidenceValid) {
       return {
         story, candidate: null, malformed: false, stale: true, hadProtocol: true,
-        reason: "A complete CCO record carried a different evidence ID contract and was treated as stale transport; the current frozen evidence remains "
-          + (frozenEvidenceIds.join(",") || "unavailable") + ".",
+        reason: assessmentTask
+          ? "The CCO record did not select a unique supplied evidence subset in its supplied order."
+          : "A complete CCO record carried a different evidence ID contract and was treated as stale transport; the current frozen evidence remains "
+            + (frozenEvidenceIds.join(",") || "unavailable") + ".",
         raw: line(raw, 300)
       };
     }
@@ -16115,7 +16435,9 @@ function CharacterContinuity(hook, incomingText) {
       }
       const targetCode = textOf(parts[2]).trim().toUpperCase();
       const frozenTarget = frozenSelectedOperationTarget(plan);
-      const frozenTargetCode = textOf(frozenTarget && frozenTarget.code).trim().toUpperCase();
+      const frozenTargetCode = assessmentTask
+        ? "S"
+        : textOf(frozenTarget && frozenTarget.code).trim().toUpperCase();
       const turningPointId = canonicalTurningPointId(parts[4]);
       const mode = ["Support", "Breakthrough", "Integration"].find(value => keyOf(value) === keyOf(parts[5])) || "";
       const scheduledTurningPointId = canonicalTurningPointId(
@@ -16135,8 +16457,8 @@ function CharacterContinuity(hook, incomingText) {
         || !turningPointId || turningPointId !== textOf(parts[4]).trim() || !mode) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Turning Point CCO record used an invalid target, stable ID, or movement mode.", raw: line(raw, 300) };
       }
-      if (targetCode !== frozenTargetCode || turningPointId !== scheduledTurningPointId
-        || mode !== scheduledTurningPointMode) {
+      if (!assessmentTask && (targetCode !== frozenTargetCode || turningPointId !== scheduledTurningPointId
+        || mode !== scheduledTurningPointMode)) {
         return {
           story, candidate: null, malformed: false, stale: true, hadProtocol: true,
           reason: "A complete Turning Point CCO record carried different frozen routing, stable ID, or movement mode and was treated as stale transport.",
@@ -16162,6 +16484,148 @@ function CharacterContinuity(hook, incomingText) {
       };
     }
     return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The CCO operation kind was not S, N, R, V, or T.", raw: line(raw, 300) };
+  }
+
+  function prepareModelAuthoredOperation(owner, candidate, plan) {
+    if (!owner || !candidate || !plan || plan.semanticAssessment !== true
+      || keyOf(plan.selectedOperationKind) !== ASSESSMENT_OPERATION_KIND
+      || !MODEL_OPERATION_KINDS.includes(keyOf(candidate.kind))) {
+      return { ok: false, error: "The model-authored operation had no current semantic assessment authority." };
+    }
+    const kind = keyOf(candidate.kind);
+    const items = unique(candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
+    if (!items.length || items.length !== unique(candidate.evidenceIds || [], 20).length) {
+      return { ok: false, error: "The model-authored operation did not resolve every cited evidence ID." };
+    }
+    let selected = {
+      kind,
+      ownerKey: owner.key,
+      targetKey: "",
+      field: "",
+      destination: "",
+      sourceIds: unique(candidate.evidenceIds || [], 20),
+      storyEvidenceIds: unique(candidate.evidenceIds || [], 20),
+      sourceMetadata: {},
+      evidenceSignature: "",
+      gain: 0,
+      drain: 0,
+      net: 0,
+      currentRelevance: 1000,
+      lastServedOpportunity: -1,
+      oldestEvidenceOrder: Math.min(...items.map(item => item.number)),
+      direct: true,
+      derived: false,
+      allowedFields: [],
+      allowedDestinations: [],
+      allowedModes: [],
+      managedSignature: "",
+      reasons: ["The model supplied the semantic operation and cited evidence; JavaScript validated legal structure and mechanics."]
+    };
+    if (kind === "state") {
+      const target = targetForCode(plan, candidate.targetCode);
+      if (!target || target.mode !== "known") {
+        return { ok: false, error: "State used an About code outside the supplied known-target map." };
+      }
+      selected = {
+        ...selected,
+        targetKey: target.key,
+        stateMode: "strong",
+        confirmSituation: "",
+        stateTriggers: triggerList(candidate.triggers || []),
+        gain: settings.OPERATION_POINTS.STRONG_STATE_GAIN
+      };
+      if (!selected.stateTriggers.length) {
+        return { ok: false, error: "State supplied no legal TriggerList codes." };
+      }
+    } else if (kind === "name") {
+      const target = targetForCode(plan, candidate.subjectCode);
+      if (!target || target.nameSubject !== true || target.mode !== "known") {
+        return { ok: false, error: "Name used a Subject code outside the supplied identity map." };
+      }
+      selected = {
+        ...selected,
+        targetKey: target.key,
+        nameAlias: candidate.alias,
+        nameTransition: candidate.transition,
+        nameReplacedAlias: candidate.replacedAlias || "",
+        nameUse: candidate.useField,
+        gain: candidate.transition === "Observed"
+          ? settings.OPERATION_POINTS.SUPPORTING_EVIDENCE_GAIN
+          : settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN
+      };
+    } else if (kind === "relationship") {
+      const target = targetForCode(plan, candidate.targetCode);
+      if (!target || target.relationship !== true || target.key === "self") {
+        return { ok: false, error: "Relationship used a Target code outside the supplied directional map." };
+      }
+      if (candidate.eventKind !== "D") {
+        return { ok: false, error: "The raw evidence assessment authorizes completed direct Relationship movement with D." };
+      }
+      const destination = relationshipDestination(candidate.field, candidate.destination);
+      if (!destination) {
+        return { ok: false, error: "Relationship supplied a destination outside its field's legal stages." };
+      }
+      selected = {
+        ...selected,
+        targetKey: target.key,
+        field: candidate.field,
+        destination: destination.label,
+        direct: true,
+        gain: settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN
+      };
+    } else if (kind === "view") {
+      const target = targetForCode(plan, textOf(candidate.targetField).trim().toUpperCase());
+      if (!target) {
+        return { ok: false, error: "View used a Target code outside the supplied target map." };
+      }
+      const destination = canonicalViewDestination(candidate.destination);
+      const mode = canonicalViewOperationMode(candidate.severity);
+      if (!destination || !mode || !viewOperationDestinations(target, null).includes(destination)) {
+        return { ok: false, error: "View supplied a destination or mode outside the target's legal mechanics." };
+      }
+      const mechanicalMode = viewOperationModeForCandidate(candidate, target);
+      selected = {
+        ...selected,
+        targetKey: target.key,
+        field: "Category",
+        destination,
+        allowedModes: [mechanicalMode],
+        gain: settings.OPERATION_POINTS.EXPLICIT_VIEW_GAIN
+      };
+    } else if (kind === "turning") {
+      const target = targetForCode(plan, candidate.targetCode);
+      const choice = assessmentTurningPointChoices(owner).find(item => item.id === candidate.turningPointId
+        && item.modes.includes(candidate.mode));
+      if (!target || target.key !== "self" || !choice) {
+        return { ok: false, error: "Turning Point used a StableID or Movement outside the supplied current mechanics." };
+      }
+      selected = {
+        ...selected,
+        targetKey: "self",
+        field: choice.id,
+        destination: candidate.mode,
+        managedSignature: choice.managedSignature,
+        gain: candidate.mode === "Support"
+          ? settings.OPERATION_POINTS.SUPPORTING_EVIDENCE_GAIN
+          : (candidate.mode === "Breakthrough"
+            ? settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN
+            : settings.OPERATION_POINTS.STRONG_STATE_GAIN)
+      };
+    }
+    selected.evidenceSignature = operationEvidenceSignature(selected, items);
+    if (!selected.evidenceSignature) {
+      return { ok: false, error: "The model-authored operation could not form a stable evidence signature." };
+    }
+    selected.drain = operationDrainForCandidate(selected, plan.ownerOpportunity);
+    selected.net = selected.gain - selected.drain;
+    plan.selectedOperationKind = kind;
+    plan.selectedCandidate = clone(selected);
+    plan.selectedEvidenceSignature = selected.evidenceSignature;
+    plan.selectedGain = selected.gain;
+    plan.selectedDrain = selected.drain;
+    plan.selectedNet = selected.net;
+    plan.semanticAssessmentResolved = true;
+    return { ok: true, selected };
   }
 
   function targetForCode(plan, code) {
@@ -18150,7 +18614,13 @@ function CharacterContinuity(hook, incomingText) {
       scoringFrozenOpportunity,
       scoringFrozenSourcePacket
     );
-    const scoringSources = scoringEvidence.concat(scoringDerivedRelationships, scoringDerivedViews);
+    const scoringSources = semanticAssessmentEvidence(
+      focus,
+      recent,
+      plan.inputEvidenceId || "",
+      scoringFrozenEvidenceIds,
+      scoringFrozenOpportunity
+    );
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
     }
 
@@ -18179,7 +18649,12 @@ function CharacterContinuity(hook, incomingText) {
       plan.recentStory = recent;
       plan.task = "none";
       plan.taskDelivered = false;
-      plan.ownerKey = "";
+      plan.ownerKey = focus.key;
+      plan.focusKey = focus.key;
+      if (plan.opportunity === true && !operationOpportunityFrozen(plan)) {
+        plan.opportunityPrepared = true;
+        plan.ownerOpportunity = Math.max(0, Number(CC.ownerOpportunities[focus.key]) || 0) + 1;
+      }
       plan.targets = [];
       plan.evidenceIds = [];
       plan.operationTaskText = "";
@@ -18207,12 +18682,13 @@ function CharacterContinuity(hook, incomingText) {
     }
     plan.evidenceEligibility = {};
     (attempt.evidenceCandidates || []).forEach(candidate => {
+      const assessment = attempt.taskKind === ASSESSMENT_OPERATION_KIND;
       plan.evidenceEligibility[candidate.item.id] = {
-        name: attempt.taskKind === "name" && candidate.nameEligible === true,
-        state: attempt.taskKind === "state" && candidate.stateEligible === true,
-        relationship: attempt.taskKind === "relationship" && candidate.relationshipEligible === true,
-        view: attempt.taskKind === "view" && candidate.viewEligible === true,
-        turning: attempt.taskKind === "turning" && candidate.turningEligible === true,
+        name: (assessment || attempt.taskKind === "name") && candidate.nameEligible === true,
+        state: (assessment || attempt.taskKind === "state") && candidate.stateEligible === true,
+        relationship: (assessment || attempt.taskKind === "relationship") && candidate.relationshipEligible === true,
+        view: (assessment || attempt.taskKind === "view") && candidate.viewEligible === true,
+        turning: (assessment || attempt.taskKind === "turning") && candidate.turningEligible === true,
         age: candidate.age
       };
     });
@@ -18220,6 +18696,7 @@ function CharacterContinuity(hook, incomingText) {
       const prefix = candidate.item.id.charAt(0);
       const derived = candidate.item.source === "provenance";
       const packetTarget = (attempt.targets || [])[0] || null;
+      const assessment = attempt.taskKind === ASSESSMENT_OPERATION_KIND;
       return {
         id: candidate.item.id,
         prefix,
@@ -18227,11 +18704,11 @@ function CharacterContinuity(hook, incomingText) {
           focus, packetTarget, attempt.taskKind, candidate, plan.selectedCandidate
         ),
         source: candidate.item.source,
-        name: attempt.taskKind === "name" && candidate.nameEligible === true,
-        state: attempt.taskKind === "state" && candidate.stateEligible === true,
-        relationship: attempt.taskKind === "relationship" && candidate.relationshipEligible === true,
-        view: attempt.taskKind === "view" && candidate.viewEligible === true,
-        turning: attempt.taskKind === "turning" && candidate.turningEligible === true,
+        name: (assessment || attempt.taskKind === "name") && candidate.nameEligible === true,
+        state: (assessment || attempt.taskKind === "state") && candidate.stateEligible === true,
+        relationship: (assessment || attempt.taskKind === "relationship") && candidate.relationshipEligible === true,
+        view: (assessment || attempt.taskKind === "view") && candidate.viewEligible === true,
+        turning: (assessment || attempt.taskKind === "turning") && candidate.turningEligible === true,
         age: candidate.age,
         ownerKey: derived ? candidate.ownerKey : focus.key,
         targetKey: derived ? candidate.targetKey : "",
@@ -18252,15 +18729,19 @@ function CharacterContinuity(hook, incomingText) {
     plan.sourcePacketText = attempt.taskDelivered
       ? ((plan.retry || plan.pendingOperationRetry) && textOf(plan.retrySourcePacketText)
         ? textOf(plan.retrySourcePacketText)
-        : evidencePacketForKind(
-          focus,
-          attempt.taskKind,
-          attempt.evidenceCandidates || [],
-          plan.inputEvidenceId || "",
-          recent,
-          attempt.targets[0] || null,
-          plan.selectedCandidate
-        ))
+        : (attempt.taskKind === ASSESSMENT_OPERATION_KIND
+          ? (attempt.evidenceCandidates || []).map(candidate => candidate.item.id + "["
+            + assessmentEvidenceCodes(candidate).join("") + "]: "
+            + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
+          : evidencePacketForKind(
+            focus,
+            attempt.taskKind,
+            attempt.evidenceCandidates || [],
+            plan.inputEvidenceId || "",
+            recent,
+            attempt.targets[0] || null,
+            plan.selectedCandidate
+          )))
       : "";
     plan.sourcePacketTokens = estimateTokens(plan.sourcePacketText);
     plan.activeKeys = active.map(character => character.key);
@@ -18269,7 +18750,7 @@ function CharacterContinuity(hook, incomingText) {
     if (plan.pendingOperationRetry && attempt.taskDelivered) {
       CC.pendingOperationRetry = blankPendingOperationRetry();
     }
-    if (attempt.taskDelivered && !operationOpportunityFrozen(plan)) {
+    if (plan.opportunity === true && !operationOpportunityFrozen(plan)) {
       plan.opportunityPrepared = true;
       plan.ownerOpportunity = Math.max(0, Number(CC.ownerOpportunities[focus.key]) || 0) + 1;
     }
@@ -18615,6 +19096,11 @@ function CharacterContinuity(hook, incomingText) {
               ? "rejected"
               : (parsed.candidate ? "rejected" : "omitted"))));
         applyOperationOutcomeDrain(owner, plan, parsed.candidate, null, outcome);
+        if (plan.semanticAssessment === true && plan.semanticAssessmentResolved !== true) {
+          updatePendingOperationRetry(plan, outcome);
+          CC.last.operationOutcome = "Assessment " + outcome;
+          CC.last.operationDrainChange = "No drain change";
+        }
       }
 
       CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
@@ -18631,6 +19117,13 @@ function CharacterContinuity(hook, incomingText) {
     const focus = characters.find(character => character.key === plan.focusKey) || owner || null;
     let result = null;
     let evidenceResult = null;
+    const modelAuthoredPreparation = parsed.candidate
+      && !parsed.candidate.noChange
+      && owner
+      && plan.semanticAssessment === true
+      && keyOf(plan.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      ? prepareModelAuthoredOperation(owner, parsed.candidate, plan)
+      : null;
 
     if (parsed.stale) {
       CC.last.candidate = "stale contract stripped";
@@ -18651,6 +19144,28 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.error = plan.taskDelivered
         ? "The model omitted the mandatory completed first-line CCO record."
         : "";
+    } else if (parsed.candidate.noChange === true) {
+      const assessedItems = unique(parsed.candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
+      const suppliedIds = new Set((Array.isArray(plan.sourcePacket) ? plan.sourcePacket : [])
+        .map(source => continuitySourceId(source && source.id)).filter(Boolean));
+      if (!owner || plan.semanticAssessment !== true
+        || assessedItems.length !== parsed.candidate.evidenceIds.length
+        || parsed.candidate.evidenceIds.some(id => !suppliedIds.has(id))) {
+        result = { ok: false, error: "The completed no-change assessment did not resolve to its supplied owner and evidence packet." };
+      } else {
+        markNoChangeAssessment(assessedItems, owner, plan.ownerOpportunity);
+        result = {
+          ok: false,
+          unchanged: true,
+          assessment: true,
+          summary: owner.name + " semantic assessment completed with continuity unchanged"
+        };
+        CC.last.operationOutcome = "Assessment unchanged";
+        CC.last.operationDrainChange = "No drain change";
+        CC.pendingOperationRetry = blankPendingOperationRetry();
+      }
+    } else if (modelAuthoredPreparation && !modelAuthoredPreparation.ok) {
+      result = modelAuthoredPreparation;
     } else if (!owner || plan.task !== "operation" || !plan.taskDelivered) {
       result = { ok: false, error: "The parsed operation had no authorized fixed owner or delivered task." };
     } else if (parsed.candidate.kind !== keyOf(plan.selectedOperationKind)) {
@@ -18800,7 +19315,9 @@ function CharacterContinuity(hook, incomingText) {
           CC.last.warning = [CC.last.warning, result.warning].filter(Boolean).join(" ");
         }
       } else {
-        CC.last.candidate = result.unchanged
+        CC.last.candidate = result.assessment
+          ? "assessed unchanged"
+          : result.unchanged
           ? (normalizedCandidate ? "normalized unchanged" : "unchanged")
           : (normalizedCandidate ? "normalized rejected" : "rejected");
         CC.last.error = result.unchanged ? "" : result.error;
@@ -18821,6 +19338,11 @@ function CharacterContinuity(hook, incomingText) {
                   ? "success"
                   : (result && result.unchanged ? "unchanged" : "rejected"))))));
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
+      if (plan.semanticAssessment === true && plan.semanticAssessmentResolved !== true) {
+        updatePendingOperationRetry(plan, outcome);
+        CC.last.operationOutcome = "Assessment " + outcome;
+        CC.last.operationDrainChange = "No drain change";
+      }
     }
     if (cleanupNotes.length && parsed.candidate) {
       CC.last.warning = [CC.last.warning, normalizedCandidate
@@ -18852,7 +19374,9 @@ function CharacterContinuity(hook, incomingText) {
       ? "Punctuated story prose survived and the " + (normalizedCandidate ? "normalized " : "accepted ")
         + parsed.candidate.kind + " operation committed transactionally."
       : result && result.unchanged
-      ? "Punctuated story prose survived; the proposed operation already matched and was not refreshed."
+      ? (result.assessment
+        ? "Punctuated story prose survived and the completed semantic assessment left continuity unchanged."
+        : "Punctuated story prose survived; the proposed operation already matched and was not refreshed.")
       : "Punctuated story prose survived; " + (CC.last.candidate === "omitted"
           ? "the mandatory completed first-line CCO record was omitted and no continuity operation was applied."
         : (CC.last.candidate === "not requested" ? "no operation was scheduled." : "no continuity operation was applied."));
@@ -18984,7 +19508,7 @@ function CharacterContinuity(hook, incomingText) {
     const recent = CC.currentPlan && typeof CC.currentPlan.recentStory === "string"
       ? CC.currentPlan.recentStory
       : recentStoryFromContext(originalText);
-    const eligible = CC.evidence.filter(item => {
+    const available = CC.evidence.filter(item => {
       if (!openingEvidenceEligible(item, recent)) return false;
       const statePending = !item.usedStateBy[character.key] && CC.stateClock - item.stateClock < runtime.stateLifetime;
       const viewPending = viewEvidenceAge(item, character) < settings.VIEW_EVIDENCE_OPPORTUNITIES;
@@ -19007,8 +19531,11 @@ function CharacterContinuity(hook, incomingText) {
       const namePending = viewEvidenceAge(item, character) < settings.NAME_EVIDENCE_OPPORTUNITIES;
       return statePending || viewPending || relationshipPending || turningPending || namePending;
     });
-    const oldest = eligible.length ? Math.max(...eligible.map(item => viewEvidenceAge(item, character))) : 0;
-    return character.name + " " + eligible.length + " pending, oldest durable age " + oldest + "/"
+    const unreviewed = available.filter(item => !(item.assessedNoChangeBy
+      && item.assessedNoChangeBy[character.key]));
+    const oldest = available.length ? Math.max(...available.map(item => viewEvidenceAge(item, character))) : 0;
+    return character.name + " " + available.length + " available, " + unreviewed.length
+      + " unreviewed, oldest durable age " + oldest + "/"
       + Math.max(settings.VIEW_EVIDENCE_OPPORTUNITIES, settings.RELATIONSHIP_EVIDENCE_OPPORTUNITIES,
         settings.TURNING_POINT_EVIDENCE_OPPORTUNITIES, settings.NAME_EVIDENCE_OPPORTUNITIES);
   }
@@ -19117,7 +19644,7 @@ function CharacterContinuity(hook, incomingText) {
         + " | managed " + (source.managedSignature || "None")
         + " | raw lineage " + ((source.rawLineage || []).join(",") || "None")
         + " | gain " + Math.max(0, Number(source.gain) || 0)
-        + " | routing fields frozen by the scripted rules"
+        + " | routing fields limited by current managed-card mechanics"
         + " | uses " + (Object.keys(source.useSignatures || {}).map(interpretation =>
           interpretation + "=" + source.useSignatures[interpretation]).join(",") || "None"));
     });
@@ -19201,16 +19728,18 @@ function CharacterContinuity(hook, incomingText) {
     if (hook === "input") return plan.retry ? "Retry action — awaiting context" : "Player action — awaiting context";
     if (hook === "output") {
       return plan.taskDelivered
-        ? "Output — action operation resolution"
-        : "Output — story only; no operation task was delivered";
+        ? (plan.semanticAssessment === true
+          ? "Output — action assessment resolution"
+          : "Output — action operation resolution")
+        : "Output — story only; no assessment task was delivered";
     }
     if (hook === "context" || hook === "contextAppend") {
-      if (plan.kind === "preview") return "Context preview — action count unchanged; no operation opportunity";
-      if (plan.retry) return "Retry context — frozen operation opportunity reused";
-      if (plan.opening) return "Opening context — no operation opportunity";
-      return "Action context — operation opportunity";
+      if (plan.kind === "preview") return "Context preview — action count unchanged; no assessment opportunity";
+      if (plan.retry) return "Retry context — supplied assessment opportunity reused";
+      if (plan.opening) return "Opening context — no assessment opportunity";
+      return "Action context — semantic assessment opportunity";
     }
-    return hook + " — no operation opportunity";
+    return hook + " — no assessment opportunity";
   }
 
   function recordedCandidateStatus(candidate) {
@@ -19266,7 +19795,9 @@ function CharacterContinuity(hook, incomingText) {
         + " | oldest evidence " + (candidate.oldestEvidenceOrder || "none")
         + " | direct " + (candidate.direct ? "yes" : "no")
         + " | derived " + (candidate.derived ? "yes" : "no")
-        + " | model-answer template " + (candidate.modelAnswerTemplateReady === false ? "unavailable" : "ready")
+        + " | role " + (candidate.diagnosticOnly === true
+          ? "scripted signal diagnostic only"
+          : (candidate.modelAnswerTemplateReady === false ? "model-answer template unavailable" : "model-answer template ready"))
         + " | allowed fields " + ((candidate.allowedFields || []).join(",") || "none")
         + " | sources " + ((candidate.sourceIds || []).join(",") || "none")
         + " | signature " + (candidate.evidenceSignature || "none")

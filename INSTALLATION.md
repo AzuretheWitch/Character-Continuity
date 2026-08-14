@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs the cache-compatible release of Character Continuity in an AI Dungeon Scenario. The current package is **v1.99**. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs the cache-compatible release of Character Continuity in an AI Dungeon Scenario. The current package is **v2.00**. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
 
 CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
 
@@ -82,9 +82,9 @@ modifier(text);
 
 > **Critical:** Input must call `CharacterContinuity("input", text)`, cache-compatible Context must call `CharacterContinuity("contextAppend", text)`, and Output must call `CharacterContinuity("output", text)`. Keep the first-line Context directive, pass the second argument, and return CC's replacement text.
 
-On an operation turn, the newest appended context ends with `CC CURRENT OPERATION — FINAL RESPONSE SUFFIX`. That final block contains the current evidence, output order, and record template. The model completes that CCO record as its first nonblank line and writes the scene from the next line; the Output connector removes the record before the player sees the story. On a story-only or recovery turn, the newest block instead begins `CC CURRENT RESPONSE` and asks for ordinary story prose.
+On an eligible focused turn, the newest appended context ends with `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX`. That final block supplies fresh completed raw evidence without assigning its semantic operation meaning, along with legal targets, current card mechanics, and the available CCO record forms. The model selects the relevant supplied evidence IDs and completes either one continuity operation or `K` for continuity unchanged as its first nonblank line, then writes the scene from the next line. The Output connector removes that control record before the player sees the story.
 
-Optimized context may still display older operation packets. The final current-response block is authoritative. If an older cached contract is returned, CC strips it as stale transport, preserves completed story prose, and carries the current frozen operation once.
+Optimized context may still display older assessment packets. The final current-response block is authoritative. If a cached record cites evidence outside the current supplied set or changes its supplied order, CC strips it as stale transport, preserves completed story prose, and carries the current assessment once. On a story-only or recovery turn, the newest block instead begins `CC CURRENT RESPONSE` and asks for ordinary story prose.
 
 Save all four script areas.
 
@@ -188,9 +188,9 @@ You do not need to create ordinary scene triggers for CC-managed cards. CC's scr
 
 After activation, CC may place an internal-looking value in a managed card's trigger or key field so the script can preserve that card's identity across hooks. Leave that value in place.
 
-Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v1.99 validates that key and directly supplies the current stage Entry through the Context script. Keeping ordinary triggers off every stage card also prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
+Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.00 validates that key and directly supplies the current stage Entry through the Context script. Keeping ordinary triggers off every stage card also prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
 
-The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. A selected Turning Point operation may still supply the model with a narrow, relevant progress/stage/condition packet for that one validated task.
+The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. When movement is currently legal, the assessment can list a compact Turning Point ID, progress, movement, comparison-stage, and condition reference for the model.
 
 ## 7. Start and verify a fresh Adventure
 
@@ -212,10 +212,10 @@ Look for:
 `CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: v1.99
+Version: v2.00
 ```
 
-For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v1.99 text permanently.
+For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.00 text permanently.
 
 An initial State card may be empty. Mere scene participation does not seed State; it fills only after CC accepts a supported, evidence-grounded State change or confirmation.
 
@@ -265,9 +265,9 @@ Use the integration order recommended by the other script. Test the combined set
 
 ## Quick installation troubleshooting
 
-If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above and confirm that Context begins with `// @cache-compatible`. On operation turns, the model places the completed CCO record on the first nonblank output line and begins story prose on the next line; the Output connector strips accepted, stale, rejected, normalized, malformed, and cut-off control forms before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
+If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above and confirm that Context begins with `// @cache-compatible`. On assessment turns, the model places one completed CCO record on the first nonblank output line and begins story prose on the next line; the Output connector strips accepted, unchanged, stale, rejected, malformed, and cut-off control forms before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
 
-Seeing a populated private State block in AI Dungeon's **Context Viewer**, with `{` followed by `Name's current private State:` on the next line, is expected; that is how CC supplies private continuity for portrayal. A configured Turning Point may likewise add `CURRENT TP` and matching `TP STAGE ... BEGIN/END` controls around the current stage Entry. Under optimized context, older stage and operation blocks can remain physically cached, but the newest CC portrayal and final current-response blocks select the current authority. None of these controls, and no raw `(CCO|...)` data, should appear in visible story.
+Seeing a populated private State block in AI Dungeon's **Context Viewer**, with `{` followed by `Name's current private State:` on the next line, is expected; that is how CC supplies private continuity for portrayal. A configured Turning Point may likewise add `CURRENT TP` and matching `TP STAGE ... BEGIN/END` controls around the current stage Entry. Under optimized context, older stage and assessment blocks can remain physically cached, but the newest CC portrayal and final current-response blocks select the current authority. None of these controls, and no raw `(CCO|...)` data, should appear in visible story.
 
 For additional diagnosis, see [Troubleshooting](CREATOR-PLAYER-GUIDE.md#troubleshooting).
 
