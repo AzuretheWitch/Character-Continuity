@@ -2,9 +2,9 @@
 
 [Introduction](README.md) · [Installation](INSTALLATION.md) · [Configuration](CONFIGURATION.md)
 
-Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; CC selects, validates, and saves narrow continuity changes when the generated evidence supports them.
+Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; CC's scripted rules score, validate, and save narrow continuity changes when the generated evidence supports them.
 
-The current package is **v1.83**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
+The current package is **v1.99**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
 
 ## Before you begin
 
@@ -63,7 +63,7 @@ During ordinary play:
 
 - Play normally; CC does not require chat commands.
 - Mention or interact with registered NPCs naturally.
-- Let CC decide when the text supports a narrow continuity update.
+- Let CC's scripted scoring rules determine when the text supports a narrow continuity update.
 - Use `CC — Status` for a readable summary without enabling full Debug.
 - Edit `CC — Settings` when you want a different State lifetime, cast behavior, Relationship pace, Turning Point mode, or context budget.
 - Use `CC — Active NPCs` only when you intentionally want to add, remove, or reconnect an NPC.
@@ -454,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v1.83 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v1.99 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -489,7 +489,7 @@ The router field is preferred because it keeps the definitive mechanical conditi
 
 CC never injects the whole Turning Point router as portrayal context. For every valid current Turning Point belonging to a model-facing NPC, it supplies the exact current stage Entry inside a tagged `TP STAGE` block, or reselects an identical matching block already retained by optimized cache. A compact `CURRENT TP` line identifies the stable development and its current Entry revision. A separately selected Turning Point operation can provide a narrow router-derived task packet containing the title, Direction, current Progress, relevant current/comparison stages, and definitive condition.
 
-Optimized context is append-only, so a previous stage block may remain physically visible in cached context after progress crosses a boundary. The authority rule in the newest CC portrayal block selects only the matching current handle and revision and supersedes every earlier revision or untagged stage passage for that development. If the matching current block is invalid or cannot be supplied, the model is told to apply no stage guidance rather than reuse stale guidance.
+Optimized context is append-only, so a previous stage block may remain physically visible in cached context after progress crosses a boundary. The authority rule in the newest CC portrayal block selects only the matching current handle and revision and supersedes every earlier revision or untagged stage passage for that development. Only the selected current block contributes stage guidance.
 
 `CURRENT TP` and `TP STAGE ... BEGIN/END` are therefore expected internal controls in the Context Viewer. They do not expose the router, progress score, Direction, stable ID, active-card title, or private trigger, and CC strips them if a model echoes them into visible output.
 
@@ -500,6 +500,8 @@ CC can propose only one narrow continuity operation on a turn, and every Turning
 - **Support:** adds 2 progress for completed, durable movement toward the next creator-written stage. It cannot raise progress above 29 or operate after Achieved.
 - **Breakthrough:** moves an unachieved Turning Point to 35 when completed evidence satisfies the Achieved stage and every part of its definitive `Breakthrough:` condition.
 - **Integration:** adds 2 after Achieved when completed evidence shows that the change is sustained, habitual, or part of ordinary life, up to 49.
+
+For a scheduled Turning Point operation, CC supplies the first six CCO fields as fixed data: `CCO`, `T`, the Self target code, the exact evidence ID list, the stable Turning Point ID, and `Support`, `Breakthrough`, or `Integration`. The model fills only the seventh `Explanation` field with one complete clause of at most 150 characters. A longer complete safe explanation is compacted at a word boundary to 180 characters before storage. The characters `|`, `{}`, `}`, `[`, `]`, `(`, `)`, and line breaks are reserved record characters and cannot appear in the explanation.
 
 CC updates only `Progress`, `Active card`, and `Stage trigger`. It does not rewrite the Turning Point's title, stable ID, Direction, stage-card prefix, optional Breakthrough condition, or any creator-written stage Entry.
 
@@ -517,6 +519,21 @@ Start a fresh test Adventure and inspect `CC — Status`. With `Debug: true`, `C
 - a tracker page or stage card over its 1,000-character limit; or
 - a Direction excluded by the current `Turning Point mode`.
 
+## How hidden operation records work
+
+CC's scripted scoring functions determine at most one operation and freeze its operation kind, owner, target, evidence IDs, and mechanical fields. The model's role is to complete only the Situation, Thought, or Explanation placeholders supplied in the record template.
+
+On a delivered operation turn, the final appended block begins `CC CURRENT OPERATION — FINAL RESPONSE SUFFIX` and gives this positive output order:
+
+1. Complete the supplied CCO template as the first nonblank output line, copying every fixed code and value exactly.
+2. Continue with complete story prose from the next line.
+
+The Output connector parses the control line, validates it against the frozen task, removes it and any echoed CC controls, and returns the punctuated story prose. Players should therefore see the scene, not the operation section.
+
+Optimized context can retain older operation packets. The final current-operation suffix is the authority for this response. A complete record carrying another operation kind, evidence list, target, Turning Point ID, or movement mode is classified as `stale contract stripped`; CC preserves the story, applies no new drain, and carries the current frozen opportunity once. An omitted record or a cut-off protocol fragment also preserves usable story and can receive one bounded frozen retry. Malformed and unauthorized records are stripped before story is returned and do not mutate continuity.
+
+The scheduled normal CCO template is the supported completion form. A legacy `K` no-change record is diagnosed as unauthorized. Complete high-confidence structured fallbacks can still be normalized, but every recovered candidate passes the same frozen-contract, evidence, target, and transaction checks.
+
 ## Understanding State
 
 A managed State card contains temporary fields such as Thought, Feeling, Goal, Tension, Situation, About, and Triggers. State supplies pressure and context for the present moment, not a turn-by-turn checklist. Thought may remain wholly private, Feeling may color perception without being announced, Goal guides intention without requiring immediate action, and Tension can preserve competing impulses. The NPC may express, conceal, pursue, postpone, revise, or release what the State contains.
@@ -525,17 +542,17 @@ Its lifecycle is:
 
 1. CC creates the State card when an NPC activates.
 2. On an eligible turn with a supported change or confirmation, CC gives the model a narrow continuity task. Mere participation does not create a baseline State task.
-3. The generated output must end with one hidden `(CCO|...)` resolution: either a completed State candidate or an explicit no-change result bound to the frozen task and evidence.
-4. The Output connector passes the generated text back through CC.
-5. CC validates the resolution and saves an accepted State candidate; an explicit no-change result writes nothing.
+3. The generated output begins with the completed hidden State CCO template and continues with story prose on the next line.
+4. The Output connector passes that generated text back through CC.
+5. CC validates the fixed contract and saves an accepted State candidate transactionally.
 6. CC removes the hidden record before returning visible story text.
 7. The cache-compatible Context connector can later append a readable private-State projection for the model to use when relevant.
 
 CC keeps raw `Triggers` in the managed State card because they support validation and field derivation. It omits that redundant `Triggers` line from the model-facing State projection; the derived State can influence portrayal without making the model restate or visibly perform every cause. Unused continuity may remain latent on any given turn.
 
-An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, the model may have explicitly declined the proposed change, or the candidate may have failed validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
+An empty State card therefore does not prove that installation failed: the NPC may not have received a qualifying State operation yet, the model may have omitted its required record, or the returned candidate may have failed validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
 
-The final resolution is mandatory, but a mutation is not. A valid no-change result leaves cards and evidence untouched and is reported as `declined`. If the model supplies story prose but omits the final resolution, CC reports `omitted`, applies no semantic drain, retains the evidence, and allows one bounded retry of that exact opportunity. A cut-off protocol fragment remains penalty-free and retryable. These outcomes let Status distinguish a considered no-change decision from a model that ignored the task.
+State derives Feeling, Goal, and Tension from the frozen trigger list. Thought is stored only when it is direct first-person private thought and is grounded to the frozen About target. If Thought is unavailable or unsuitable, CC can still commit the supported trigger-derived fields and Situation, then reports: `Applied trigger-derived State but ignored a Thought that was unavailable or unsuitable for direct storage.` This warning describes graceful partial State handling, not an operation failure.
 
 ### Structured-output fallback handling
 
@@ -546,9 +563,13 @@ Debug reports these cases as:
 - `normalized accepted`
 - `normalized unchanged`
 - `normalized rejected`
+- `stale contract stripped`
 - `malformed stripped`
+- `unauthorized stripped`
+- `cutoff stripped`
+- `omitted`
 
-Partial records, inline candidate fragments, and unsupported structures are stripped without changing saved continuity. If a generated response contains no complete story prose after cleaning, CC requests prose-only recovery.
+Partial records, inline candidate fragments, stale contracts, and unsupported structures are stripped without changing saved continuity. If a generated response contains no complete punctuated story prose after cleaning, CC requests prose-only recovery.
 
 ## Troubleshooting
 
@@ -590,7 +611,7 @@ modifier(text);
 
 Use each connector only in its corresponding script tab, as shown in the [installation guide](INSTALLATION.md#3-install-all-three-connectors).
 
-With the exact connectors installed, the current build strips accepted, rejected, normalized, and malformed candidate forms before returning visible story text. If a raw control record still appears, save the complete generated response and `CC — Debug` contents so the sanitizer path can be reproduced.
+With the exact connectors installed, the current build strips accepted, stale, rejected, normalized, unauthorized, malformed, cut-off, and omitted control forms before returning visible story text. If a raw control record still appears, save the complete generated response and `CC — Debug` contents so the sanitizer path can be reproduced.
 
 ### A State block appears in the Context Viewer
 
@@ -605,6 +626,20 @@ Feeling: ...
 ```
 
 CC appends relevant current State for the model to use as temporary pressure. It intentionally omits raw `Triggers` from this model-facing projection. A raw line beginning with `(CCO|` in the visible story is not expected.
+
+### An operation record is stripped or a Turning Point stays unchanged
+
+Read `Current task`, `Last action task`, `Last action selection`, `Last action resolution`, and `CCO parse` together. The scheduled template is the source of truth. For example, a Turning Point template may begin:
+
+```text
+(CCO|T|S|E22|chosen_not_kept|Breakthrough|Explanation)
+```
+
+The returned record must preserve `T`, target code `S`, evidence list `E22`, stable ID `chosen_not_kept`, and mode `Breakthrough` in those exact positions. Character names, Turning Point display names, and stage labels such as `Achieved` are descriptive context, not substitutes for the fixed codes. When several evidence IDs are supplied, copy the full list in its original order.
+
+The model replaces only `Explanation` with one complete clause. Keep it within the requested 150 characters and use ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v1.99 safely compacts a longer complete explanation to 180 characters at a word boundary.
+
+A complete record for a different cached contract is reported as `stale contract stripped`, adds no drain, and carries the current frozen operation once. A structurally broken current record is `malformed stripped`; a well-formed current record that fails evidence or continuity validation is `rejected`. In all three cases, CC strips the operation material and preserves complete punctuated story prose.
 
 ### Nothing happens
 
@@ -680,15 +715,18 @@ Useful lines include:
 - `Error`
 - `CCO parse`
 - `Current pass`
-- `Current task`
+- `Current task / owner`
 - `Current selected operation`
-- `Last genuine task`
-- `Last genuine selection`
-- `Last genuine resolution`
-- `Last genuine mutation / drain`
-- `Last genuine output chars raw/prose/CCO`
-- `Pending operation retry`
 - `Current candidate / update`
+- `Current operation outcome / drain`
+- `Last action task`
+- `Last action selection`
+- `Last action resolution`
+- `Last action mutation / drain`
+- `Last action output chars raw/prose/CCO`
+- `Pending operation retry`
+- `Operation task ceiling`
+- `Portrayal packet`
 - `Active NPC slots`
 - `Card title migration`
 - `Card wrapper migration`

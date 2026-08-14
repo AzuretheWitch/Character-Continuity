@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v1.83**.
+This reference describes **v1.99**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -55,13 +55,15 @@ If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` an
 
 ### Continuity budget
 
-The budget controls CC's complete model-facing continuity packet, not the total amount of information saved in Story Cards. The packet includes portrayal rules, selected character continuity, and an operation task when one is delivered. CC selects relevant records rather than inserting every record on every turn.
+The budget controls CC's complete model-facing continuity packet, not the total amount of information saved in Story Cards. The packet includes portrayal rules, selected character continuity, and an operation task when one is delivered. CC's relevance rules include the records needed for the current scene rather than inserting every record on every turn.
 
-An operation task may use at most 50% of the configured continuity budget. At the default 2,000-token budget, its ceiling is 1,000 tokens. The complete packet still has to fit both the configured budget and the smaller effective allowance available in the platform context that turn, so an operation may be deferred when the full packet cannot fit safely.
+An operation task may use at most 1,200 tokens. This is a fixed ceiling inside the configured Continuity budget, not another budget added on top. At the default 2,000-token setting, the portrayal context and operation task together still have to fit within 2,000 tokens and the smaller effective allowance available in the platform context that turn.
 
-When a task is delivered, its final hidden resolution is mandatory: the model must return either the completed operation record or an explicit no-change result tied to that frozen task and its evidence. A declined operation does not mutate continuity. An omitted resolution is diagnosed separately and receives one bounded retry; a portrayal-only Continue pass performs no operation scoring.
+When a task is delivered, CC supplies one normal CCO template with the operation kind, owner/target code, exact evidence list, and mechanical fields already frozen. The model completes the requested Situation, Thought, or Explanation value on the first nonblank output line and continues with story prose on the next line. The Output connector validates and strips the control record, leaving only story prose visible. An omitted record receives one bounded retry; a portrayal-only Continue pass performs no operation scoring.
 
-In optimized append-only context, `info.maxChars` is treated as a hard returned-text ceiling; CC does not assume the platform's internal overflow area is writable append capacity. Under pressure, CC tries complete full, compact, and emergency focused portrayal tiers. Optional projections and operation tasks may be omitted or deferred, but CC does not intentionally return a partial continuity packet. `CC — Status` reports the portrayal tier and any model omissions.
+In optimized append-only context, the final `CC CURRENT OPERATION — FINAL RESPONSE SUFFIX` block identifies the current frozen operation contract. Complete CCO records from older cached tasks are treated as stale transport: CC strips the record, preserves punctuated story prose, adds no operation drain, and carries the current frozen opportunity once. Story-only and recovery turns receive their own final `CC CURRENT RESPONSE` block.
+
+`info.maxChars` is treated as a hard returned-text ceiling; CC does not assume the platform's internal overflow area is writable append capacity. Under pressure, CC tries complete full, compact, and emergency focused portrayal tiers inside the configured budget. It can remove optional projections to reserve a complete operation packet and defers the operation when that packet still cannot fit. `CC — Status` reports the portrayal tier, configured/effective/used/headroom totals, and any model omissions. The portrayal tier is a fitting strategy within the configured budget, not a separate cap.
 
 If context is crowded, first keep Outer and Inner concise and remove redundant prose. Raising the budget can expose more continuity, but also leaves less room for story history and other Scenario instructions.
 
@@ -98,7 +100,9 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Individual State value | `120` characters |
 | State triggers | `3` |
 | Confirmations required for Experience promotion | `3` |
-| Operation task ceiling | `50%` of the configured Continuity budget (`1,000` tokens at the default budget) |
+| Operation task ceiling | `1,200` tokens inside the configured Continuity budget |
+| Turning Point Explanation requested from the model | `150` characters |
+| Stored Turning Point Explanation after safe word-boundary compaction | `180` characters |
 | Complete continuity packet | Bounded by both the configured Continuity budget and the effective context allowance for that turn |
 
 When a managed collection outgrows one page, CC can create numbered pages where supported. An oversized imported Experience can be divided at word boundaries into valid stored records before paging.
