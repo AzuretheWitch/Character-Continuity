@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.00**.
+This reference describes **v2.01**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -72,6 +72,8 @@ If context is crowded, first keep Outer and Inner concise and remove redundant p
 ### State lifetime
 
 Each State field has its own temporary clock. A supported new event may refresh or replace one field without making unrelated fields permanent. Increasing the lifetime makes private State linger longer; lowering it makes CC clear unrefreshed State sooner.
+
+State stores at most three trigger codes. If the model supplies more than three valid codes, CC keeps the first three unique codes in their supplied order. An unknown trigger code remains structurally invalid.
 
 ### Maximum active NPCs
 

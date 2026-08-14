@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.00",
+  VERSION: "v2.01",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -4210,7 +4210,7 @@ function CharacterContinuity(hook, incomingText) {
     if (!plan || typeof plan !== "object" || Array.isArray(plan)
       || plan.operationSelectionFrozen !== true
       || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) return false;
-    // v2.00 retires JavaScript-frozen semantic operation choices. Any carried
+    // v2.x retires JavaScript-frozen semantic operation choices. Any carried
     // v1.x plan is cleared and rebuilt as a model-authored assessment.
     plan.operationSelectionFrozen = false;
     plan.selectedOperationKind = "";
@@ -7584,6 +7584,26 @@ function CharacterContinuity(hook, incomingText) {
     const seed = ownerKey + "\u241f" + id;
     return "TP-" + hashString("turning-point-handle-a\u241f" + seed).padStart(8, "0").toUpperCase()
       + hashString("turning-point-handle-b\u241f" + seed).padStart(8, "0").toUpperCase();
+  }
+
+  function turningPointTransportResolution(ownerKey, value) {
+    const source = line(value, 80);
+    if (!source) return { id: "", normalized: false, handle: "" };
+    if (/^TP-[0-9A-F]{16}$/i.test(source)) {
+      const owner = characters.find(character => character.key === normalizedTargetKey(ownerKey)) || null;
+      if (!owner) return { id: "", normalized: false, handle: source.toUpperCase() };
+      refreshTurningPointsStore();
+      const ownerData = turningPointsForOwner(owner.key);
+      const handle = source.toUpperCase();
+      const matches = ownerData ? ownerData.contextRecords.filter(record =>
+        turningPointContextHandle(owner, record) === handle
+      ) : [];
+      return matches.length === 1
+        ? { id: matches[0].id, normalized: true, handle }
+        : { id: "", normalized: false, handle };
+    }
+    const id = canonicalTurningPointId(source);
+    return { id, normalized: !!id && source !== id, handle: "" };
   }
 
   function turningPointContextRevision(entry) {
@@ -13167,6 +13187,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       return modes.length ? {
         id: record.id,
+        handle: turningPointContextHandle(owner, record),
         title: record.title,
         progress: record.progress.normalized,
         modes,
@@ -13222,7 +13243,8 @@ function CharacterContinuity(hook, incomingText) {
     ].filter(Boolean);
     const relationshipDestinations = RELATIONSHIP_FIELDS.map(field => field + "="
       + relationshipOperationDestinations(field, null).join("/")).join("; ");
-    const turningRows = turningChoices.map(choice => "TP " + choice.id + " " + choice.title
+    const turningRows = turningChoices.map(choice => "TP " + choice.id
+      + (choice.handle ? " [portrayal handle " + choice.handle + "]" : "") + " " + choice.title
       + " | current " + choice.progress + " | movements " + choice.modes.join("/")
       + " | " + choice.references.join("; "));
     const rules = [
@@ -13238,6 +13260,9 @@ function CharacterContinuity(hook, incomingText) {
       "Relationship fields and destinations: " + relationshipDestinations + ". D records a completed direct event.",
       "View destinations: " + VIEW_CATEGORIES.join("/") + ", plus Buried for an active known view or Recovered for a buried view. Mode O records a directly established durable judgment; M records bounded movement toward the destination.",
       ...turningRows,
+      turningRows.length
+        ? "Turning Point StableID is the ID immediately after TP; its bracketed portrayal handle resolves to the same listed development."
+        : "",
       "Explanation is one concise plain-text clause grounded in the cited evidence. Complete descriptive fields with plain text that keeps the record separators distinct.",
       "Available record forms:",
       ...forms,
@@ -16301,7 +16326,10 @@ function CharacterContinuity(hook, incomingText) {
       const situationField = exactStateFieldValue(stateParts[5], "Situation");
       const thoughtField = exactStateFieldValue(stateParts[6], "Thought");
       const suppliedTriggers = triggerField.value.split(",").map(value => value.trim()).filter(Boolean);
-      const triggers = triggerList(suppliedTriggers);
+      const normalizedSuppliedTriggers = suppliedTriggers.map(normalizeTriggerCode);
+      const triggers = unique(normalizedSuppliedTriggers.filter(Boolean), 40)
+        .slice(0, settings.MAX_STATE_TRIGGERS);
+      const triggerListNormalized = JSON.stringify(suppliedTriggers) !== JSON.stringify(triggers);
       const situationSource = situationField.value;
       const completeSituation = wholeLine(
         situationSource,
@@ -16310,7 +16338,8 @@ function CharacterContinuity(hook, incomingText) {
       const situation = situationPhrase(completeSituation);
       const thoughtSource = thoughtField.value;
       const thought = line(thoughtSource, settings.MAX_STATE_VALUE_CHARS);
-      if (!targetCode || !triggers.length || triggers.length !== suppliedTriggers.length) {
+      if (!targetCode || !triggers.length
+        || normalizedSuppliedTriggers.some(value => !value)) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The State CCO record used an invalid target or trigger code.", raw: line(raw, 300) };
       }
       if (!completeSituation || !situation || /[{}|\r\n]/.test(situationSource)) {
@@ -16328,6 +16357,10 @@ function CharacterContinuity(hook, incomingText) {
         + stateRepair.note
         + (stateLabelNormalized
           ? " Exact position-matched State field labels were normalized to bare values."
+          : "")
+        + (triggerListNormalized
+          ? " The State TriggerList was normalized to its first " + settings.MAX_STATE_TRIGGERS
+            + " unique legal codes in supplied order."
           : "");
       return {
         story, malformed: false, hadProtocol: true, reason: stateReason, raw: reportedRaw,
@@ -16438,7 +16471,8 @@ function CharacterContinuity(hook, incomingText) {
       const frozenTargetCode = assessmentTask
         ? "S"
         : textOf(frozenTarget && frozenTarget.code).trim().toUpperCase();
-      const turningPointId = canonicalTurningPointId(parts[4]);
+      const turningPointTransport = turningPointTransportResolution(plan && plan.ownerKey, parts[4]);
+      const turningPointId = turningPointTransport.id;
       const mode = ["Support", "Breakthrough", "Integration"].find(value => keyOf(value) === keyOf(parts[5])) || "";
       const scheduledTurningPointId = canonicalTurningPointId(
         plan && plan.selectedCandidate && plan.selectedCandidate.field
@@ -16454,7 +16488,7 @@ function CharacterContinuity(hook, incomingText) {
         : compactLineAtBoundary(explanationSource, settings.MAX_OPERATION_EXPLANATION_CHARS);
       const explanationCompacted = !!explanationSource && explanation !== explanationSource;
       if (!frozenTargetCode || !targetCode
-        || !turningPointId || turningPointId !== textOf(parts[4]).trim() || !mode) {
+        || !turningPointId || !mode) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Turning Point CCO record used an invalid target, stable ID, or movement mode.", raw: line(raw, 300) };
       }
       if (!assessmentTask && (targetCode !== frozenTargetCode || turningPointId !== scheduledTurningPointId
@@ -16474,6 +16508,9 @@ function CharacterContinuity(hook, incomingText) {
       return {
         story, malformed: false, hadProtocol: true,
         reason: parsedCcoReason("CCO Turning Point record parsed.", routing) + protocolPresentationNote
+          + (turningPointTransport.normalized
+            ? " The Turning Point transport identifier was normalized to stable ID " + turningPointId + "."
+            : "")
           + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
           + (explanationCompacted
             ? " The complete Explanation was compacted at a word boundary to "

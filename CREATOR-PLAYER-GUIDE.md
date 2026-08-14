@@ -4,7 +4,7 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; the model interprets bounded fresh evidence and supplies any narrow continuity change, while CC validates its structure and current managed-card mechanics before saving it.
 
-The current package is **v2.00**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
+The current package is **v2.01**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
 
 ## Before you begin
 
@@ -454,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.00 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.01 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -501,13 +501,13 @@ The model can propose only one narrow continuity operation on an assessment turn
 - **Breakthrough:** moves an unachieved Turning Point to 35 when completed evidence satisfies the Achieved stage and every part of its definitive `Breakthrough:` condition.
 - **Integration:** adds 2 after Achieved when completed evidence shows that the change is sustained, habitual, or part of ordinary life, up to 49.
 
-The assessment lists the currently available Turning Point IDs and movements. The model chooses a unique supplied evidence subset in supplied order, the stable ID, `Support`, `Breakthrough`, or `Integration`, and a grounded Explanation, using this shape:
+The assessment lists the currently available Turning Point IDs, their current `TP-…` portrayal handles, and movements. The model chooses a unique supplied evidence subset in supplied order, the stable ID, `Support`, `Breakthrough`, or `Integration`, and a grounded Explanation, using this shape:
 
 ```text
 (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)
 ```
 
-CC verifies that `S` is the focused owner's Self target and that the selected ID and movement are still available from the current router and stage cards. A longer complete safe Explanation is compacted at a word boundary to 180 characters before storage. The characters `|`, `{`, `}`, `[`, `]`, `(`, `)`, and line breaks are reserved record characters and cannot appear in the Explanation.
+CC verifies that `S` is the focused owner's Self target and that the selected ID and movement are still available from the current router and stage cards. If the model copies the matching `TP-…` portrayal handle instead of the stable ID, CC resolves that unambiguous handle to the listed stable ID before validation. A longer complete safe Explanation is compacted at a word boundary to 180 characters before storage. The characters `|`, `{`, `}`, `[`, `]`, `(`, `)`, and line breaks are reserved record characters and cannot appear in the Explanation.
 
 CC updates only `Progress`, `Active card`, and `Stage trigger`. It does not rewrite the Turning Point's title, stable ID, Direction, stage-card prefix, optional Breakthrough condition, or any creator-written stage Entry.
 
@@ -560,6 +560,8 @@ CC keeps raw `Triggers` in the managed State card because they support validatio
 An empty State card therefore does not prove that installation failed: the model may have selected `K`, omitted the assessment record, selected another continuity type, or returned a State candidate that failed structural or mechanical validation. An empty State card combined with visible raw CCO text usually points to an incorrect connector. If the exact connectors are already installed, preserve the raw output and Debug contents for diagnosis.
 
 State derives Feeling, Goal, and Tension from the model-supplied validated trigger list. Thought is stored only when it is direct first-person private thought and is grounded to the supplied About target. If Thought is unavailable or unsuitable, CC can still commit the trigger-derived fields and Situation, then reports: `Applied trigger-derived State but ignored a Thought that was unavailable or unsuitable for direct storage.` This warning describes graceful partial State handling, not an operation failure.
+
+State stores at most three triggers. When a model returns more than three valid trigger codes, CC deterministically keeps the first three unique codes in supplied order and continues the State transaction. Unknown trigger codes remain malformed rather than being reinterpreted.
 
 ### Control-record handling
 
@@ -631,9 +633,9 @@ Read `Current task`, `Last action task`, `Last action selection`, `Last action r
 (CCO|T|S|E22|chosen_not_kept|Breakthrough|Sydney tells the full truth and accepts the free response.)
 ```
 
-The model chooses `T`, target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. Character names, Turning Point display names, and stage labels such as `Achieved` are descriptive context, not substitutes for the stable ID or movement code. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
+The model chooses `T`, target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. A matching current `TP-…` portrayal handle is also accepted and normalized to its stable ID. Character names, Turning Point display names, and stage labels such as `Achieved` remain descriptive context rather than movement codes. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
 
-The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.00 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
+The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.01 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
 
 A record citing unavailable or reordered evidence is reported as `stale contract stripped`, adds no drain, and carries the current assessment once. A structurally broken current record is `malformed stripped`; a well-formed record that uses an unavailable target, field, card identity, movement, reused source, or unsafe write is `rejected`. In every case, CC strips the assessment material and preserves complete punctuated story prose.
 
