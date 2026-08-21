@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.01",
+  VERSION: "v2.02-test-b2",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -16,6 +16,11 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_TITLE: "CC — Debug",
   CARD_TYPE: "Continuity",
   CARD_KEY_PREFIX: "__CC_STABLE_CARD__:",
+  MODEL_CARD_TYPE: "Continuity",
+  MODEL_CARD_TITLE_PREFIX: "CC — Model Context — ",
+  MODEL_CARD_KEY_PREFIX: "__CC_MODEL_CARD__:",
+  FRONT_MEMORY_BEGIN: "<CC_FRONT_MEMORY>",
+  FRONT_MEMORY_END: "</CC_FRONT_MEMORY>",
   SCRIPT_CARD_TITLE: "Script Story Card",
 
   DEFAULT_ENABLED: true,
@@ -51,8 +56,13 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_PROVENANCE_RECORDS: 160,
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
-  MAX_OPERATION_TASK_TOKENS: 1200,
+  MAX_OPERATION_TASK_TOKENS: 600,
+  OPERATION_RETRY_HEADROOM_TOKENS: 8,
+  MAX_MODEL_CARD_CHARS: 4400,
+  MAX_MODEL_CARD_TRIGGERS: 12,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
+  MAX_ASSESSMENT_TARGETS: 5,
+  MAX_ASSESSMENT_TURNING_POINT_CHOICES: 3,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   MODEL_STATE_VALUE_CHARS: 100,
   MODEL_OPERATION_EXPLANATION_CHARS: 150,
@@ -78,7 +88,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 3,
+  MAINTENANCE_SCHEMA_VERSION: 5,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -145,6 +155,211 @@ function CharacterContinuity(hook, incomingText) {
 
   function textOf(value) {
     return value === null || value === undefined ? "" : String(value);
+  }
+
+  function frontMemoryStore() {
+    if (!rootState.memory || typeof rootState.memory !== "object" || Array.isArray(rootState.memory)) {
+      rootState.memory = {};
+    }
+    return rootState.memory;
+  }
+
+  function currentFrontMemory() {
+    return textOf(frontMemoryStore().frontMemory);
+  }
+
+  function stripOwnedFrontMemory(value) {
+    const begin = escapeRegExp(settings.FRONT_MEMORY_BEGIN);
+    const end = escapeRegExp(settings.FRONT_MEMORY_END);
+    return textOf(value)
+      .replace(new RegExp(begin + "[\\s\\S]*?" + end, "g"), "");
+  }
+
+  function ownedFrontMemoryBlock(taskText) {
+    const task = textOf(taskText).replace(/\r/g, "").trim();
+    return task
+      ? [settings.FRONT_MEMORY_BEGIN, task, settings.FRONT_MEMORY_END].join("\n")
+      : "";
+  }
+
+  function composedFrontMemory(externalMemory, taskText) {
+    const external = textOf(externalMemory);
+    const block = ownedFrontMemoryBlock(taskText);
+    if (!block) return external;
+    if (!external) return block;
+    return external + (/\r?\n$/.test(external) ? "" : "\n\n") + block;
+  }
+
+  function stableFrontMemoryTracking() {
+    const stable = rootState.characterContinuityStableV1;
+    return stable && typeof stable === "object" && !Array.isArray(stable) ? stable : null;
+  }
+
+  function trackedExternalFrontMemory(currentValue) {
+    const current = textOf(currentValue);
+    const stable = stableFrontMemoryTracking();
+    if (!stable || stable.frontMemoryOwnsBlock !== true
+      || typeof stable.frontMemoryExternal !== "string") return stripOwnedFrontMemory(current);
+    const external = stable.frontMemoryExternal;
+    const prefix = external + (external && !/\r?\n$/.test(external) ? "\n\n" : "");
+    const remainder = current.slice(prefix.length);
+    return current.startsWith(prefix)
+      && remainder.startsWith(settings.FRONT_MEMORY_BEGIN)
+      && remainder.trimEnd().endsWith(settings.FRONT_MEMORY_END)
+      ? external
+      : stripOwnedFrontMemory(current);
+  }
+
+  function rememberFrontMemory(externalMemory, ownsBlock) {
+    const stable = stableFrontMemoryTracking();
+    if (!stable) return;
+    stable.frontMemoryExternal = textOf(externalMemory);
+    stable.frontMemoryOwnsBlock = ownsBlock === true;
+  }
+
+  function replaceFrontMemorySuffix(contextValue, oldFrontMemory, nextFrontMemory) {
+    const context = textOf(contextValue);
+    const oldFront = textOf(oldFrontMemory);
+    const nextFront = textOf(nextFrontMemory);
+    if (!oldFront) {
+      if (!nextFront) return { ok: true, text: context };
+      const separator = context && !/\n\s*$/.test(context) ? "\n\n" : "";
+      return { ok: true, text: context + separator + nextFront };
+    }
+    const index = context.lastIndexOf(oldFront);
+    if (index < 0 || context.slice(index + oldFront.length).trim()) {
+      return { ok: false, text: context };
+    }
+    return {
+      ok: true,
+      text: context.slice(0, index) + nextFront + context.slice(index + oldFront.length)
+    };
+  }
+
+  function clearOwnedFrontMemoryState() {
+    const memory = frontMemoryStore();
+    const current = textOf(memory.frontMemory);
+    const external = trackedExternalFrontMemory(current);
+    if (external === current) {
+      rememberFrontMemory(external, false);
+      return false;
+    }
+    memory.frontMemory = external;
+    const cleared = textOf(memory.frontMemory) === external;
+    if (cleared) rememberFrontMemory(external, false);
+    return cleared;
+  }
+
+  function beginFrontMemoryContext(contextValue) {
+    const oldFrontMemory = currentFrontMemory();
+    const externalFrontMemory = trackedExternalFrontMemory(oldFrontMemory);
+    const cleared = replaceFrontMemorySuffix(contextValue, oldFrontMemory, externalFrontMemory);
+    return {
+      ok: cleared.ok,
+      originalText: textOf(contextValue),
+      baseText: cleared.text,
+      externalFrontMemory,
+      commit(taskText) {
+        if (!cleared.ok) return { ok: false, delivered: false, text: textOf(contextValue), frontMemory: oldFrontMemory };
+        const nextFrontMemory = composedFrontMemory(externalFrontMemory, taskText);
+        const replaced = replaceFrontMemorySuffix(cleared.text, externalFrontMemory, nextFrontMemory);
+        if (!replaced.ok) return { ok: false, delivered: false, text: textOf(contextValue), frontMemory: oldFrontMemory };
+        const memory = frontMemoryStore();
+        memory.frontMemory = nextFrontMemory;
+        const stateMatches = textOf(memory.frontMemory) === nextFrontMemory;
+        const returnedSuffixMatches = nextFrontMemory
+          ? replaced.text.trimEnd().endsWith(nextFrontMemory.trimEnd())
+          : replaced.text === cleared.text;
+        const ok = stateMatches && returnedSuffixMatches;
+        if (ok) rememberFrontMemory(externalFrontMemory, !!textOf(taskText).trim());
+        return {
+          ok,
+          delivered: ok && !!textOf(taskText).trim(),
+          text: ok ? replaced.text : textOf(contextValue),
+          frontMemory: ok ? nextFrontMemory : oldFrontMemory
+        };
+      }
+    };
+  }
+
+  function stageFrontMemoryTask(taskText) {
+    const memory = frontMemoryStore();
+    const current = textOf(memory.frontMemory);
+    const external = trackedExternalFrontMemory(current);
+    const next = composedFrontMemory(external, taskText);
+    memory.frontMemory = next;
+    const ok = textOf(memory.frontMemory) === next;
+    if (ok) rememberFrontMemory(external, !!textOf(taskText).trim());
+    return {
+      ok,
+      delivered: ok && !!textOf(taskText).trim(),
+      text: "",
+      frontMemory: ok ? next : current,
+      externalFrontMemory: external
+    };
+  }
+
+  function verifyStagedFrontMemory(contextValue, taskText) {
+    const context = textOf(contextValue);
+    const current = currentFrontMemory();
+    const external = stripOwnedFrontMemory(current);
+    const expected = composedFrontMemory(external, taskText);
+    const stateMatches = current === expected;
+    const contextSuffixMatches = !current.trim()
+      ? !context.includes(settings.FRONT_MEMORY_BEGIN)
+      : context.trimEnd().endsWith(current.trimEnd());
+    return {
+      ok: stateMatches && contextSuffixMatches,
+      delivered: stateMatches && contextSuffixMatches && !!textOf(taskText).trim(),
+      frontMemory: current,
+      externalFrontMemory: external
+    };
+  }
+
+  function preparedPlanFingerprint() {
+    const cardRows = cards.filter(card => {
+      const title = titleOf(card);
+      return title !== settings.STATUS_TITLE
+        && !new RegExp("^" + escapeRegExp(settings.DEBUG_TITLE) + "(?:\\s+\\d+)?$", "i").test(title)
+        && !modelProjectionMarkerFromCard(card);
+    }).map((card, index) => [
+      index,
+      rawVisibleTitleOf(card),
+      textOf(card && card.keys),
+      entryOf(card),
+      textOf(card && card.type),
+      physicalCardId(card)
+    ]);
+    return String(hashString(JSON.stringify({
+      version: settings.VERSION,
+      runtime,
+      taskLimits: {
+        tokens: settings.MAX_OPERATION_TASK_TOKENS,
+        evidence: settings.MAX_ASSESSMENT_EVIDENCE_ITEMS,
+        targets: settings.MAX_ASSESSMENT_TARGETS,
+        turningPoints: settings.MAX_ASSESSMENT_TURNING_POINT_CHOICES
+      },
+      stateClock: CC.stateClock,
+      npcs: CC.npcs,
+      evidence: CC.evidence,
+      ownerOpportunities: CC.ownerOpportunities,
+      recoveringViews: CC.recoveringViews,
+      provenance: CC.provenance,
+      operationState: CC.operationState,
+      cards: cardRows
+    })));
+  }
+
+  function sealPreparedPlan(plan) {
+    if (!plan || typeof plan !== "object" || Array.isArray(plan)) return false;
+    plan.preparationFingerprint = preparedPlanFingerprint();
+    return true;
+  }
+
+  function preparedPlanStillCurrent(plan) {
+    if (!plan || !textOf(plan.preparedFrontTaskText).trim()) return true;
+    const frozen = line(plan.preparationFingerprint, 100);
+    return !!frozen && frozen === preparedPlanFingerprint();
   }
 
   function platformActionCount() {
@@ -1642,7 +1857,19 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   const runtime = readRuntime();
-  if (!runtime.enabled) return finish(originalText);
+  if (!runtime.enabled) {
+    currentCardCatalog().records.filter(record => !!modelProjectionMarkerFromCard(record.card))
+      .map(record => record.card)
+      .sort((left, right) => cardIndex(right) - cardIndex(left))
+      .forEach(removeCard);
+    if (contextHook) {
+      const frontMemory = beginFrontMemoryContext(originalText);
+      const cleared = frontMemory.commit("");
+      return finish(cleared.ok ? cleared.text : originalText);
+    }
+    clearOwnedFrontMemoryState();
+    return finish(originalText);
+  }
 
   function playerProfile() {
     let card = findCard(settings.PLAYER_TITLE);
@@ -3823,11 +4050,7 @@ function CharacterContinuity(hook, incomingText) {
     const source = record && typeof record === "object" && !Array.isArray(record) ? record : {};
     return [
       line(source.ownerKey, 160),
-      OPERATION_KINDS.includes(keyOf(source.kind)) ? keyOf(source.kind) : "",
-      normalizedTargetKey(source.targetKey),
-      keyOf(source.field),
-      keyOf(source.destination),
-      line(source.evidenceSignature, 500)
+      OPERATION_KINDS.includes(keyOf(source.kind)) ? keyOf(source.kind) : ""
     ].join("|");
   }
 
@@ -3852,7 +4075,7 @@ function CharacterContinuity(hook, incomingText) {
       lastResult
     };
     record.key = operationDrainKey(record);
-    return record.ownerKey && record.evidenceSignature ? record : null;
+    return record.ownerKey ? record : null;
   }
 
   function blankOperationState() {
@@ -3920,7 +4143,17 @@ function CharacterContinuity(hook, incomingText) {
     (Array.isArray(source.drains) ? source.drains : [])
       .map(normalizeOperationDrainRecord)
       .filter(Boolean)
-      .forEach(record => { drainsByKey[record.key] = record; });
+      .sort((left, right) => left.updatedOpportunity - right.updatedOpportunity)
+      .forEach(record => {
+        const prior = drainsByKey[record.key];
+        if (prior) {
+          record.value = Math.max(
+            record.value,
+            effectiveOperationDrainValue(prior, record.updatedOpportunity)
+          );
+        }
+        drainsByKey[record.key] = record;
+      });
     const drains = Object.values(drainsByKey)
       .sort((left, right) => left.updatedOpportunity - right.updatedOpportunity)
       .slice(-settings.MAX_OPERATION_DRAIN_RECORDS);
@@ -4208,14 +4441,34 @@ function CharacterContinuity(hook, incomingText) {
 
   function clearIncompleteForcedOperationPlan(plan) {
     if (!plan || typeof plan !== "object" || Array.isArray(plan)
-      || plan.operationSelectionFrozen !== true
-      || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) return false;
+      || plan.operationSelectionFrozen !== true) return false;
+    const preservedAssessment = plan.assessmentFrozenSelection
+      && typeof plan.assessmentFrozenSelection === "object"
+      && !Array.isArray(plan.assessmentFrozenSelection)
+      ? plan.assessmentFrozenSelection
+      : null;
+    const assessmentSource = preservedAssessment || plan;
+    if (plan.semanticAssessment === true
+      && (!line(plan.operationTaskKind, 40)
+        || keyOf(plan.operationTaskKind) === ASSESSMENT_OPERATION_KIND)
+      && forcedOperationCandidateComplete(assessmentSource.selectedCandidate)
+      && keyOf(assessmentSource.selectedCandidate.kind) === ASSESSMENT_OPERATION_KIND
+      && MODEL_OPERATION_KINDS.includes(keyOf(
+        assessmentSource.assessmentScheduledKind || plan.assessmentScheduledKind
+      ))) return false;
+    if (MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+      && forcedOperationCandidateComplete(plan.selectedCandidate)) return false;
     // v2.x retires JavaScript-frozen semantic operation choices. Any carried
     // v1.x plan is cleared and rebuilt as a model-authored assessment.
     plan.operationSelectionFrozen = false;
     plan.selectedOperationKind = "";
     plan.selectedCandidate = null;
     plan.operationCandidates = [];
+    plan.assessmentScheduledKind = "";
+    plan.assessmentTurningPointChoices = [];
+    plan.assessmentAdvertisedKinds = [];
+    plan.assessmentScopeComplete = false;
+    plan.assessmentFrozenSelection = null;
     plan.selectedEvidenceSignature = "";
     plan.selectedGain = 0;
     plan.selectedDrain = 0;
@@ -4273,11 +4526,12 @@ function CharacterContinuity(hook, incomingText) {
       inputCount: 0, visibleGenerationCount: 0, stateClock: 0,
       lastCompletedActionCount: -1,
       openingSeen: false, openingEvidenceId: "",
-      lastInput: "", lastInputSignature: "", currentPlan: null,
+      lastInput: "", lastInputSignature: "", currentPlan: null, preparedContinuePlan: null,
       preGenerationSnapshot: null, lastVisibleOutputAnchor: null,
       lastGenuineOperation: blankLastGenuineOperation(),
       pendingOperationRetry: blankPendingOperationRetry(),
       focusLastServed: {}, sceneLastSeen: {}, recoveryPending: false,
+      frontMemoryExternal: "", frontMemoryOwnsBlock: false,
       evidence: [], nextEvidenceNumber: 1, ownerOpportunities: {}, recoveringViews: {},
       provenance: blankProvenanceLedger(), operationState: blankOperationState(),
       viewRepairDiagnostics: [], viewTransactionDiagnostics: [],
@@ -4296,6 +4550,8 @@ function CharacterContinuity(hook, incomingText) {
         contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
         cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
         portrayalTier: "none",
+        frontMemoryMode: "clear", frontMemoryVerified: false,
+        projectionCards: [], projectionTokens: 0,
         task: "none", owner: "", candidate: "not requested", update: "None",
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
         timeJumpReset: false, selectedNames: [], omittedNames: [],
@@ -4576,6 +4832,7 @@ function CharacterContinuity(hook, incomingText) {
     }
     migrateEvidenceIdentityKeys(CC.evidence);
     migratePlanIdentityKeys(CC.currentPlan);
+    migratePlanIdentityKeys(CC.preparedContinuePlan);
     if (CC.pendingOperationRetry && typeof CC.pendingOperationRetry === "object") {
       CC.pendingOperationRetry.ownerKey = migratedCharacterKey(CC.pendingOperationRetry.ownerKey);
       migratePlanIdentityKeys(CC.pendingOperationRetry.plan);
@@ -4632,6 +4889,10 @@ function CharacterContinuity(hook, incomingText) {
   if (typeof CC.lastTimeJumpEvidenceId !== "string") CC.lastTimeJumpEvidenceId = "";
   if (typeof CC.openingEvidenceId !== "string") CC.openingEvidenceId = "";
   if (typeof CC.lastInputSignature !== "string") CC.lastInputSignature = "";
+  if (!CC.preparedContinuePlan || typeof CC.preparedContinuePlan !== "object"
+    || Array.isArray(CC.preparedContinuePlan)) CC.preparedContinuePlan = null;
+  if (typeof CC.frontMemoryExternal !== "string") CC.frontMemoryExternal = "";
+  if (typeof CC.frontMemoryOwnsBlock !== "boolean") CC.frontMemoryOwnsBlock = false;
   CC.maintenance = normalizeMaintenanceState(CC.maintenance);
   if (!CC.cardHashes || typeof CC.cardHashes !== "object" || Array.isArray(CC.cardHashes)) CC.cardHashes = {};
   if (!CC.last || typeof CC.last !== "object" || Array.isArray(CC.last)) CC.last = initialStableState().last;
@@ -8874,6 +9135,54 @@ function CharacterContinuity(hook, incomingText) {
     return matched;
   }
 
+  function normalizeAssessmentFamilyRecord(raw) {
+    const scalar = typeof raw === "number"
+      || (typeof raw === "string" && raw.trim() !== "");
+    if (scalar && Number.isFinite(Number(raw))) {
+      return { all: Math.max(0, Math.floor(Number(raw))) };
+    }
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const result = {};
+    if (Object.prototype.hasOwnProperty.call(source, "all") && Number.isFinite(Number(source.all))) {
+      result.all = Math.max(0, Math.floor(Number(source.all)));
+    }
+    MODEL_OPERATION_KINDS.forEach(kind => {
+      if (Object.prototype.hasOwnProperty.call(source, kind) && Number.isFinite(Number(source[kind]))) {
+        result[kind] = Math.max(0, Math.floor(Number(source[kind])));
+      }
+    });
+    return result;
+  }
+
+  function normalizeAssessedNoChangeBy(raw) {
+    const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+    const result = {};
+    Object.keys(source).forEach(ownerKey => {
+      const record = normalizeAssessmentFamilyRecord(source[ownerKey]);
+      if (Object.keys(record).length) result[ownerKey] = record;
+    });
+    return result;
+  }
+
+  function assessmentFamilyReviewed(item, ownerOrKey, kind) {
+    const ownerKey = typeof ownerOrKey === "string"
+      ? line(ownerOrKey, 160)
+      : line(ownerOrKey && ownerOrKey.key, 160);
+    const normalizedKind = keyOf(kind);
+    if (!item || !ownerKey || !MODEL_OPERATION_KINDS.includes(normalizedKind)) return false;
+    const source = item.assessedNoChangeBy && typeof item.assessedNoChangeBy === "object"
+      && !Array.isArray(item.assessedNoChangeBy)
+      ? item.assessedNoChangeBy[ownerKey]
+      : null;
+    const record = normalizeAssessmentFamilyRecord(source);
+    return Object.prototype.hasOwnProperty.call(record, "all")
+      || Object.prototype.hasOwnProperty.call(record, normalizedKind);
+  }
+
+  function evidenceHasUnreviewedAssessmentFamily(item, ownerOrKey) {
+    return MODEL_OPERATION_KINDS.some(kind => !assessmentFamilyReviewed(item, ownerOrKey, kind));
+  }
+
   function normalizeEvidenceItem(item) {
     const source = item && typeof item === "object" && !Array.isArray(item) ? item : {};
     return {
@@ -8896,8 +9205,7 @@ function CharacterContinuity(hook, incomingText) {
       usedNamesBy: source.usedNamesBy && typeof source.usedNamesBy === "object" && !Array.isArray(source.usedNamesBy)
         ? source.usedNamesBy
         : {},
-      assessedNoChangeBy: source.assessedNoChangeBy && typeof source.assessedNoChangeBy === "object"
-        && !Array.isArray(source.assessedNoChangeBy) ? source.assessedNoChangeBy : {},
+      assessedNoChangeBy: normalizeAssessedNoChangeBy(source.assessedNoChangeBy),
       anchor: source.anchor && typeof source.anchor === "object" && !Array.isArray(source.anchor) ? source.anchor : null
     };
   }
@@ -9051,12 +9359,19 @@ function CharacterContinuity(hook, incomingText) {
     });
   }
 
-  function markNoChangeAssessment(items, owner, opportunity) {
+  function markNoChangeAssessment(items, owner, opportunity, kinds = MODEL_OPERATION_KINDS) {
+    const reviewedKinds = unique(Array.isArray(kinds) ? kinds : [kinds], 20)
+      .map(keyOf)
+      .filter(kind => MODEL_OPERATION_KINDS.includes(kind));
     (Array.isArray(items) ? items : []).forEach(item => {
-      if (!item || !/^E\d+$/.test(textOf(item.id)) || !owner) return;
+      if (!item || !/^E\d+$/.test(textOf(item.id)) || !owner || !reviewedKinds.length) return;
       if (!item.assessedNoChangeBy || typeof item.assessedNoChangeBy !== "object"
         || Array.isArray(item.assessedNoChangeBy)) item.assessedNoChangeBy = {};
-      item.assessedNoChangeBy[owner.key] = Math.max(0, Math.floor(Number(opportunity) || 0));
+      const record = normalizeAssessmentFamilyRecord(item.assessedNoChangeBy[owner.key]);
+      reviewedKinds.forEach(kind => {
+        record[kind] = Math.max(0, Math.floor(Number(opportunity) || 0));
+      });
+      item.assessedNoChangeBy[owner.key] = record;
     });
   }
 
@@ -9537,7 +9852,8 @@ function CharacterContinuity(hook, incomingText) {
       managedNamesCards: captureManagedNamesCards(),
       managedRelationshipsCards: captureManagedRelationshipsCards(),
       managedTurningPointsCards: captureManagedTurningPointsCards(),
-      managedExperienceCards: captureManagedExperienceCards()
+      managedExperienceCards: captureManagedExperienceCards(),
+      managedModelProjectionCards: captureManagedModelProjectionCards()
     });
   }
 
@@ -9613,6 +9929,9 @@ function CharacterContinuity(hook, incomingText) {
     if (snapshot.managedExperienceCards !== undefined) {
       cardsRestored = restoreManagedExperienceCards(snapshot.managedExperienceCards) && cardsRestored;
     }
+    if (snapshot.managedModelProjectionCards !== undefined) {
+      cardsRestored = restoreManagedModelProjectionCards(snapshot.managedModelProjectionCards) && cardsRestored;
+    }
     characters.forEach(character => {
       if (!CC.npcs[character.key]) CC.npcs[character.key] = blankNpc(character.startingStatus);
       else CC.npcs[character.key] = normalizeNpc(CC.npcs[character.key], character.startingStatus);
@@ -9632,13 +9951,9 @@ function CharacterContinuity(hook, incomingText) {
     return restored;
   }
 
-  function frozenOperationSelectionFrom(plan) {
+  function assessmentSelectionSnapshot(plan) {
     const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : {};
-    if (source.operationSelectionFrozen !== true) return {};
     return {
-      operationSelectionFrozen: true,
-      semanticAssessment: source.semanticAssessment === true,
-      selectedOperationKind: line(source.selectedOperationKind, 40),
       selectedCandidate: clone(source.selectedCandidate),
       operationCandidates: clone(Array.isArray(source.operationCandidates) ? source.operationCandidates : []),
       selectedEvidenceSignature: line(source.selectedEvidenceSignature, 500),
@@ -9646,7 +9961,56 @@ function CharacterContinuity(hook, incomingText) {
       selectedDrain: Math.max(0, Math.floor(Number(source.selectedDrain) || 0)),
       selectedNet: Math.floor(Number(source.selectedNet) || 0),
       selectionReasons: clone(Array.isArray(source.selectionReasons) ? source.selectionReasons : []),
-      operationTieBreak: line(source.operationTieBreak, 500)
+      operationTieBreak: line(source.operationTieBreak, 500),
+      assessmentScheduledKind: MODEL_OPERATION_KINDS.includes(keyOf(source.assessmentScheduledKind))
+        ? keyOf(source.assessmentScheduledKind)
+        : ""
+    };
+  }
+
+  function frozenOperationSelectionFrom(plan) {
+    const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : {};
+    if (source.operationSelectionFrozen !== true) return {};
+    const semanticAssessment = source.semanticAssessment === true
+      && line(source.operationTaskKind, 40) === ASSESSMENT_OPERATION_KIND;
+    const preservedAssessment = semanticAssessment
+      && source.assessmentFrozenSelection && typeof source.assessmentFrozenSelection === "object"
+      && !Array.isArray(source.assessmentFrozenSelection)
+      ? source.assessmentFrozenSelection
+      : source;
+    return {
+      operationSelectionFrozen: true,
+      semanticAssessment: source.semanticAssessment === true,
+      selectedOperationKind: semanticAssessment
+        ? ASSESSMENT_OPERATION_KIND
+        : line(source.selectedOperationKind, 40),
+      selectedCandidate: clone(preservedAssessment.selectedCandidate),
+      operationCandidates: clone(
+        Array.isArray(preservedAssessment.operationCandidates) ? preservedAssessment.operationCandidates : []
+      ),
+      assessmentFrozenSelection: semanticAssessment
+        ? clone(assessmentSelectionSnapshot(preservedAssessment))
+        : clone(source.assessmentFrozenSelection),
+      assessmentScheduledKind: semanticAssessment
+        ? (MODEL_OPERATION_KINDS.includes(keyOf(
+          preservedAssessment.assessmentScheduledKind || source.assessmentScheduledKind
+        )) ? keyOf(preservedAssessment.assessmentScheduledKind || source.assessmentScheduledKind) : "")
+        : "",
+      assessmentTurningPointChoices: clone(
+        Array.isArray(source.assessmentTurningPointChoices) ? source.assessmentTurningPointChoices : []
+      ),
+      assessmentAdvertisedKinds: clone(
+        Array.isArray(source.assessmentAdvertisedKinds) ? source.assessmentAdvertisedKinds : []
+      ),
+      assessmentScopeComplete: source.assessmentScopeComplete === true,
+      selectedEvidenceSignature: line(preservedAssessment.selectedEvidenceSignature, 500),
+      selectedGain: Math.max(0, Math.floor(Number(preservedAssessment.selectedGain) || 0)),
+      selectedDrain: Math.max(0, Math.floor(Number(preservedAssessment.selectedDrain) || 0)),
+      selectedNet: Math.floor(Number(preservedAssessment.selectedNet) || 0),
+      selectionReasons: clone(
+        Array.isArray(preservedAssessment.selectionReasons) ? preservedAssessment.selectionReasons : []
+      ),
+      operationTieBreak: line(preservedAssessment.operationTieBreak, 500)
     };
   }
 
@@ -9735,6 +10099,11 @@ function CharacterContinuity(hook, incomingText) {
     plan.selectedOperationKind = "";
     plan.selectedCandidate = null;
     plan.operationCandidates = [];
+    plan.assessmentScheduledKind = "";
+    plan.assessmentTurningPointChoices = [];
+    plan.assessmentAdvertisedKinds = [];
+    plan.assessmentScopeComplete = false;
+    plan.assessmentFrozenSelection = null;
     plan.selectedEvidenceSignature = "";
     plan.selectedGain = 0;
     plan.selectedDrain = 0;
@@ -9751,6 +10120,8 @@ function CharacterContinuity(hook, incomingText) {
     const ids = unique(Array.isArray(plan.retryEvidenceIds) ? plan.retryEvidenceIds : [], 40);
     if (!owner || !TASK_OPERATION_KINDS.includes(kind) || !ids.length) return false;
     if (kind === ASSESSMENT_OPERATION_KIND) {
+      const scheduledKind = keyOf(plan.assessmentScheduledKind);
+      if (!MODEL_OPERATION_KINDS.includes(scheduledKind)) return false;
       const frozen = plan.retryEvidenceEligibility && typeof plan.retryEvidenceEligibility === "object"
         ? plan.retryEvidenceEligibility
         : {};
@@ -9758,8 +10129,8 @@ function CharacterContinuity(hook, incomingText) {
         const item = evidenceForId(id);
         const eligibility = frozen[id];
         return !!(item && /^E\d+$/.test(id) && eligibility
-          && ["name", "state", "relationship", "view", "turning"].some(field => eligibility[field] === true)
-          && !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]));
+          && eligibility[scheduledKind] === true
+          && !assessmentFamilyReviewed(item, owner, scheduledKind));
       });
     }
     const rawIds = ids.filter(id => /^E\d+$/.test(id));
@@ -9847,7 +10218,10 @@ function CharacterContinuity(hook, incomingText) {
     record.taskDelivered = plan.taskDelivered === true;
     record.ownerKey = normalizedTargetKey(plan.ownerKey);
     record.ownerName = owner ? owner.name : "";
-    record.operationKind = keyOf(plan.selectedOperationKind);
+    record.operationKind = keyOf(plan.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      && MODEL_OPERATION_KINDS.includes(keyOf(plan.assessmentScheduledKind))
+      ? keyOf(plan.assessmentScheduledKind)
+      : keyOf(plan.selectedOperationKind);
     record.ownerOpportunity = Math.max(0, Math.floor(Number(plan.ownerOpportunity) || 0));
     record.selectionFrozen = plan.operationSelectionFrozen === true;
     record.selectedGain = Math.max(0, Math.floor(Number(plan.selectedGain) || 0));
@@ -9880,7 +10254,10 @@ function CharacterContinuity(hook, incomingText) {
     const owner = characters.find(character => character.key === plan.ownerKey) || null;
     record.ownerKey = normalizedTargetKey(plan.ownerKey) || record.ownerKey;
     record.ownerName = owner ? owner.name : record.ownerName;
-    record.operationKind = keyOf(plan.selectedOperationKind) || record.operationKind;
+    record.operationKind = (keyOf(plan.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      && MODEL_OPERATION_KINDS.includes(keyOf(plan.assessmentScheduledKind))
+      ? keyOf(plan.assessmentScheduledKind)
+      : keyOf(plan.selectedOperationKind)) || record.operationKind;
     record.ownerOpportunity = Math.max(0, Math.floor(Number(plan.ownerOpportunity) || record.ownerOpportunity || 0));
     record.selectionFrozen = plan.operationSelectionFrozen === true || record.selectionFrozen;
     record.selectedGain = Math.max(0, Math.floor(Number(plan.selectedGain) || record.selectedGain || 0));
@@ -9908,6 +10285,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function beginInput(inputValue) {
+    CC.preparedContinuePlan = null;
     const discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     const observedActionCount = platformActionCount();
     const discardedActionCount = discardedPlan && Number.isFinite(Number(discardedPlan.actionCount))
@@ -10057,10 +10435,12 @@ function CharacterContinuity(hook, incomingText) {
     if (!clearlyNewAction && discardedPlan && discardedPlan.completed
       && CC.preGenerationSnapshot && CC.lastVisibleOutputAnchor && !outputAnchorPresent(contextValue)) {
       const discardedRestored = restoreDiscardedGeneration();
-      const retryOpportunity = discardedPlan.opportunity === true;
+      CC.preparedContinuePlan = null;
+      clearOwnedFrontMemoryState();
       CC.currentPlan = {
         kind: "retry", retry: true, opening: false,
-        genuine: false, opportunity: retryOpportunity,
+        genuine: false, opportunity: false,
+        contextOnlyRetryUnsupported: true,
         actionCount: Number.isFinite(Number(discardedPlan.actionCount))
           ? Math.max(0, Math.floor(Number(discardedPlan.actionCount)))
           : observedActionCount,
@@ -10069,27 +10449,16 @@ function CharacterContinuity(hook, incomingText) {
         inputEvidenceId: discardedPlan.inputEvidenceId || "",
         retryFocusKey: discardedPlan.ownerKey || discardedPlan.focusKey || "",
         retryActiveKeys: clone(discardedPlan.activeKeys || []),
-        relationshipPace: clone(discardedPlan.relationshipPace || runtime.relationshipPace),
-        ...(retryOpportunity ? {
-          retryTargets: clone(discardedPlan.targets || []),
-          retryEvidenceIds: clone(discardedPlan.evidenceIds || []),
-          retryEvidenceEligibility: clone(discardedPlan.evidenceEligibility || {}),
-          retrySourcePacket: clone(discardedPlan.sourcePacket || []),
-          retrySourcePacketText: textOf(discardedPlan.sourcePacketText),
-          retryOperationTaskText: textOf(discardedPlan.operationTaskText),
-          retryOperationTaskKind: line(discardedPlan.operationTaskKind, 40),
-          ...frozenOperationSelectionFrom(discardedPlan),
-          ...(discardedPlan.pendingOperationRetry === true ? {
-            pendingOperationRetry: true,
-            pendingRetrySourceInputCount: Math.max(
-              0, Math.floor(Number(discardedPlan.pendingRetrySourceInputCount) || 0)
-            ),
-            pendingRetrySourceActionCount: Number.isFinite(Number(discardedPlan.pendingRetrySourceActionCount))
-              ? Math.max(0, Math.floor(Number(discardedPlan.pendingRetrySourceActionCount)))
-              : -1,
-            pendingRetrySourceKind: line(discardedPlan.pendingRetrySourceKind, 40)
-          } : {})
-        } : {})
+        activeKeys: clone(discardedPlan.activeKeys || []),
+        modelActiveKeys: clone(discardedPlan.modelActiveKeys || []),
+        focusKey: discardedPlan.ownerKey || discardedPlan.focusKey || "",
+        ownerKey: "",
+        preparedFrontTaskText: "",
+        preparedTaskMode: "none",
+        operationTaskPrepared: false,
+        frontMemoryPrepared: false,
+        frontMemoryVerified: false,
+        relationshipPace: clone(discardedPlan.relationshipPace || runtime.relationshipPace)
       };
       CC.last.retry = true;
       CC.last.continue = false;
@@ -10099,27 +10468,53 @@ function CharacterContinuity(hook, incomingText) {
       }
       CC.last.candidate = "rolled back";
       CC.last.update = "None";
-      CC.last.output = "Retry/revision restored the pre-generation snapshot, including provenance, operation meters, drains, Names, Relationships, Turning Points, and consumed evidence.";
+      CC.last.output = "Retry/revision restored the pre-generation snapshot. Because no Input phase ran before this Context pass, the mutually exclusive prior and next tasks could not be restaged safely; this response receives no continuity operation.";
       if (!discardedRestored) {
         CC.last.output += " One or more managed Story Cards could not be restored exactly.";
       }
       return CC.currentPlan;
     }
 
-    const actionOpportunity = observedActionCount === null || clearlyNewAction;
+    const actionOpportunity = clearlyNewAction;
     if (!actionOpportunity) {
-      CC.currentPlan = {
-        kind: "preview", retry: false, opening: false, genuine: false, opportunity: false,
-        actionCount: observedActionCount,
-        revisionSourcePlan: discardedPlan && discardedPlan.completed ? clone(discardedPlan) : null,
-        task: "none", taskDelivered: false, completed: false, castProgressApplied: false
-      };
       CC.last.retry = false;
       CC.last.continue = false;
-      return CC.currentPlan;
+      return CC.currentPlan || {
+        kind: "preview", retry: false, opening: false, genuine: false, opportunity: false,
+        actionCount: observedActionCount,
+        task: "none", taskDelivered: false, completed: false, castProgressApplied: false
+      };
     }
 
     CC.preGenerationSnapshot = captureSnapshot();
+    const preparedAfterActionCount = CC.preparedContinuePlan
+      && Number.isFinite(Number(CC.preparedContinuePlan.preparedAfterActionCount))
+      ? Math.max(-1, Math.floor(Number(CC.preparedContinuePlan.preparedAfterActionCount)))
+      : -1;
+    const completedActionCount = Number.isFinite(Number(CC.lastCompletedActionCount))
+      ? Math.max(-1, Math.floor(Number(CC.lastCompletedActionCount)))
+      : -1;
+    const preparedContinue = CC.preparedContinuePlan
+      && typeof CC.preparedContinuePlan === "object"
+      && !Array.isArray(CC.preparedContinuePlan)
+      && CC.preparedContinuePlan.preparedForContinue === true
+      && preparedAfterActionCount === completedActionCount
+      ? clone(CC.preparedContinuePlan)
+      : null;
+    if (preparedContinue) {
+      preparedContinue.kind = "action";
+      preparedContinue.actionCount = observedActionCount;
+      preparedContinue.completed = false;
+      preparedContinue.genuine = false;
+      preparedContinue.opportunity = true;
+      delete preparedContinue.preparedForContinue;
+      delete preparedContinue.preparedAfterActionCount;
+      CC.currentPlan = preparedContinue;
+      CC.preparedContinuePlan = null;
+      CC.last.retry = false;
+      CC.last.continue = true;
+      return CC.currentPlan;
+    }
     CC.currentPlan = {
       kind: "action", retry: false, opening: false, genuine: false, opportunity: true,
       actionCount: observedActionCount,
@@ -10389,18 +10784,26 @@ function CharacterContinuity(hook, incomingText) {
       .filter(item => item && /^E\d+$/.test(item.id) && (!frozen || frozen.has(item.id)))
       .filter(item => openingEvidenceEligible(item, recent))
       .filter(item => viewEvidenceAge(item, owner, opportunityOverride) < maximumAge)
-      .filter(item => !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]))
       .map(item => ({
         item,
-        // Raw E# rows carry no scripted semantic classification. Every direct
-        // operation form may cite them; the model supplies the meaning.
-        nameEligible: true,
-        stateEligible: true,
-        relationshipEligible: true,
-        viewEligible: true,
-        turningEligible: true,
+        // Raw E# rows carry no scripted semantic classification. Each family
+        // remains independently reviewable until that owner receives a
+        // complete family-scoped K. Mechanical age and prior-use rules still
+        // apply before a family can be scheduled.
+        nameEligible: !assessmentFamilyReviewed(item, owner, "name")
+          && nameEvidenceEligible(item, owner, recent, "", "", opportunityOverride),
+        stateEligible: !assessmentFamilyReviewed(item, owner, "state")
+          && stateEvidenceEligible(item, owner, recent),
+        relationshipEligible: !assessmentFamilyReviewed(item, owner, "relationship")
+          && relationshipEvidenceEligible(item, owner, recent, "", opportunityOverride),
+        viewEligible: !assessmentFamilyReviewed(item, owner, "view")
+          && viewEvidenceEligible(item, owner, recent, "", opportunityOverride),
+        turningEligible: !assessmentFamilyReviewed(item, owner, "turning")
+          && turningPointEvidenceEligible(item, owner, recent, "", opportunityOverride),
         age: viewEvidenceAge(item, owner, opportunityOverride)
       }))
+      .filter(candidate => candidate.nameEligible || candidate.stateEligible
+        || candidate.relationshipEligible || candidate.viewEligible || candidate.turningEligible)
       .sort((left, right) => {
         if (order) return (order.get(left.item.id) ?? Number.MAX_SAFE_INTEGER)
           - (order.get(right.item.id) ?? Number.MAX_SAFE_INTEGER);
@@ -10710,6 +11113,20 @@ function CharacterContinuity(hook, incomingText) {
       add({ code: "B" + buriedNumber++, key: record.targetKey, name: modelViewTargetName(record), mode: "buried", relationship: false, nameSubject: false });
     });
     return result;
+  }
+
+  function boundedAssessmentTargets(targets, owner) {
+    const source = Array.isArray(targets) ? targets : [];
+    const limit = Math.max(1, Number(settings.MAX_ASSESSMENT_TARGETS) || 5);
+    if (source.length <= limit) return source;
+    const fixed = source.filter(target => target && (target.key === "self" || target.key === "player"))
+      .slice(0, limit);
+    const other = source.filter(target => target && !fixed.includes(target));
+    const available = Math.max(0, limit - fixed.length);
+    if (!available || !other.length) return fixed;
+    const opportunity = owner ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) : 0;
+    const offset = opportunity % other.length;
+    return fixed.concat(other.slice(offset).concat(other.slice(0, offset)).slice(0, available));
   }
 
 
@@ -12063,21 +12480,15 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function operationDrainForCandidate(candidate, ownerOpportunity) {
-    if (!candidate || candidate.gain <= 0 || !candidate.evidenceSignature) return 0;
+    if (!candidate) return 0;
     const ownerKey = line(candidate.ownerKey, 160);
     const kind = keyOf(candidate.kind);
-    const targetKey = normalizedTargetKey(candidate.targetKey);
-    const field = keyOf(candidate.field);
-    const destination = keyOf(candidate.destination);
+    if (!ownerKey || !MODEL_OPERATION_KINDS.includes(kind)) return 0;
     const matching = (Array.isArray(CC.operationState.drains) ? CC.operationState.drains : [])
       .map(normalizeOperationDrainRecord)
       .filter(record => record
         && record.ownerKey === ownerKey
-        && record.kind === kind
-        && record.evidenceSignature === candidate.evidenceSignature
-        && (!targetKey || record.targetKey === targetKey)
-        && (!field || keyOf(record.field) === field)
-        && (!destination || keyOf(record.destination) === destination));
+        && record.kind === kind);
     if (!matching.length) return 0;
     const latest = matching.slice().sort((left, right) => right.updatedOpportunity - left.updatedOpportunity)[0];
     if (keyOf(latest.lastResult) === "omitted") {
@@ -12511,37 +12922,91 @@ function CharacterContinuity(hook, incomingText) {
       return;
     }
     const scoringOpportunity = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) + 1;
-    const diagnosticCandidates = MODEL_OPERATION_KINDS.map(kind => ({
-      ...blankScoringCandidate(kind, owner),
-      diagnosticOnly: true,
-      ownerOpportunity: scoringOpportunity,
-      reasons: ["Semantic detection is delegated to the model-authored assessment."]
-    }));
-    const reviewable = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
-      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
-      .filter(candidate => !(candidate.item.assessedNoChangeBy
-        && candidate.item.assessedNoChangeBy[owner.key]))
-      .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+    const source = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
+      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id));
+    const ownerState = CC.operationState.owners[owner.key] || blankOwnerOperationState();
+    const rotationOffset = MODEL_OPERATION_KINDS.length
+      ? Math.max(0, scoringOpportunity - 1) % MODEL_OPERATION_KINDS.length
+      : 0;
+    const rotation = MODEL_OPERATION_KINDS.slice(rotationOffset)
+      .concat(MODEL_OPERATION_KINDS.slice(0, rotationOffset));
+    const rotationRank = new Map(rotation.map((kind, index) => [kind, index]));
+    const familyCandidates = MODEL_OPERATION_KINDS.map(kind => {
+      const eligibilityField = operationEligibilityField(kind);
+      const reviewable = source.filter(candidate => candidate[eligibilityField] === true)
+        .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+      const legalTargets = operationTargetsForKind(kind, targets);
+      const mechanicallyAvailable = kind === "turning"
+        ? legalTargets.some(target => target.key === "self")
+          && allAssessmentTurningPointChoices(owner).length > 0
+        : legalTargets.length > 0;
+      const meter = normalizeOperationMeter(ownerState[kind]);
+      const drain = operationDrainForCandidate({
+        ownerKey: owner.key,
+        kind,
+        gain: 1,
+        evidenceSignature: "family:" + kind
+      }, scoringOpportunity);
+      return {
+        kind,
+        ownerKey: owner.key,
+        targetKey: legalTargets[0] ? legalTargets[0].key : "",
+        field: "",
+        destination: "",
+        sourceIds: reviewable.map(candidate => candidate.item.id),
+        storyEvidenceIds: reviewable.map(candidate => candidate.item.id),
+        evidenceSignature: "family:" + kind,
+        gain: mechanicallyAvailable && reviewable.length ? 1 : 0,
+        drain,
+        net: mechanicallyAvailable && reviewable.length ? 1 - drain : -drain,
+        currentRelevance: reviewable.length
+          ? Math.max(...reviewable.map(candidate => operationCurrentRelevance(
+            candidate.item, currentInputId, recent
+          )))
+          : 0,
+        lastServedOpportunity: meter.lastServedOpportunity,
+        oldestEvidenceOrder: reviewable.length
+          ? Math.min(...reviewable.map(candidate => candidate.item.number))
+          : 0,
+        diagnosticOnly: true,
+        mechanicallyAvailable,
+        reasons: mechanicallyAvailable && reviewable.length
+          ? [operationKindLabel(kind) + " is structurally legal and has unreviewed evidence for this owner."]
+          : [operationKindLabel(kind) + " lacks a legal target, managed choice, or unreviewed evidence."]
+      };
+    });
+    const scheduled = familyCandidates.filter(candidate => candidate.gain > 0)
+      .sort((left, right) => left.drain - right.drain
+        || left.lastServedOpportunity - right.lastServedOpportunity
+        || right.currentRelevance - left.currentRelevance
+        || (left.oldestEvidenceOrder || Number.MAX_SAFE_INTEGER)
+          - (right.oldestEvidenceOrder || Number.MAX_SAFE_INTEGER)
+        || (rotationRank.get(left.kind) ?? MODEL_OPERATION_KINDS.length)
+          - (rotationRank.get(right.kind) ?? MODEL_OPERATION_KINDS.length))[0] || null;
+    const reviewable = scheduled
+      ? source.filter(candidate => candidate[operationEligibilityField(scheduled.kind)] === true)
+        .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1))
+      : [];
     const sourceIds = reviewable.map(candidate => candidate.item.id);
-    const selected = sourceIds.length ? {
+    const selected = scheduled && sourceIds.length ? {
       kind: ASSESSMENT_OPERATION_KIND,
       ownerKey: owner.key,
       targetKey: "self",
-      field: "",
+      field: scheduled.kind,
       destination: "",
       sourceIds,
       storyEvidenceIds: sourceIds.slice(),
       sourceMetadata: {},
       evidenceSignature: "",
-      gain: 0,
-      drain: 0,
-      net: 0,
+      gain: 1,
+      drain: scheduled.drain,
+      net: 1 - scheduled.drain,
       currentRelevance: reviewable.length
         ? Math.max(...reviewable.map(candidate => operationCurrentRelevance(
           candidate.item, currentInputId, recent
         )))
         : 0,
-      lastServedOpportunity: -1,
+      lastServedOpportunity: scheduled.lastServedOpportunity,
       oldestEvidenceOrder: reviewable.length
         ? Math.min(...reviewable.map(candidate => candidate.item.number))
         : 0,
@@ -12551,7 +13016,8 @@ function CharacterContinuity(hook, incomingText) {
       allowedDestinations: [],
       allowedModes: [],
       managedSignature: "",
-      reasons: ["Fresh completed evidence is ready for model-authored semantic assessment."]
+      reasons: ["The " + operationKindLabel(scheduled.kind)
+        + " family had the lowest owner-family drain and is ready for model-authored assessment."]
     } : null;
     if (selected) selected.evidenceSignature = operationEvidenceSignature(
       selected,
@@ -12559,18 +13025,20 @@ function CharacterContinuity(hook, incomingText) {
     );
     plan.operationSelectionFrozen = true;
     plan.semanticAssessment = !!selected;
+    plan.assessmentScheduledKind = selected ? scheduled.kind : "";
     plan.selectedOperationKind = selected ? ASSESSMENT_OPERATION_KIND : "";
     plan.selectedCandidate = selected ? clone(selected) : null;
-    plan.operationCandidates = clone(diagnosticCandidates);
+    plan.operationCandidates = clone(familyCandidates);
     plan.selectedEvidenceSignature = selected ? selected.evidenceSignature : "";
-    plan.selectedGain = 0;
-    plan.selectedDrain = 0;
-    plan.selectedNet = 0;
+    plan.selectedGain = selected ? selected.gain : 0;
+    plan.selectedDrain = selected ? selected.drain : 0;
+    plan.selectedNet = selected ? selected.net : 0;
     plan.routingTargets = selected ? clone(Array.isArray(targets) ? targets : []) : [];
     plan.selectionReasons = selected
-      ? ["A bounded model-authored semantic assessment was scheduled over fresh completed evidence."]
-      : ["No unreviewed completed evidence remained eligible for semantic assessment."];
-    plan.operationTieBreak = "The model selects semantic meaning; JavaScript supplies structure and legal mechanics only.";
+      ? ["Scheduled exactly one " + operationKindLabel(scheduled.kind) + " family assessment for "
+        + owner.name + "; the model still decides whether the supplied evidence supports that family."]
+      : ["No operation family had both legal mechanics and unreviewed completed evidence."];
+    plan.operationTieBreak = "Lowest owner-family drain, then longest since served, current relevance, oldest evidence, and rotating stable fallback.";
   }
 
   function operationOpportunityFrozen(plan) {
@@ -12719,8 +13187,11 @@ function CharacterContinuity(hook, incomingText) {
     return bestIndex;
   }
 
-  function operationEvidenceSnippet(owner, target, kind, value, selectedCandidate) {
-    const maximum = settings.MAX_OPERATION_EVIDENCE_CHARS;
+  function operationEvidenceSnippet(owner, target, kind, value, selectedCandidate, maximumOverride = null) {
+    const requestedMaximum = Number(maximumOverride);
+    const maximum = Number.isFinite(requestedMaximum) && requestedMaximum > 0
+      ? Math.min(settings.MAX_OPERATION_EVIDENCE_CHARS, Math.max(80, Math.floor(requestedMaximum)))
+      : settings.MAX_OPERATION_EVIDENCE_CHARS;
     const source = canonicalOutput(value);
     if (source.length <= maximum) return source;
     const keywordPatterns = {
@@ -13147,11 +13618,33 @@ function CharacterContinuity(hook, incomingText) {
     return ["<SYSTEM>", ...currentOperationAuthorityLines(), ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
   }
 
-  function assessmentEvidenceCodes(candidate) {
-    return candidate && candidate.item ? ["S", "N", "R", "V", "T"] : [];
+  function assessmentEvidenceCodes(candidate, availability = null) {
+    if (!candidate || !candidate.item) return [];
+    const allowed = availability && typeof availability === "object" ? availability : {
+      state: true, name: true, relationship: true, view: true, turning: true
+    };
+    return [
+      allowed.state && candidate.stateEligible === true ? "S" : "",
+      allowed.name && candidate.nameEligible === true ? "N" : "",
+      allowed.relationship && candidate.relationshipEligible === true ? "R" : "",
+      allowed.view && candidate.viewEligible === true ? "V" : "",
+      allowed.turning && candidate.turningEligible === true ? "T" : ""
+    ].filter(Boolean);
   }
 
-  function assessmentTurningPointChoices(owner) {
+  function assessmentEvidenceCodesForFamily(candidate, kind) {
+    const normalizedKind = keyOf(kind);
+    const availability = {
+      state: normalizedKind === "state",
+      name: normalizedKind === "name",
+      relationship: normalizedKind === "relationship",
+      view: normalizedKind === "view",
+      turning: normalizedKind === "turning"
+    };
+    return assessmentEvidenceCodes(candidate, availability);
+  }
+
+  function allAssessmentTurningPointChoices(owner, referenceChars = 80) {
     if (!owner || runtime.turningPointMode === "disabled") return [];
     refreshTurningPointsStore();
     const ownerData = turningPointsForOwner(owner.key);
@@ -13166,7 +13659,7 @@ function CharacterContinuity(hook, incomingText) {
         modes.push("Support");
         const card = turningPointStageCard(record, nextStage);
         references.push("Support=" + shortenProfileValue(
-          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), 110
+          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), referenceChars
         ));
       }
       const achieved = TURNING_POINT_STAGES[3];
@@ -13174,7 +13667,7 @@ function CharacterContinuity(hook, incomingText) {
       if (score < 30 && turningPointStageCardValid(record, owner, achieved)
         && breakthrough && breakthrough.text && !breakthrough.invalid) {
         modes.push("Breakthrough");
-        references.push("Breakthrough=" + shortenProfileValue(breakthrough.text, 110));
+        references.push("Breakthrough=" + shortenProfileValue(breakthrough.text, referenceChars));
       }
       const integrating = TURNING_POINT_STAGES[4];
       if (score >= 30 && score < integrating.maximum
@@ -13182,7 +13675,7 @@ function CharacterContinuity(hook, incomingText) {
         modes.push("Integration");
         const card = turningPointStageCard(record, integrating);
         references.push("Integration=" + shortenProfileValue(
-          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), 110
+          extractLine(entryOf(card), "Entry") || entryOf(card).replace(/[{}]/g, " "), referenceChars
         ));
       }
       return modes.length ? {
@@ -13197,80 +13690,230 @@ function CharacterContinuity(hook, incomingText) {
     }).filter(Boolean);
   }
 
-  function semanticAssessmentTask(owner, targets, evidenceCandidates) {
+  function assessmentTurningPointChoices(owner, referenceChars = 80, maximumChoices = 3) {
+    const choices = allAssessmentTurningPointChoices(owner, referenceChars);
+    const limit = Math.max(0, Math.min(
+      settings.MAX_ASSESSMENT_TURNING_POINT_CHOICES,
+      Math.floor(Number(maximumChoices) || 0)
+    ));
+    if (!limit || !choices.length) return [];
+    const offset = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) % choices.length;
+    return choices.slice(offset).concat(choices.slice(0, offset)).slice(0, limit);
+  }
+
+  function advertisedAssessmentTurningPointChoices(owner, taskText) {
+    const current = allAssessmentTurningPointChoices(owner, 80);
+    if (!current.length) return [];
+    return textOf(taskText).split("\n").map(value => {
+      const match = value.trim().match(/^TP\s+([^\s|]+)\s*\|\s*([A-Za-z/]+)\s*\|/);
+      if (!match) return null;
+      const choice = current.find(item => item.id === canonicalTurningPointId(match[1]));
+      if (!choice) return null;
+      const modes = match[2].split("/").map(value => line(value, 40))
+        .filter(mode => choice.modes.includes(mode));
+      return modes.length ? {
+        id: choice.id,
+        modes,
+        managedSignature: choice.managedSignature
+      } : null;
+    }).filter(Boolean);
+  }
+
+  function semanticAssessmentTask(owner, targets, evidenceCandidates, options = null) {
+    const configuration = options && typeof options === "object" ? options : {};
+    const allowedKinds = new Set(Array.isArray(configuration.allowedKinds)
+      ? configuration.allowedKinds.map(keyOf).filter(kind => MODEL_OPERATION_KINDS.includes(kind))
+      : MODEL_OPERATION_KINDS);
+    const scheduledKind = allowedKinds.size === 1 ? Array.from(allowedKinds)[0] : "";
+    const evidenceChars = Math.max(80, Math.min(
+      settings.MAX_OPERATION_EVIDENCE_CHARS,
+      Math.floor(Number(configuration.evidenceChars) || settings.MAX_OPERATION_EVIDENCE_CHARS)
+    ));
+    const turningReferenceChars = Math.max(40, Math.floor(Number(configuration.turningReferenceChars) || 80));
+    const turningChoiceLimit = Math.max(0, Math.floor(Number.isFinite(Number(configuration.turningChoiceLimit))
+      ? Number(configuration.turningChoiceLimit)
+      : 3));
     const evidence = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
       .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
       .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
     if (!owner || !evidence.length) return "";
     const evidenceIds = evidence.map(candidate => candidate.item.id);
     const evidenceField = evidenceIds.join(",");
-    const rows = evidence.map(candidate => {
-      const codes = assessmentEvidenceCodes(candidate);
-      const snippet = operationEvidenceSnippet(owner, null, "", candidate.item.text, null);
-      return candidate.item.id + "[" + codes.join("") + "]: " + snippet;
-    });
     const stateTargets = operationTargetsForKind("state", targets);
     const nameTargets = operationTargetsForKind("name", targets);
     const relationshipTargets = operationTargetsForKind("relationship", targets);
     const viewTargets = operationTargetsForKind("view", targets);
-    const turningChoices = evidence.some(candidate => candidate.turningEligible === true)
-      ? assessmentTurningPointChoices(owner)
+    const turningChoices = allowedKinds.has("turning")
+      && evidence.some(candidate => candidate.turningEligible === true)
+      ? assessmentTurningPointChoices(owner, turningReferenceChars, turningChoiceLimit)
       : [];
+    const availability = {
+      state: allowedKinds.has("state") && !!stateTargets.length
+        && evidence.some(candidate => candidate.stateEligible === true),
+      name: allowedKinds.has("name") && !!nameTargets.length
+        && evidence.some(candidate => candidate.nameEligible === true),
+      relationship: allowedKinds.has("relationship") && !!relationshipTargets.length
+        && evidence.some(candidate => candidate.relationshipEligible === true),
+      view: allowedKinds.has("view") && !!viewTargets.length
+        && evidence.some(candidate => candidate.viewEligible === true),
+      turning: allowedKinds.has("turning") && !!turningChoices.length
+        && evidence.some(candidate => candidate.turningEligible === true)
+    };
+    const rows = evidence.map(candidate => {
+      const codes = assessmentEvidenceCodes(candidate, availability);
+      const snippet = operationEvidenceSnippet(owner, null, "", candidate.item.text, null, evidenceChars);
+      return candidate.item.id + "[" + (codes.join("") || "K") + "]: " + snippet;
+    });
     const forms = [
       "K unchanged: (CCO|K|S|" + evidenceField + "|Explanation)"
     ];
-    if (stateTargets.length && evidence.some(candidate => candidate.stateEligible === true)) {
-      forms.push("S State: (CCO|S|AboutCode|EvidenceIDs|TriggerList|Situation|Thought)");
+    if (availability.state) {
+      forms.push("S: (CCO|S|AboutCode|EvidenceIDs|TriggerList|Situation|Thought)");
     }
-    if (nameTargets.length && evidence.some(candidate => candidate.nameEligible === true)) {
-      forms.push("N Name: (CCO|N|SubjectCode|EvidenceIDs|Alias|Transition|Use|Explanation)");
+    if (availability.name) {
+      forms.push("N: (CCO|N|SubjectCode|EvidenceIDs|Alias|Transition|Use|Explanation)");
     }
-    if (relationshipTargets.length && evidence.some(candidate => candidate.relationshipEligible === true)) {
-      forms.push("R Relationship: (CCO|R|TargetCode|EvidenceIDs|Field|D|Destination|Explanation)");
+    if (availability.relationship) {
+      forms.push("R: (CCO|R|TargetCode|EvidenceIDs|Field|D|Destination|Explanation)");
     }
-    if (viewTargets.length && evidence.some(candidate => candidate.viewEligible === true)) {
-      forms.push("V View: (CCO|V|TargetCode|EvidenceIDs|Destination|Mode|Explanation)");
+    if (availability.view) {
+      forms.push("V: (CCO|V|TargetCode|EvidenceIDs|Destination|Mode|Explanation)");
     }
-    if (turningChoices.length) {
-      forms.push("T Turning Point: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
+    if (availability.turning) {
+      forms.push("T: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
     }
-    const targetRows = [
-      stateTargets.length ? "State About codes: " + stateTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      nameTargets.length ? "Name Subject and Use codes: " + nameTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      relationshipTargets.length ? "Relationship targets: " + relationshipTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      viewTargets.length ? "View targets: " + viewTargets.map(target => target.code + "=" + target.name
-        + (target.mode === "buried" ? "[buried]" : (target.mode === "recovering" ? "[recovering]" : ""))).join(", ") : ""
-    ].filter(Boolean);
-    const relationshipDestinations = RELATIONSHIP_FIELDS.map(field => field + "="
-      + relationshipOperationDestinations(field, null).join("/")).join("; ");
+    const advertisedTargets = targets.map(target => {
+        const capabilities = [
+          availability.state && stateTargets.includes(target) ? "S" : "",
+          availability.name && nameTargets.includes(target) ? "N" : "",
+          availability.relationship && relationshipTargets.includes(target) ? "R" : "",
+          availability.view && viewTargets.includes(target) ? "V" : ""
+        ].filter(Boolean).join("");
+        const mode = target.mode === "buried" ? ";buried" : (target.mode === "recovering" ? ";recovering" : "");
+        return capabilities ? target.code + "=" + shortenProfileValue(target.name, 60)
+          + "[" + capabilities + mode + "]" : "";
+      }).filter(Boolean);
+    const targetRows = advertisedTargets.length
+      ? ["Targets [SNRV]: " + advertisedTargets.join(", ")]
+      : [];
+    const relationshipDestinations = availability.relationship
+      ? RELATIONSHIP_FIELDS.map(field => field + "="
+        + relationshipOperationDestinations(field, null).join("/")).join("; ")
+      : "";
     const turningRows = turningChoices.map(choice => "TP " + choice.id
-      + (choice.handle ? " [portrayal handle " + choice.handle + "]" : "") + " " + choice.title
-      + " | current " + choice.progress + " | movements " + choice.modes.join("/")
-      + " | " + choice.references.join("; "));
+      + " | " + choice.modes.join("/") + " | " + choice.references.join("; "));
     const rules = [
       "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
-      "Use this final CC CURRENT ASSESSMENT block as the complete output task for this response.",
-      "Assess the supplied completed evidence for " + owner.name + ". Select the continuity meaning and supply every operation detail.",
-      "Each raw Evidence row can support any available operation form. Select one or more supplied IDs for an operation and preserve their supplied order. K copies the complete supplied ID list and records a completed assessment with continuity unchanged.",
-      "Evidence:",
+      "Owner: " + owner.name + ". Use only Evidence and legal values; fill one form.",
+      scheduledKind ? "Scheduled family: " + operationKindLabel(scheduledKind)
+        + ". Assess only this family; K means its shown scope is unchanged." : "",
+      "Cite 1+ IDs in order. K cites all: shown scope unchanged.",
+      "Evidence [legal forms]:",
       ...rows,
       ...targetRows,
-      "State TriggerList selects 1-3 codes: " + TRIGGER_CODES.join(",") + ". Situation is a concise completed event; Thought is direct first-person inner speech.",
-      "Name Transition: Observed, Adopted, Retired, Rejected, Reactivated, or Replace=OldAlias. Use: General, None, or comma-separated Name codes.",
-      "Relationship fields and destinations: " + relationshipDestinations + ". D records a completed direct event.",
-      "View destinations: " + VIEW_CATEGORIES.join("/") + ", plus Buried for an active known view or Recovered for a buried view. Mode O records a directly established durable judgment; M records bounded movement toward the destination.",
-      ...turningRows,
-      turningRows.length
-        ? "Turning Point StableID is the ID immediately after TP; its bracketed portrayal handle resolves to the same listed development."
+      availability.state ? "S: TriggerList=1-3 of " + TRIGGER_CODES.join(",")
+        + "; Situation=completed event; Thought=private first-person." : "",
+      availability.name
+        ? "N: Transition=Observed/Adopted/Retired/Rejected/Reactivated/Replace=OldAlias; Use=General/None/Name codes."
         : "",
-      "Explanation is one concise plain-text clause grounded in the cited evidence. Complete descriptive fields with plain text that keeps the record separators distinct.",
+      availability.relationship
+        ? "R: D=direct; " + relationshipDestinations + "."
+        : "",
+      availability.view ? "V: " + VIEW_CATEGORIES.join("/")
+        + "/Buried(active)/Recovered(buried); O=durable judgment; M=bounded movement." : "",
+      ...turningRows,
+      turningRows.length ? "T: StableID=ID after TP; use a listed movement." : "",
+      "Explanation: one grounded clause; no |.",
       "Available record forms:",
       ...forms,
       "Output order:",
-      "1. Complete exactly one available CCO record as the first nonblank output line.",
-      "2. Continue with complete story prose from the next line."
+      "1. Complete exactly one available CCO record as the first nonblank line.",
+      "2. Write complete story prose from the next line."
     ];
     return ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
+  }
+
+  function semanticAssessmentTaskWithinBudget(owner, targets, evidenceCandidates, tokenBudget, scheduledKind = "") {
+    const budget = Math.max(1, Math.floor(Number(tokenBudget) || settings.MAX_OPERATION_TASK_TOKENS));
+    const tiers = [
+      { evidenceChars: 300, turningReferenceChars: 80, turningChoiceLimit: 3 },
+      { evidenceChars: 250, turningReferenceChars: 70, turningChoiceLimit: 3 },
+      { evidenceChars: 220, turningReferenceChars: 60, turningChoiceLimit: 2 },
+      { evidenceChars: 180, turningReferenceChars: 50, turningChoiceLimit: 2 },
+      { evidenceChars: 160, turningReferenceChars: 40, turningChoiceLimit: 2 }
+    ];
+    const frozenKind = MODEL_OPERATION_KINDS.includes(keyOf(scheduledKind)) ? keyOf(scheduledKind) : "";
+    const kinds = frozenKind ? [frozenKind] : MODEL_OPERATION_KINDS.slice();
+    const opportunity = owner ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) : 0;
+    const offset = kinds.length ? opportunity % kinds.length : 0;
+    const priority = kinds.slice(offset).concat(kinds.slice(0, offset));
+    const priorityScore = new Map(priority.map((kind, index) => [kind, priority.length - index]));
+    const combinations = Array.from({ length: 1 << kinds.length }, (_, mask) => kinds
+      .filter((kind, index) => mask & (1 << index)))
+      .filter(combination => combination.length > 0)
+      .sort((left, right) => right.length - left.length
+        || right.reduce((sum, kind) => sum + (priorityScore.get(kind) || 0), 0)
+          - left.reduce((sum, kind) => sum + (priorityScore.get(kind) || 0), 0));
+    let last = "";
+    for (const allowedKinds of combinations) {
+      for (const tier of tiers) {
+        const task = semanticAssessmentTask(owner, targets, evidenceCandidates, {
+          ...tier,
+          allowedKinds
+        });
+        if (!task) continue;
+        if (frozenKind && !advertisedAssessmentOperationKinds(task).includes(frozenKind)) continue;
+        last = task;
+        if (estimateTokens(task) <= budget) return task;
+      }
+    }
+    return estimateTokens(last) <= budget ? last : "";
+  }
+
+  function advertisedAssessmentOperationKinds(taskText) {
+    const source = textOf(taskText);
+    return [
+      ["state", "S"],
+      ["name", "N"],
+      ["relationship", "R"],
+      ["view", "V"],
+      ["turning", "T"]
+    ].filter(([, code]) => new RegExp("^" + code + ": \\(CCO\\|" + code + "\\|", "m").test(source))
+      .map(([kind]) => kind);
+  }
+
+  function semanticAssessmentScopeComplete(owner, completeTargets, advertisedTargets, taskText, scheduledKind = "") {
+    const fullTargets = Array.isArray(completeTargets) ? completeTargets : [];
+    const shownTargets = Array.isArray(advertisedTargets) ? advertisedTargets : [];
+    const advertisedKinds = new Set(advertisedAssessmentOperationKinds(taskText));
+    const frozenKind = MODEL_OPERATION_KINDS.includes(keyOf(scheduledKind)) ? keyOf(scheduledKind) : "";
+    const possibleKinds = frozenKind ? [frozenKind] : MODEL_OPERATION_KINDS;
+    const legalKinds = possibleKinds.filter(kind => kind === "turning"
+      ? allAssessmentTurningPointChoices(owner).length > 0
+      : operationTargetsForKind(kind, fullTargets).length > 0);
+    if (frozenKind && legalKinds.length !== 1) return false;
+    if (legalKinds.some(kind => !advertisedKinds.has(kind))) return false;
+    const routeSignature = (kind, target) => [
+      kind,
+      line(target && target.code, 40),
+      normalizedTargetKey(target && target.key),
+      keyOf(target && target.mode)
+    ].join("|");
+    const targetFamiliesComplete = legalKinds.filter(kind => kind !== "turning").every(kind => {
+      const shownRoutes = new Set(
+        operationTargetsForKind(kind, shownTargets).map(target => routeSignature(kind, target))
+      );
+      return operationTargetsForKind(kind, fullTargets).every(target =>
+        shownRoutes.has(routeSignature(kind, target))
+      );
+    });
+    if (!targetFamiliesComplete) return false;
+    if (!legalKinds.includes("turning")) return true;
+    const fullTurningIds = allAssessmentTurningPointChoices(owner).map(choice => choice.id);
+    const advertisedTurningIds = new Set(
+      advertisedAssessmentTurningPointChoices(owner, taskText).map(choice => choice.id)
+    );
+    return fullTurningIds.every(id => advertisedTurningIds.has(id));
   }
 
   function operationTaskUsesForcedContract(value) {
@@ -13278,7 +13921,7 @@ function CharacterContinuity(hook, incomingText) {
     const assessmentContract = /(?:^|\n)CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX\b/i.test(source)
       && /K unchanged:\s*\(CCO\|K\|S\|[^\n]+\|Explanation\)/i.test(source)
       && /Available record forms:\s*[\s\S]*\(CCO\|[KSNRVT]\|/i.test(source)
-      && /Output order:\s*\n1\. Complete exactly one available CCO record as the first nonblank output line\.\s*\n2\. Continue with complete story prose from the next line\./i.test(source);
+      && /(?:Retry )?Output order:\s*\n1\. Complete exactly one available CCO record as the first nonblank(?: output)? line\.\s*\n2\. (?:Continue with|Write) complete story prose from the next line\./i.test(source);
     if (assessmentContract) return true;
     const legacyCompletionContract = source.includes(
       "Complete this scheduled continuity operation by replacing every capitalized placeholder with a concise completed value;"
@@ -13338,15 +13981,6 @@ function CharacterContinuity(hook, incomingText) {
       "<SYSTEM>",
       "CC CURRENT RESPONSE — STORY RECOVERY",
       "Use this final CC CURRENT RESPONSE block as the output task for this response. Write a complete scene response in ordinary story prose.",
-      "</SYSTEM>"
-    ].join("\n");
-  }
-
-  function currentStoryResponseTask() {
-    return [
-      "<SYSTEM>",
-      "CC CURRENT RESPONSE — STORY",
-      "Use this final CC CURRENT RESPONSE block as the output task for this response. Continue with complete story prose.",
       "</SYSTEM>"
     ].join("\n");
   }
@@ -13449,9 +14083,9 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function assembleContext(base, active, focus, currentInput, recent, plan) {
+  function assembleContext(base, active, focus, currentInput, recent, plan, controlOnly = false) {
     const components = [];
-    let tail = CC.recoveryPending ? recoveryTask() : currentStoryResponseTask();
+    let tail = CC.recoveryPending ? recoveryTask() : "";
     const selectedNames = [];
     const omittedNames = [];
     const selectedRelationships = [];
@@ -13473,7 +14107,7 @@ function CharacterContinuity(hook, incomingText) {
     let compactPortrayalFallbackUsed = false;
     let emergencyPortrayalFallbackUsed = false;
     let cacheLimitedPortrayal = false;
-    let portrayalTier = "full";
+    let portrayalTier = controlOnly ? "story-card" : "full";
     const operationCandidateReady = !!(
       plan && plan.opportunity && !CC.recoveryPending
       && TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
@@ -13485,12 +14119,13 @@ function CharacterContinuity(hook, incomingText) {
     const continuityEffectiveBudget = Math.min(effectiveBudget, continuityTurnBudget);
 
     const composition = (candidateComponents = components, candidateTail = tail, materialize = false) => {
-      const prefix = renderPortrayalComponents(candidateComponents);
-      const tokens = estimateTokens([prefix, candidateTail].filter(Boolean).join("\n"));
+      const prefix = controlOnly ? "" : renderPortrayalComponents(candidateComponents);
+      const fittedTail = controlOnly ? ownedFrontMemoryBlock(candidateTail) : candidateTail;
+      const tokens = estimateTokens([prefix, fittedTail].filter(Boolean).join("\n"));
       if (tokens > continuityTurnBudget) return { ok: false, reason: "continuity turn budget" };
       if (tokens > continuityEffectiveBudget) return { ok: false, reason: "effective context allowance" };
       const fitted = fitWithoutTrimming(
-        base, prefix, candidateTail, maxChars, recentChars, materialize, capacity
+        base, prefix, fittedTail, maxChars, recentChars, materialize, capacity
       );
       return fitted.ok ? { ok: true, tokens, fitted } : { ok: false, reason: fitted.reason };
     };
@@ -13801,7 +14436,10 @@ function CharacterContinuity(hook, incomingText) {
     ).filter(target => !hiddenRelevantKeys.has(target.key))
       .filter(target => target.mode !== "recovering" || selectedRecoveredTargets.has(target.key))
       .map(target => hiddenRelationshipKeys.has(target.key) ? { ...target, relationship: false } : target);
-    if ((plan.retry || plan.pendingOperationRetry)
+    const pendingAssessmentRebuild = plan.pendingOperationRetry === true
+      && keyOf(plan.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      && !textOf(plan.retryOperationTaskText).trim();
+    if ((plan.retry || plan.pendingOperationRetry) && !pendingAssessmentRebuild
       && Array.isArray(plan.retryTargets) && plan.retryTargets.length) targets = clone(plan.retryTargets);
     else if (operationOpportunityFrozen(plan) && Array.isArray(plan.targets) && plan.targets.length) targets = clone(plan.targets);
     else if (plan.operationSelectionFrozen === true
@@ -13809,11 +14447,18 @@ function CharacterContinuity(hook, incomingText) {
     const selectedOperationKind = TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
       ? keyOf(plan.selectedOperationKind)
       : "";
-    const operationTaskTokenBudget = Math.min(
+    const operationTaskHardBudget = Math.min(
       continuityEffectiveBudget,
       settings.MAX_OPERATION_TASK_TOKENS
     );
-    if (selectedOperationKind !== ASSESSMENT_OPERATION_KIND) {
+    const operationTaskTokenBudget = Math.max(1, operationTaskHardBudget
+      - Math.max(0, Number(settings.OPERATION_RETRY_HEADROOM_TOKENS) || 0));
+    const completeAssessmentTargets = selectedOperationKind === ASSESSMENT_OPERATION_KIND
+      ? clone(targets)
+      : [];
+    if (selectedOperationKind === ASSESSMENT_OPERATION_KIND) {
+      targets = boundedAssessmentTargets(targets, focus);
+    } else {
       targets = operationTargetsForKind(selectedOperationKind, targets);
     }
     const selectedOperationTargetKey = normalizedTargetKey(
@@ -14068,7 +14713,7 @@ function CharacterContinuity(hook, incomingText) {
     );
     if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && retryTaskText) {
       const retryEvidence = operationEvidence.slice();
-      const retryWithinTaskBudget = estimateTokens(retryTaskText) <= operationTaskTokenBudget;
+      const retryWithinTaskBudget = estimateTokens(retryTaskText) <= operationTaskHardBudget;
       if (!retryWithinTaskBudget) {
         taskDeferredReason = "The frozen Retry task exceeded the operation task budget.";
       } else if (!targets.length) {
@@ -14092,7 +14737,9 @@ function CharacterContinuity(hook, incomingText) {
       && requiredEvidence.length === selectedSourceIds.length) {
       let proposedEvidence = requiredEvidence.length ? requiredEvidence : [operationEvidence[0]];
       let proposedTail = selectedOperationKind === ASSESSMENT_OPERATION_KIND
-        ? semanticAssessmentTask(focus, targets, proposedEvidence)
+        ? semanticAssessmentTaskWithinBudget(
+          focus, targets, proposedEvidence, operationTaskTokenBudget, plan.assessmentScheduledKind
+        )
         : operationTaskForKind(
           selectedOperationKind, focus, targets, proposedEvidence, plan.inputEvidenceId || "", recent,
           plan.relationshipPace || runtime.relationshipPace, plan.selectedCandidate
@@ -14243,6 +14890,14 @@ function CharacterContinuity(hook, incomingText) {
     };
     const byType = type => estimateTokens(orderedComponents.filter(component => component.type === type)
       .map(component => component.text).join("\n"));
+    const assessmentScopeComplete = taskDelivered
+      && selectedOperationKind === ASSESSMENT_OPERATION_KIND
+      ? (retryTaskText && typeof plan.assessmentScopeComplete === "boolean"
+        ? plan.assessmentScopeComplete
+        : semanticAssessmentScopeComplete(
+          focus, completeAssessmentTargets, targets, tail, plan.assessmentScheduledKind
+        ))
+      : false;
     return {
       ok: true,
       text: final.fitted.text,
@@ -14267,19 +14922,19 @@ function CharacterContinuity(hook, incomingText) {
       selectedExperiences,
       omittedExperiences,
       tokens: final.tokens,
-      rulesTokens: byType("rules"),
-      outerTokens: byType("outer"),
-      namesTokens: byType("names"),
-      innerTokens: byType("inner"),
-      stateTokens: byType("state"),
-      relationshipsTokens: byType("relationships"),
-      turningPointsTokens: byType("turningPoints") + byType("turningPointAuthority"),
-      viewsTokens: byType("views"),
-      experiencesTokens: byType("experiences"),
+      rulesTokens: controlOnly ? 0 : byType("rules"),
+      outerTokens: controlOnly ? 0 : byType("outer"),
+      namesTokens: controlOnly ? 0 : byType("names"),
+      innerTokens: controlOnly ? 0 : byType("inner"),
+      stateTokens: controlOnly ? 0 : byType("state"),
+      relationshipsTokens: controlOnly ? 0 : byType("relationships"),
+      turningPointsTokens: controlOnly ? 0 : byType("turningPoints") + byType("turningPointAuthority"),
+      viewsTokens: controlOnly ? 0 : byType("views"),
+      experiencesTokens: controlOnly ? 0 : byType("experiences"),
       evidenceTokens: taskDelivered ? estimateTokens(
         selectedOperationKind === ASSESSMENT_OPERATION_KIND
           ? selectedEvidence.map(candidate => candidate.item.id + "["
-            + assessmentEvidenceCodes(candidate).join("") + "]: "
+            + assessmentEvidenceCodesForFamily(candidate, plan.assessmentScheduledKind).join("") + "]: "
             + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
           : evidencePacketForKind(
             focus, selectedOperationKind, selectedEvidence, plan.inputEvidenceId || "", recent,
@@ -14288,7 +14943,9 @@ function CharacterContinuity(hook, incomingText) {
       ) : 0,
       taskTokens: estimateTokens(tail),
       taskText: taskDelivered ? tail : "",
+      frontTaskText: taskDelivered || CC.recoveryPending ? tail : "",
       taskKind: taskDelivered ? selectedOperationKind : "",
+      assessmentScopeComplete,
       operationEvidenceSignature: taskDelivered && plan.selectedCandidate
         ? operationEvidenceSignature(plan.selectedCandidate, selectedEvidence.map(candidate => candidate.item))
         : "",
@@ -14297,6 +14954,257 @@ function CharacterContinuity(hook, incomingText) {
       headroom: Math.max(0, continuityEffectiveBudget - final.tokens),
       recentChars: final.fitted.recentChars
     };
+  }
+
+  function modelProjectionTitle(character) {
+    return settings.MODEL_CARD_TITLE_PREFIX + character.name;
+  }
+
+  function modelProjectionMarker(character) {
+    return settings.MODEL_CARD_KEY_PREFIX
+      + hashString("model-projection\u241f" + character.key).padStart(8, "0").toUpperCase();
+  }
+
+  function modelProjectionMarkerFromCard(card) {
+    return textOf(card && card.keys).split(",").map(value => value.trim())
+      .find(value => value.startsWith(settings.MODEL_CARD_KEY_PREFIX)) || "";
+  }
+
+  function managedModelProjectionRecords() {
+    return orderedUniqueOwnedCatalogRecords(currentCardCatalog().records.map(record => {
+      const marker = modelProjectionMarkerFromCard(record.card);
+      const character = marker
+        ? characters.find(candidate => modelProjectionMarker(candidate) === marker)
+        : null;
+      return character ? { card: record.card, ownerKey: character.key } : null;
+    }).filter(Boolean));
+  }
+
+  function captureManagedModelProjectionCards() {
+    return captureOwnedManagedCards(
+      managedModelProjectionRecords(),
+      characters.map(character => character.key)
+    );
+  }
+
+  function restoreManagedModelProjectionCards(snapshot) {
+    if (!Array.isArray(snapshot)) return false;
+    return restoreOwnedManagedCards(
+      snapshot,
+      managedModelProjectionRecords,
+      item => {
+        const marker = modelProjectionMarkerFromCard(item);
+        const character = marker
+          ? characters.find(candidate => modelProjectionMarker(candidate) === marker)
+          : null;
+        return character ? character.key : "";
+      },
+      characters.map(character => character.key)
+    );
+  }
+
+  function modelProjectionTriggers(character, currentInput, recent) {
+    const identity = nameIdentityForKey("npc:" + character.key);
+    if (!identity) return [character.name];
+    const identityData = namesForIdentity(identity.key);
+    const records = identityData && identityData.contextRecords || [];
+    const activeAliases = records
+      .filter(record => record.status === "Active"
+        && (record.use && record.use.permissions || []).some(permission => permission.key !== "none"))
+      .map(record => record.alias);
+    const mentionedManagedForms = records.filter(record =>
+      aliasMentioned([currentInput, recent].filter(Boolean).join("\n"), record.alias)
+    ).map(record => record.alias);
+    const forms = uniqueNameForms(
+      [character.name].concat(mentionedManagedForms, activeAliases),
+      160
+    ).filter(form => {
+      if (!form || form.includes(",")) return false;
+      const matches = identityReferenceMatches(form, false);
+      return matches.length === 1 && matches[0].key === identity.key;
+    });
+    return unique(forms, 160)
+      .filter(form => form && !form.includes(","))
+      .slice(0, settings.MAX_MODEL_CARD_TRIGGERS);
+  }
+
+  function projectionNameSelections(character, currentInput, recent, active) {
+    const identity = nameIdentityForKey("npc:" + character.key);
+    const identityData = identity ? namesForIdentity(identity.key) : null;
+    if (!identity || !identityData) return { identity, selections: [] };
+    const ranked = relevantNameRecords(identity, currentInput, recent, active);
+    const fallbackPriority = { Rejected: 0, Emerging: 1, Active: 2, Retired: 3 };
+    const fallback = identityData.contextRecords.slice().sort((left, right) =>
+      (fallbackPriority[left.status] ?? 9) - (fallbackPriority[right.status] ?? 9)
+        || left.page - right.page || left.line - right.line
+    ).map(record => ({ record, score: 0 }));
+    const selections = [];
+    ranked.concat(fallback).forEach(selection => {
+      if (!selection || !selection.record || selections.length >= 3) return;
+      if (!selections.some(item => item.record.aliasKey === selection.record.aliasKey)) selections.push(selection);
+    });
+    return { identity, selections };
+  }
+
+  function projectionRelationshipSelections(character, currentInput, recent, active) {
+    const ownerData = relationshipsForOwner(character.key);
+    const ranked = relevantRelationshipRecords(character, active, currentInput, recent);
+    const fallback = (ownerData && ownerData.contextRecords || []).map(record => ({
+      record,
+      fields: modelRelationshipFields(record),
+      score: record.targetKey === "player" ? 1 : 0
+    })).filter(selection => selection.fields.length)
+      .sort((left, right) => right.score - left.score || left.record.page - right.record.page
+        || left.record.line - right.record.line);
+    const selections = [];
+    ranked.concat(fallback).forEach(selection => {
+      if (!selection || !selection.record || selections.length >= 2) return;
+      if (!selections.some(item => item.record.targetKey === selection.record.targetKey)) selections.push(selection);
+    });
+    return selections;
+  }
+
+  function projectionViewSelections(character, currentInput, recent, active) {
+    const ownerData = viewsForOwner(character.key);
+    const ranked = relevantViewRecords(character, active, currentInput, recent, [], false);
+    const fallback = (ownerData && ownerData.activeRecords || []).slice()
+      .sort((left, right) => Number(right.targetKey === "player") - Number(left.targetKey === "player")
+        || left.page - right.page || left.line - right.line)
+      .map(record => ({ record, score: 0 }));
+    const selections = [];
+    ranked.concat(fallback).forEach(selection => {
+      if (!selection || !selection.record || selections.length >= 2) return;
+      if (!selections.some(item => item.record.targetKey === selection.record.targetKey)) selections.push(selection);
+    });
+    return selections;
+  }
+
+  function projectionExperienceSelection(character, currentInput, recent) {
+    const ownerData = experiencesForOwner(character.key);
+    const ranked = relevantExperienceRecords(character, currentInput, recent, []);
+    if (ranked.length) return ranked[0];
+    const fallback = (ownerData && ownerData.contextRecords || []).slice()
+      .sort((left, right) => right.page - left.page || right.line - left.line)[0] || null;
+    return fallback ? { record: fallback, score: 0 } : null;
+  }
+
+  function projectionTurningPointBlocks(character) {
+    const ownerData = turningPointsForOwner(character.key);
+    return (ownerData && ownerData.contextRecords || []).map(record => {
+      const resolution = turningPointStageCardResolution(record, character, record.progress.stageRecord);
+      if (!resolution.ok) return "";
+      const guidance = shortenProfileValue(
+        extractLine(resolution.entry, "Entry") || resolution.entry.replace(/[{}]/g, " "),
+        560
+      );
+      if (!guidance) return "";
+      return [
+        "{",
+        character.name + "'s current Development:",
+        "Arc: " + record.title,
+        "Stage: " + record.progress.normalized,
+        "Guidance: " + guidance,
+        "}"
+      ].join("\n");
+    }).filter(Boolean).slice(0, 2);
+  }
+
+  function modelProjectionEntry(character, currentInput, recent, active) {
+    const header = [
+      "Character continuity reference for " + character.name + ".",
+      "Use it only when " + character.name + " is already present or relevant; this card is not a reason to introduce the character.",
+      "Portray an independent perspective and keep private thoughts private unless the character chooses to reveal them. The player alone controls the player's actions, speech, inner life, identity, consent, boundaries, and commitments."
+    ].join("\n");
+    let anchors = [compactOperationOuterAnchor(character), compactOperationInnerAnchor(character)].filter(Boolean);
+    const compactCore = [header].concat(anchors).join("\n\n");
+    if (compactCore.length > settings.MAX_MODEL_CARD_CHARS) {
+      anchors = [emergencyPortrayalOuterAnchor(character), emergencyPortrayalInnerAnchor(character)].filter(Boolean);
+    }
+    const blocks = [header].concat(anchors);
+    const optional = [];
+    const stateBlock = temporaryStateLine(character);
+    if (stateBlock) optional.push(stateBlock);
+    optional.push(...projectionTurningPointBlocks(character));
+    const relationships = projectionRelationshipSelections(character, currentInput, recent, active);
+    const relationshipBlock = renderRelevantRelationshipsBlock(character, relationships);
+    if (relationshipBlock) optional.push(relationshipBlock);
+    const views = projectionViewSelections(character, currentInput, recent, active);
+    const viewsBlock = renderRelevantViewsBlock(character, views);
+    if (viewsBlock) optional.push(viewsBlock);
+    const names = projectionNameSelections(character, currentInput, recent, active);
+    const namesBlock = names.identity ? renderRelevantNamesBlock(names.identity, names.selections) : "";
+    if (namesBlock) optional.push(namesBlock);
+    const experience = projectionExperienceSelection(character, currentInput, recent);
+    const experienceBlock = experience ? renderRelevantExperienceBlock(character, experience) : "";
+    if (experienceBlock) optional.push(experienceBlock);
+    optional.forEach(block => {
+      const candidate = blocks.concat(block).join("\n\n");
+      if (candidate.length <= settings.MAX_MODEL_CARD_CHARS) blocks.push(block);
+    });
+    return blocks.join("\n\n");
+  }
+
+  function writeModelProjectionCard(character, currentInput, recent, active) {
+    const title = modelProjectionTitle(character);
+    const marker = modelProjectionMarker(character);
+    const triggers = modelProjectionTriggers(character, currentInput, recent);
+    const keys = [marker].concat(triggers).join(", ");
+    const entry = modelProjectionEntry(character, currentInput, recent, active);
+    const markerMatches = currentCardCatalog().records
+      .filter(record => modelProjectionMarkerFromCard(record.card) === marker)
+      .map(record => record.card);
+    const titleConflicts = catalogRecordsByTitle(title)
+      .map(record => record.card)
+      .filter(card => modelProjectionMarkerFromCard(card) !== marker);
+    if (markerMatches.length !== 1 && markerMatches.length !== 0) {
+      return { ok: false, label: character.name + " (duplicate generated cards)" };
+    }
+    if (titleConflicts.length) return { ok: false, label: character.name + " (title conflict)" };
+    const current = markerMatches[0] || null;
+    const saved = current
+      ? updateCardAt(cardIndex(current), keys, entry, settings.MODEL_CARD_TYPE, title, true)
+      : addCardExact(title, keys, entry, settings.MODEL_CARD_TYPE);
+    if (!saved || !exactCardFieldsMatch(saved, keys, entry, settings.MODEL_CARD_TYPE, title)) {
+      return { ok: false, label: character.name + " (write failed)" };
+    }
+    CC.cardHashes[title] = hashString(entry + "\u241f" + keys);
+    return {
+      ok: true,
+      label: character.name + " " + estimateTokens(entry) + "t / " + triggers.length + " trigger"
+        + (triggers.length === 1 ? "" : "s"),
+      tokens: estimateTokens(entry)
+    };
+  }
+
+  function refreshModelProjectionCards(currentInput = "", recent = "") {
+    refreshViewsStore(false);
+    refreshNamesStore();
+    applyManagedNameForms();
+    refreshRelationshipsStore();
+    refreshTurningPointsStore();
+    refreshExperiencesStore(false);
+    const eligible = characters.filter(character => !character.onboardingPending);
+    const desiredMarkers = new Set(eligible.map(modelProjectionMarker));
+    currentCardCatalog().records.filter(record => {
+      const marker = modelProjectionMarkerFromCard(record.card);
+      return marker && !desiredMarkers.has(marker);
+    }).map(record => record.card).sort((left, right) => cardIndex(right) - cardIndex(left))
+      .forEach(removeCard);
+    const active = (CC.activeKeys || []).map(key => characters.find(character => character.key === key))
+      .filter(Boolean);
+    const relevanceCast = active.length ? active : eligible.slice(0, runtime.maxActive);
+    const results = eligible.map(character =>
+      writeModelProjectionCard(character, currentInput, recent, relevanceCast)
+    );
+    CC.last.projectionCards = results.map(result => result.label);
+    CC.last.projectionTokens = results.reduce((total, result) => total + (result.tokens || 0), 0);
+    CC.last.portrayalTier = eligible.length ? "story-card" : "none";
+    const failed = results.filter(result => !result.ok).map(result => result.label);
+    if (failed.length) {
+      CC.last.warning = [CC.last.warning, "Model Context card warning: " + failed.join("; ") + "."]
+        .filter(Boolean).join(" ");
+    }
+    return results.every(result => result.ok);
   }
 
   function controlPresentationText(value) {
@@ -14717,6 +15625,14 @@ function CharacterContinuity(hook, incomingText) {
       source = source.slice(0, unmatched);
     }
     source = source.replace(new RegExp(closeTag, "gi"), tag => {
+      removed.push(line(tag, 220));
+      return "";
+    });
+    const frontTag = new RegExp(
+      "<\\s*\\/?\\s*CC_FRONT_MEMORY\\s*>",
+      "gi"
+    );
+    source = source.replace(frontTag, tag => {
       removed.push(line(tag, 220));
       return "";
     });
@@ -16530,6 +17446,13 @@ function CharacterContinuity(hook, incomingText) {
       return { ok: false, error: "The model-authored operation had no current semantic assessment authority." };
     }
     const kind = keyOf(candidate.kind);
+    if (kind !== keyOf(plan.assessmentScheduledKind)) {
+      return { ok: false, error: "The model-authored operation did not match the one scheduled operation family." };
+    }
+    if (!(Array.isArray(plan.assessmentAdvertisedKinds)
+      && plan.assessmentAdvertisedKinds.includes(kind))) {
+      return { ok: false, error: "The model-authored operation kind was not present in the frozen advertised assessment." };
+    }
     const items = unique(candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
     if (!items.length || items.length !== unique(candidate.evidenceIds || [], 20).length) {
       return { ok: false, error: "The model-authored operation did not resolve every cited evidence ID." };
@@ -16631,10 +17554,16 @@ function CharacterContinuity(hook, incomingText) {
       };
     } else if (kind === "turning") {
       const target = targetForCode(plan, candidate.targetCode);
-      const choice = assessmentTurningPointChoices(owner).find(item => item.id === candidate.turningPointId
-        && item.modes.includes(candidate.mode));
-      if (!target || target.key !== "self" || !choice) {
-        return { ok: false, error: "Turning Point used a StableID or Movement outside the supplied current mechanics." };
+      const advertisedChoice = (Array.isArray(plan.assessmentTurningPointChoices)
+        ? plan.assessmentTurningPointChoices : []).find(item => item.id === candidate.turningPointId
+          && Array.isArray(item.modes) && item.modes.includes(candidate.mode));
+      const choice = advertisedChoice && allAssessmentTurningPointChoices(owner).find(item =>
+        item.id === advertisedChoice.id
+          && item.modes.includes(candidate.mode)
+          && item.managedSignature === advertisedChoice.managedSignature
+      );
+      if (!target || candidate.targetCode !== "S" || target.key !== "self" || !choice) {
+        return { ok: false, error: "Turning Point used a StableID or Movement outside the frozen advertised mechanics." };
       }
       selected = {
         ...selected,
@@ -18517,6 +19446,8 @@ function CharacterContinuity(hook, incomingText) {
       contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
       cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
       portrayalTier: "none",
+      frontMemoryMode: "clear", frontMemoryVerified: false,
+      projectionCards: [], projectionTokens: 0,
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
       selectedNames: [], omittedNames: [], selectedRelationships: [], omittedRelationships: [],
@@ -18529,31 +19460,174 @@ function CharacterContinuity(hook, incomingText) {
     });
   }
 
-  function buildContext() {
+  function verifyPreparedContext() {
+    const plan = beginContinueIfNeeded(originalText);
+    const viewerPlan = plan && plan.completed === true
+      && CC.preparedContinuePlan && typeof CC.preparedContinuePlan === "object"
+      ? CC.preparedContinuePlan
+      : null;
     resetLastForContext();
+    if (plan && plan.contextOnlyRetryUnsupported === true) {
+      CC.activeKeys = Array.isArray(plan.activeKeys) ? plan.activeKeys.slice() : [];
+      CC.modelActiveKeys = Array.isArray(plan.modelActiveKeys) ? plan.modelActiveKeys.slice() : [];
+      CC.focusKey = line(plan.focusKey, 240);
+      CC.last.retry = true;
+      CC.last.continue = false;
+      CC.last.task = "none";
+      CC.last.owner = "";
+      CC.last.frontMemoryMode = "clear";
+      CC.last.frontMemoryVerified = false;
+      CC.last.contextBaseChars = textOf(originalText).length;
+      CC.last.contextMaxChars = Math.max(0, Number(typeof info !== "undefined" && info ? info.maxChars : 0) || 0);
+      CC.last.context = "A Context-only Retry/revision was detected after the prior Output had staged a different possible Continue task; no continuity task was authorized.";
+      CC.last.warning = "Retry/revision remained prose-only because cache-compatible Context cannot safely replace a task after platform context assembly. Retry after a player Input remains fully restaged by Input.";
+      CC.last.error = "";
+      return originalText;
+    }
+    const fingerprintPlan = viewerPlan || plan;
+    if (!preparedPlanStillCurrent(fingerprintPlan)) {
+      if (viewerPlan) CC.preparedContinuePlan = null;
+      if (plan && !viewerPlan) {
+        plan.task = "none";
+        plan.taskDelivered = false;
+        plan.operationTaskPrepared = false;
+        plan.frontMemoryPrepared = false;
+      }
+      clearOwnedFrontMemoryState();
+      CC.last.task = "none";
+      CC.last.owner = "";
+      CC.last.frontMemoryMode = "clear";
+      CC.last.frontMemoryVerified = false;
+      CC.last.contextBaseChars = textOf(originalText).length;
+      CC.last.contextMaxChars = Math.max(0, Number(typeof info !== "undefined" && info ? info.maxChars : 0) || 0);
+      CC.last.context = "The staged task was invalidated because continuity cards, settings, or evidence changed after preparation; no task was authorized.";
+      CC.last.warning = "A stale prepared task was cleared. A later Input or Output phase can stage a fresh task before Context.";
+      CC.last.error = "";
+      return originalText;
+    }
+    if (viewerPlan) {
+      if (viewerPlan.preparedLast && typeof viewerPlan.preparedLast === "object") {
+        Object.assign(CC.last, clone(viewerPlan.preparedLast));
+      }
+      const viewerTask = textOf(viewerPlan.preparedFrontTaskText);
+      const viewerVerification = verifyStagedFrontMemory(originalText, viewerTask);
+      CC.last.contextBaseChars = textOf(originalText).length;
+      CC.last.contextMaxChars = Math.max(0, Number(typeof info !== "undefined" && info ? info.maxChars : 0) || 0);
+      CC.last.frontMemoryVerified = viewerVerification.ok;
+      CC.last.frontMemoryMode = viewerVerification.delivered
+        ? "prepared-" + (line(viewerPlan.preparedTaskMode, 40) || "control")
+        : "clear";
+      CC.last.task = "none";
+      CC.last.owner = "";
+      CC.last.context = viewerVerification.ok
+        ? "Context Viewer confirmed the pending Continue task without promoting or delivering it."
+        : "Context Viewer found that the pending Continue task no longer matched Front Memory.";
+      CC.last.error = viewerVerification.ok
+        ? ""
+        : "The pending Continue task was not the exact Front Memory suffix.";
+      return originalText;
+    }
+    if (plan && plan.preparedLast && typeof plan.preparedLast === "object") {
+      Object.assign(CC.last, clone(plan.preparedLast));
+    }
+    const taskText = textOf(plan && plan.preparedFrontTaskText);
+    const verification = verifyStagedFrontMemory(originalText, taskText);
+    const preparedMode = line(plan && plan.preparedTaskMode, 40) || "none";
+    CC.last.contextBaseChars = textOf(originalText).length;
+    CC.last.contextMaxChars = Math.max(0, Number(typeof info !== "undefined" && info ? info.maxChars : 0) || 0);
+    CC.last.frontMemoryVerified = verification.ok;
+    CC.last.frontMemoryMode = verification.ok && verification.delivered ? preparedMode : "clear";
+    if (!verification.ok) {
+      if (plan) {
+        plan.task = "none";
+        plan.taskDelivered = false;
+      }
+      CC.last.task = "none";
+      CC.last.owner = "";
+      CC.last.context = "The pre-staged Front Memory task could not be verified; Character Continuity made no context change.";
+      CC.last.error = "The exact prepared Front Memory value was not found as the actual context suffix.";
+      recordGenuineContextPlan(plan, "pre-staged Front Memory verification failed");
+      return originalText;
+    }
+
+    const operationDelivered = preparedMode === "operation"
+      && verification.delivered && plan && plan.operationTaskPrepared === true;
+    if (plan) {
+      plan.task = operationDelivered ? "operation" : (preparedMode === "recovery" && verification.delivered
+        ? "recovery" : "none");
+      plan.taskDelivered = operationDelivered;
+      plan.frontMemoryVerified = true;
+    }
+    CC.activeKeys = plan && Array.isArray(plan.activeKeys) ? plan.activeKeys.slice() : [];
+    CC.modelActiveKeys = plan && Array.isArray(plan.modelActiveKeys) ? plan.modelActiveKeys.slice() : [];
+    CC.focusKey = line(plan && plan.focusKey, 240);
+    CC.last.task = plan ? plan.task : "none";
+    CC.last.owner = operationDelivered
+      ? line(plan && plan.preparedOwnerName, 240)
+      : "";
+    CC.last.context = operationDelivered
+      ? "The operation task prepared before context assembly was verified in Front Memory."
+      : (plan && plan.task === "recovery"
+        ? "The prose-recovery task prepared before context assembly was verified in Front Memory."
+        : "No prepared control task was available; Front Memory remained clear.");
+    CC.last.error = "";
+    if (plan && plan.pendingOperationRetry && operationDelivered) {
+      CC.pendingOperationRetry = blankPendingOperationRetry();
+    }
+    recordGenuineContextPlan(plan, operationDelivered ? "" : line(plan && plan.preparedDeferredReason, 500));
+    return originalText;
+  }
+
+  function buildContext(options = null) {
+    const stage = options && options.stage === true;
+    if (!stage) return verifyPreparedContext();
+    resetLastForContext();
+    const frontMemory = {
+      ok: true,
+      baseText: "",
+      externalFrontMemory: trackedExternalFrontMemory(currentFrontMemory()),
+      commit: stageFrontMemoryTask
+    };
+    const commitFrontMemory = taskText => {
+      const committed = frontMemory.commit(taskText);
+      CC.last.frontMemoryVerified = false;
+      CC.last.frontMemoryMode = committed.delivered
+        ? "prepared-" + (/STORY RECOVERY/i.test(textOf(taskText)) ? "recovery" : "operation")
+        : "clear";
+      return committed;
+    };
     refreshViewsStore(false);
     refreshNamesStore();
     applyManagedNameForms();
     refreshRelationshipsStore();
     refreshTurningPointsStore();
     refreshExperiencesStore(false);
-    const plan = beginContinueIfNeeded(originalText);
+    const plan = options.plan && typeof options.plan === "object" ? options.plan : CC.currentPlan;
+    if (!plan) return "";
     const observedActionCount = platformActionCount();
-    if (plan.opportunity === true && !plan.retry && observedActionCount !== null) {
+    if (plan.opportunity === true && !plan.retry && observedActionCount !== null
+      && options.preparedForContinue !== true) {
       plan.actionCount = observedActionCount;
     }
     if (!plan.relationshipPace || typeof plan.relationshipPace !== "object") {
       plan.relationshipPace = clone(runtime.relationshipPace);
     }
-    const recent = recentStoryFromContext(originalText);
-    const currentInput = plan.kind === "input" || plan.retry ? CC.lastInput : "";
+    const recent = textOf(options.recent);
+    const currentInput = textOf(options.currentInput);
     const source = [currentInput, recent].filter(Boolean).join("\n").slice(-16000);
     if (plan.opening) {
       plan.task = "none";
       plan.taskDelivered = false;
       plan.activeKeys = [];
       CC.last.context = "Opening prompt retained; only its immediate automatic output will be suppressed.";
-      return originalText;
+      const committed = commitFrontMemory("");
+      plan.preparedFrontTaskText = "";
+      plan.preparedTaskMode = "none";
+      plan.operationTaskPrepared = false;
+      plan.frontMemoryPrepared = committed.ok;
+      plan.preparedDeferredReason = "opening generation";
+      plan.preparedLast = clone(CC.last);
+      return committed.text;
     }
     expireTemporaryState(CC.stateClock);
     if (!plan.retry && plan.inputEvidenceId && plan.inputEvidenceId !== CC.lastTimeJumpEvidenceId && TIME_JUMP.test(currentInput)) {
@@ -18598,8 +19672,14 @@ function CharacterContinuity(hook, incomingText) {
       plan.task = "none";
       plan.taskDelivered = false;
       CC.last.context = "No predetermined active NPC was detected.";
-      recordGenuineContextPlan(plan, "no predetermined active NPC was detected");
-      return originalText;
+      const committed = commitFrontMemory("");
+      plan.preparedFrontTaskText = "";
+      plan.preparedTaskMode = "none";
+      plan.operationTaskPrepared = false;
+      plan.frontMemoryPrepared = committed.ok;
+      plan.preparedDeferredReason = "no predetermined active NPC was detected";
+      plan.preparedLast = clone(CC.last);
+      return committed.text;
     }
     CC.activeKeys = active.map(character => character.key);
     CC.focusKey = focus.key;
@@ -18661,20 +19741,20 @@ function CharacterContinuity(hook, incomingText) {
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
     }
 
-    const attempt = assembleContext(originalText, active, focus, currentInput, recent, plan);
+    const attempt = assembleContext(frontMemory.baseText, active, focus, currentInput, recent, plan, true);
     if (!attempt.ok) {
       CC.last.effectiveBudget = Math.max(0, Number(attempt.effectiveBudget) || 0);
       CC.last.headroomTokens = CC.last.effectiveBudget;
       CC.last.recentStoryChars = Math.max(0, Number(attempt.recentChars) || 0);
-      CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(originalText).length);
+      CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(frontMemory.baseText).length);
       CC.last.contextMaxChars = Math.max(0, Number(attempt.maxChars) || 0);
       CC.last.cacheOverflowActive = attempt.cacheOverflowActive === true;
       CC.last.cacheOverflowUsedTokens = Math.max(0, Number(attempt.cacheOverflowUsedTokens) || 0);
       CC.last.cacheOverflowRemainingTokens = Math.max(0, Number(attempt.cacheOverflowRemainingTokens) || 0);
       if (appendOnlyContext) {
         CC.last.gracefulFallback = true;
-        CC.last.context = "Cache-compatible append capacity could not hold a complete continuity packet; injection was skipped this turn.";
-        CC.last.warning = "Cache-compatible append capacity was exhausted safely: " + attempt.reason;
+        CC.last.context = "Available Front Memory suffix capacity could not hold a complete control task; delivery was skipped this turn.";
+        CC.last.warning = "Front Memory control capacity was exhausted safely: " + attempt.reason;
         CC.last.error = "";
       } else {
         CC.last.context = "Distinct portrayal could not fit safely: " + attempt.reason;
@@ -18697,16 +19777,65 @@ function CharacterContinuity(hook, incomingText) {
       plan.operationTaskText = "";
       plan.operationTaskKind = "";
       plan.operationTaskTokens = 0;
+      plan.assessmentScheduledKind = "";
+      plan.assessmentTurningPointChoices = [];
+      plan.assessmentAdvertisedKinds = [];
+      plan.assessmentScopeComplete = false;
+      plan.assessmentFrozenSelection = null;
       plan.sourcePacket = [];
       plan.sourcePacketText = "";
       plan.sourcePacketTokens = 0;
       CC.modelActiveKeys = [];
-      recordGenuineContextPlan(plan, attempt.reason || "the continuity packet could not fit safely");
-      return originalText;
+      const committed = commitFrontMemory("");
+      plan.preparedFrontTaskText = "";
+      plan.preparedTaskMode = "none";
+      plan.operationTaskPrepared = false;
+      plan.frontMemoryPrepared = committed.ok;
+      plan.preparedDeferredReason = attempt.reason || "the continuity packet could not fit safely";
+      plan.preparedLast = clone(CC.last);
+      return committed.text;
     }
 
-    plan.task = attempt.taskDelivered ? "operation" : (CC.recoveryPending ? "recovery" : "none");
-    plan.taskDelivered = attempt.taskDelivered;
+    const requestedFrontTask = textOf(attempt.frontTaskText);
+    const committedFrontMemory = commitFrontMemory(requestedFrontTask);
+    if (!committedFrontMemory.ok) {
+      plan.task = "none";
+      plan.taskDelivered = false;
+      plan.operationTaskText = "";
+      plan.operationTaskKind = "";
+      plan.operationTaskTokens = 0;
+      plan.assessmentScheduledKind = "";
+      plan.assessmentTurningPointChoices = [];
+      plan.assessmentAdvertisedKinds = [];
+      plan.assessmentScopeComplete = false;
+      plan.assessmentFrozenSelection = null;
+      CC.last.context = "The control task was withheld because the Front Memory replacement could not be verified.";
+      CC.last.error = "Front Memory verification failed; no operation was marked delivered.";
+      plan.preparedFrontTaskText = "";
+      plan.preparedTaskMode = "none";
+      plan.operationTaskPrepared = false;
+      plan.frontMemoryPrepared = false;
+      plan.preparedDeferredReason = "Front Memory staging failed";
+      plan.preparedLast = clone(CC.last);
+      return "";
+    }
+    attempt.taskDelivered = attempt.taskDelivered && committedFrontMemory.delivered;
+    attempt.taskTokens = committedFrontMemory.delivered ? estimateTokens(requestedFrontTask) : 0;
+    attempt.tokens = committedFrontMemory.delivered
+      ? estimateTokens(ownedFrontMemoryBlock(requestedFrontTask))
+      : 0;
+    attempt.headroom = Math.max(0, attempt.effectiveBudget - attempt.tokens);
+
+    plan.task = attempt.taskDelivered
+      ? "operation"
+      : (CC.recoveryPending && committedFrontMemory.delivered ? "recovery" : "none");
+    plan.taskDelivered = false;
+    plan.operationTaskPrepared = attempt.taskDelivered;
+    plan.preparedFrontTaskText = committedFrontMemory.delivered ? requestedFrontTask : "";
+    plan.preparedTaskMode = plan.task;
+    plan.frontMemoryPrepared = committedFrontMemory.ok;
+    plan.preparedDeferredReason = attempt.taskDelivered ? "" : textOf(attempt.taskDeferredReason);
+    plan.preparedOwnerName = focus.name;
     plan.ownerKey = focus.key;
     plan.focusKey = focus.key;
     plan.targets = clone(attempt.targets || []);
@@ -18714,18 +19843,36 @@ function CharacterContinuity(hook, incomingText) {
     plan.operationTaskText = textOf(attempt.taskText);
     plan.operationTaskKind = line(attempt.taskKind, 40);
     plan.operationTaskTokens = Math.max(0, Math.floor(Number(attempt.taskTokens) || 0));
+    plan.assessmentScheduledKind = attempt.taskKind === ASSESSMENT_OPERATION_KIND
+      && MODEL_OPERATION_KINDS.includes(keyOf(plan.assessmentScheduledKind))
+      ? keyOf(plan.assessmentScheduledKind)
+      : "";
+    plan.assessmentTurningPointChoices = attempt.taskKind === ASSESSMENT_OPERATION_KIND
+      ? advertisedAssessmentTurningPointChoices(focus, attempt.taskText)
+      : [];
+    plan.assessmentAdvertisedKinds = attempt.taskKind === ASSESSMENT_OPERATION_KIND
+      ? advertisedAssessmentOperationKinds(attempt.taskText)
+      : [];
+    plan.assessmentScopeComplete = attempt.taskKind === ASSESSMENT_OPERATION_KIND
+      && attempt.assessmentScopeComplete === true;
+    plan.assessmentFrozenSelection = attempt.taskKind === ASSESSMENT_OPERATION_KIND
+      ? assessmentSelectionSnapshot(plan)
+      : null;
     if (attempt.taskDelivered && attempt.operationEvidenceSignature) {
       plan.selectedEvidenceSignature = line(attempt.operationEvidenceSignature, 500);
     }
     plan.evidenceEligibility = {};
     (attempt.evidenceCandidates || []).forEach(candidate => {
       const assessment = attempt.taskKind === ASSESSMENT_OPERATION_KIND;
+      const scheduledKind = assessment ? keyOf(plan.assessmentScheduledKind) : "";
       plan.evidenceEligibility[candidate.item.id] = {
-        name: (assessment || attempt.taskKind === "name") && candidate.nameEligible === true,
-        state: (assessment || attempt.taskKind === "state") && candidate.stateEligible === true,
-        relationship: (assessment || attempt.taskKind === "relationship") && candidate.relationshipEligible === true,
-        view: (assessment || attempt.taskKind === "view") && candidate.viewEligible === true,
-        turning: (assessment || attempt.taskKind === "turning") && candidate.turningEligible === true,
+        name: (scheduledKind === "name" || attempt.taskKind === "name") && candidate.nameEligible === true,
+        state: (scheduledKind === "state" || attempt.taskKind === "state") && candidate.stateEligible === true,
+        relationship: (scheduledKind === "relationship" || attempt.taskKind === "relationship")
+          && candidate.relationshipEligible === true,
+        view: (scheduledKind === "view" || attempt.taskKind === "view") && candidate.viewEligible === true,
+        turning: (scheduledKind === "turning" || attempt.taskKind === "turning")
+          && candidate.turningEligible === true,
         age: candidate.age
       };
     });
@@ -18734,6 +19881,7 @@ function CharacterContinuity(hook, incomingText) {
       const derived = candidate.item.source === "provenance";
       const packetTarget = (attempt.targets || [])[0] || null;
       const assessment = attempt.taskKind === ASSESSMENT_OPERATION_KIND;
+      const scheduledKind = assessment ? keyOf(plan.assessmentScheduledKind) : "";
       return {
         id: candidate.item.id,
         prefix,
@@ -18741,11 +19889,13 @@ function CharacterContinuity(hook, incomingText) {
           focus, packetTarget, attempt.taskKind, candidate, plan.selectedCandidate
         ),
         source: candidate.item.source,
-        name: (assessment || attempt.taskKind === "name") && candidate.nameEligible === true,
-        state: (assessment || attempt.taskKind === "state") && candidate.stateEligible === true,
-        relationship: (assessment || attempt.taskKind === "relationship") && candidate.relationshipEligible === true,
-        view: (assessment || attempt.taskKind === "view") && candidate.viewEligible === true,
-        turning: (assessment || attempt.taskKind === "turning") && candidate.turningEligible === true,
+        name: (scheduledKind === "name" || attempt.taskKind === "name") && candidate.nameEligible === true,
+        state: (scheduledKind === "state" || attempt.taskKind === "state") && candidate.stateEligible === true,
+        relationship: (scheduledKind === "relationship" || attempt.taskKind === "relationship")
+          && candidate.relationshipEligible === true,
+        view: (scheduledKind === "view" || attempt.taskKind === "view") && candidate.viewEligible === true,
+        turning: (scheduledKind === "turning" || attempt.taskKind === "turning")
+          && candidate.turningEligible === true,
         age: candidate.age,
         ownerKey: derived ? candidate.ownerKey : focus.key,
         targetKey: derived ? candidate.targetKey : "",
@@ -18768,7 +19918,7 @@ function CharacterContinuity(hook, incomingText) {
         ? textOf(plan.retrySourcePacketText)
         : (attempt.taskKind === ASSESSMENT_OPERATION_KIND
           ? (attempt.evidenceCandidates || []).map(candidate => candidate.item.id + "["
-            + assessmentEvidenceCodes(candidate).join("") + "]: "
+            + assessmentEvidenceCodesForFamily(candidate, plan.assessmentScheduledKind).join("") + "]: "
             + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
           : evidencePacketForKind(
             focus,
@@ -18784,9 +19934,6 @@ function CharacterContinuity(hook, incomingText) {
     plan.activeKeys = active.map(character => character.key);
     plan.modelActiveKeys = attempt.modelActive.map(character => character.key);
     plan.recentStory = recent;
-    if (plan.pendingOperationRetry && attempt.taskDelivered) {
-      CC.pendingOperationRetry = blankPendingOperationRetry();
-    }
     if (plan.opportunity === true && !operationOpportunityFrozen(plan)) {
       plan.opportunityPrepared = true;
       plan.ownerOpportunity = Math.max(0, Number(CC.ownerOpportunities[focus.key]) || 0) + 1;
@@ -18851,13 +19998,85 @@ function CharacterContinuity(hook, incomingText) {
         "Operation deferred: " + (attempt.taskDeferredReason || "the complete packet was unavailable")
       ].filter(Boolean).join(" ");
     }
-    CC.last.context = "Scene-relevant " + active.map(character => character.name).join(", ")
-      + "; model-facing " + attempt.modelActive.map(character => character.name).join(", ")
+    CC.last.context = "Triggered Model Context cards carry portrayal for "
+      + attempt.modelActive.map(character => character.name).join(", ")
       + "; focus " + focus.name + (attempt.taskDelivered
-        ? "; one " + operationKindLabel(attempt.taskKind) + " CCO task delivered."
-        : ".");
-    recordGenuineContextPlan(plan, attempt.taskDelivered ? "" : attempt.taskDeferredReason);
-    return attempt.text;
+        ? "; one " + operationKindLabel(
+          attempt.taskKind === ASSESSMENT_OPERATION_KIND
+            ? plan.assessmentScheduledKind
+            : attempt.taskKind
+        ) + " CCO task prepared in Front Memory."
+        : (plan.task === "recovery" ? "; prose recovery prepared in Front Memory." : "; Front Memory clear."));
+    plan.preparedLast = clone(CC.last);
+    return committedFrontMemory.text;
+  }
+
+  function prepareInputFrontMemory() {
+    const plan = CC.currentPlan;
+    if (!plan) {
+      clearOwnedFrontMemoryState();
+      return;
+    }
+    buildContext({
+      stage: true,
+      plan,
+      currentInput: plan.kind === "input" || plan.retry ? CC.lastInput : "",
+      recent: recentStoryFromContext(""),
+      preparedForContinue: false
+    });
+  }
+
+  function prepareContinueFrontMemory(outputStory) {
+    const current = CC.currentPlan && typeof CC.currentPlan === "object" ? CC.currentPlan : null;
+    if (!current) {
+      CC.preparedContinuePlan = null;
+      clearOwnedFrontMemoryState();
+      return;
+    }
+    const recent = [recentStoryFromContext(""), textOf(outputStory)].filter(Boolean).join("\n");
+    if (CC.recoveryPending === true && current.completed !== true) {
+      CC.preparedContinuePlan = null;
+      buildContext({ stage: true, plan: current, currentInput: "", recent, preparedForContinue: false });
+      return;
+    }
+    if (current.opening || current.completed !== true) {
+      CC.preparedContinuePlan = null;
+      clearOwnedFrontMemoryState();
+      return;
+    }
+
+    const nextPlan = {
+      kind: "prepared-continue", retry: false, opening: false, genuine: false, opportunity: true,
+      actionCount: null,
+      genuineInputCount: Math.max(0, Number(CC.inputCount) || 0),
+      task: "none", taskDelivered: false, completed: false, castProgressApplied: false,
+      relationshipPace: clone(runtime.relationshipPace),
+      preparedForContinue: true,
+      preparedAfterActionCount: Number.isFinite(Number(CC.lastCompletedActionCount))
+        ? Math.max(-1, Math.floor(Number(CC.lastCompletedActionCount)))
+        : -1
+    };
+    if (CC.pendingOperationRetry && CC.pendingOperationRetry.active) {
+      applyPendingOperationRetry(nextPlan, CC.pendingOperationRetry);
+    }
+    const priorRouting = {
+      activeKeys: clone(CC.activeKeys || []),
+      modelActiveKeys: clone(CC.modelActiveKeys || []),
+      focusKey: CC.focusKey
+    };
+    const priorPendingRetry = clone(CC.pendingOperationRetry);
+    buildContext({
+      stage: true,
+      plan: nextPlan,
+      currentInput: "",
+      recent,
+      preparedForContinue: true
+    });
+    CC.activeKeys = priorRouting.activeKeys;
+    CC.modelActiveKeys = priorRouting.modelActiveKeys;
+    CC.focusKey = priorRouting.focusKey;
+    CC.pendingOperationRetry = normalizePendingOperationRetry(priorPendingRetry);
+    CC.preparedContinuePlan = nextPlan;
   }
 
   function candidateSourceLabel(sourceIds) {
@@ -18869,7 +20088,11 @@ function CharacterContinuity(hook, incomingText) {
       ? plan.selectedCandidate
       : {};
     const candidate = parsedCandidate && typeof parsedCandidate === "object" ? parsedCandidate : {};
-    const kind = keyOf(plan && plan.selectedOperationKind || candidate.kind || selected.kind);
+    const resolvedKind = keyOf(plan && plan.selectedOperationKind || candidate.kind || selected.kind);
+    const scheduledKind = keyOf(plan && plan.assessmentScheduledKind);
+    const kind = MODEL_OPERATION_KINDS.includes(resolvedKind)
+      ? resolvedKind
+      : (MODEL_OPERATION_KINDS.includes(scheduledKind) ? scheduledKind : "");
     let targetKey = normalizedTargetKey(result && result.targetKey || selected.targetKey);
     if (!targetKey && kind === "state" && candidate.targetCode) {
       const target = targetForCode(plan, candidate.targetCode);
@@ -18901,6 +20124,7 @@ function CharacterContinuity(hook, incomingText) {
       field,
       destination,
       evidenceSignature: line(plan && plan.selectedEvidenceSignature || selected.evidenceSignature, 500)
+        || (kind ? "family:" + kind : "")
     };
   }
 
@@ -18917,13 +20141,16 @@ function CharacterContinuity(hook, incomingText) {
     }[normalizedOutcome];
     if (!owner || !plan || !plan.taskDelivered || !Number.isFinite(Number(points))) return null;
     const identity = operationOutcomeIdentity(owner, plan, parsedCandidate, result);
-    if (!MODEL_OPERATION_KINDS.includes(identity.kind) || !identity.ownerKey || !identity.evidenceSignature) return null;
+    if (!MODEL_OPERATION_KINDS.includes(identity.kind) || !identity.ownerKey) return null;
+    const reportedOutcome = operationKindLabel(identity.kind) + " " + normalizedOutcome
+      + (normalizedOutcome === "unchanged" && result && result.assessment === true
+        && result.boundedScope === true ? " (bounded scope)" : "");
     const opportunity = Math.max(0, Number(plan.ownerOpportunity) || Number(CC.ownerOpportunities[owner.key]) || 0);
     const priorMeter = normalizeOperationMeter(
       CC.operationState.owners[owner.key] && CC.operationState.owners[owner.key][identity.kind]
     );
     const transportOutcome = ["omitted", "cutoff"].includes(normalizedOutcome);
-    const repeatedOmission = transportOutcome
+    const repeatedTransport = transportOutcome
       && keyOf(priorMeter.lastResult) === normalizedOutcome
       && priorMeter.lastSignature === identity.evidenceSignature;
     materializeOwnerDrainDecay(owner.key, opportunity);
@@ -18932,10 +20159,14 @@ function CharacterContinuity(hook, incomingText) {
       .map(normalizeOperationDrainRecord)
       .find(item => item && item.key === key) || null;
     const priorValue = record ? effectiveOperationDrainValue(record, opportunity) : 0;
+    const sameEvidenceSignature = !!(record && identity.evidenceSignature
+      && record.evidenceSignature === identity.evidenceSignature);
     const zeroDrainTransport = ["cutoff", "stale"].includes(normalizedOutcome);
     const repeated = zeroDrainTransport
       ? 0
-      : (priorValue > 0 ? settings.OPERATION_POINTS.REPEATED_SIGNATURE_DRAIN : 0);
+      : (priorValue > 0 && sameEvidenceSignature
+        ? settings.OPERATION_POINTS.REPEATED_SIGNATURE_DRAIN
+        : 0);
     const added = Math.max(0, Number(points) || 0) + Math.max(0, Number(repeated) || 0);
     if (zeroDrainTransport) {
       if (!record) {
@@ -18951,7 +20182,7 @@ function CharacterContinuity(hook, incomingText) {
         record.value = priorValue;
         record.updatedOpportunity = opportunity;
         record.attempts = normalizedOutcome === "cutoff"
-          ? (keyOf(record.lastResult) === "cutoff" ? record.attempts + 1 : 1)
+          ? (repeatedTransport ? record.attempts + 1 : 1)
           : 0;
         record.lastResult = normalizedOutcome;
         record.key = operationDrainKey(record);
@@ -18975,7 +20206,7 @@ function CharacterContinuity(hook, incomingText) {
       const summary = operationKindLabel(identity.kind) + " " + normalizedOutcome
         + " added no drain; existing drain remains "
         + priorValue + " at owner opportunity " + opportunity + ".";
-      CC.last.operationOutcome = operationKindLabel(identity.kind) + " " + normalizedOutcome;
+      CC.last.operationOutcome = reportedOutcome;
       CC.last.operationDrainChange = summary;
       updatePendingOperationRetry(plan, normalizedOutcome);
       return { record, priorValue, base: 0, repeated: 0, summary };
@@ -18985,15 +20216,21 @@ function CharacterContinuity(hook, incomingText) {
         ...identity,
         value: 0,
         updatedOpportunity: opportunity,
-        attempts: repeatedOmission ? 1 : 0
+        attempts: 0
       });
     }
     if (!record) return null;
     record.value = Math.min(settings.OPERATION_DRAIN_CAP, priorValue + added);
     record.updatedOpportunity = opportunity;
     record.attempts = normalizedOutcome === "omitted"
-      ? (keyOf(record.lastResult) === "omitted" ? record.attempts + 1 : 1)
+      ? (repeatedTransport ? record.attempts + 1 : 1)
       : 0;
+    if (added > 0) {
+      record.targetKey = identity.targetKey;
+      record.field = identity.field;
+      record.destination = identity.destination;
+      record.evidenceSignature = identity.evidenceSignature;
+    }
     record.lastResult = normalizedOutcome;
     record.key = operationDrainKey(record);
     const others = (Array.isArray(CC.operationState.drains) ? CC.operationState.drains : [])
@@ -19018,7 +20255,7 @@ function CharacterContinuity(hook, incomingText) {
       + " drain " + priorValue + " + " + Math.max(0, Number(points) || 0)
       + (repeated ? " + repeated " + repeated : "") + " = " + record.value
       + " at owner opportunity " + opportunity + ".";
-    CC.last.operationOutcome = operationKindLabel(identity.kind) + " " + normalizedOutcome;
+    CC.last.operationOutcome = reportedOutcome;
     CC.last.operationDrainChange = summary;
     updatePendingOperationRetry(plan, normalizedOutcome);
     return { record, priorValue, base: points, repeated, summary };
@@ -19036,6 +20273,17 @@ function CharacterContinuity(hook, incomingText) {
       plan.completed = true;
       markActionCompleted(plan);
       return " ";
+    }
+
+    if (plan.taskDelivered === true && !preparedPlanStillCurrent(plan)) {
+      plan.task = "none";
+      plan.taskDelivered = false;
+      plan.operationTaskPrepared = false;
+      plan.frontMemoryVerified = false;
+      CC.last.warning = [
+        CC.last.warning,
+        "The delivered task became stale before Output processing; its CCO record was not authorized."
+      ].filter(Boolean).join(" ");
     }
 
     commitDeliveredOperationOpportunity(plan);
@@ -19133,11 +20381,6 @@ function CharacterContinuity(hook, incomingText) {
               ? "rejected"
               : (parsed.candidate ? "rejected" : "omitted"))));
         applyOperationOutcomeDrain(owner, plan, parsed.candidate, null, outcome);
-        if (plan.semanticAssessment === true && plan.semanticAssessmentResolved !== true) {
-          updatePendingOperationRetry(plan, outcome);
-          CC.last.operationOutcome = "Assessment " + outcome;
-          CC.last.operationDrainChange = "No drain change";
-        }
       }
 
       CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
@@ -19185,20 +20428,31 @@ function CharacterContinuity(hook, incomingText) {
       const assessedItems = unique(parsed.candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
       const suppliedIds = new Set((Array.isArray(plan.sourcePacket) ? plan.sourcePacket : [])
         .map(source => continuitySourceId(source && source.id)).filter(Boolean));
+      const scheduledKind = keyOf(plan.assessmentScheduledKind);
       if (!owner || plan.semanticAssessment !== true
+        || !MODEL_OPERATION_KINDS.includes(scheduledKind)
         || assessedItems.length !== parsed.candidate.evidenceIds.length
         || parsed.candidate.evidenceIds.some(id => !suppliedIds.has(id))) {
         result = { ok: false, error: "The completed no-change assessment did not resolve to its supplied owner and evidence packet." };
       } else {
-        markNoChangeAssessment(assessedItems, owner, plan.ownerOpportunity);
+        if (plan.assessmentScopeComplete === true) {
+          markNoChangeAssessment(assessedItems, owner, plan.ownerOpportunity, [scheduledKind]);
+        }
+        plan.semanticAssessmentResolved = true;
         result = {
           ok: false,
           unchanged: true,
           assessment: true,
-          summary: owner.name + " semantic assessment completed with continuity unchanged"
+          boundedScope: plan.assessmentScopeComplete !== true,
+          summary: owner.name + " " + operationKindLabel(scheduledKind)
+            + " assessment completed with continuity unchanged"
+            + (plan.assessmentScopeComplete === true
+              ? ""
+              : " for the bounded advertised scope; omitted legal scope remains reviewable")
         };
-        CC.last.operationOutcome = "Assessment unchanged";
-        CC.last.operationDrainChange = "No drain change";
+        CC.last.operationOutcome = plan.assessmentScopeComplete === true
+          ? operationKindLabel(scheduledKind) + " unchanged"
+          : operationKindLabel(scheduledKind) + " unchanged (bounded scope)";
         CC.pendingOperationRetry = blankPendingOperationRetry();
       }
     } else if (modelAuthoredPreparation && !modelAuthoredPreparation.ok) {
@@ -19280,7 +20534,7 @@ function CharacterContinuity(hook, incomingText) {
       }
     } else if (parsed.candidate.kind === "turning") {
       const target = targetForCode(plan, parsed.candidate.targetCode);
-      if (!target || target.key !== "self") {
+      if (!target || parsed.candidate.targetCode !== "S" || target.key !== "self") {
         result = { ok: false, error: "Turning Point used a target outside the frozen Self target." };
       } else {
         evidenceResult = citedEvidenceForOperation(owner, parsed.candidate, plan, target.key);
@@ -19375,11 +20629,6 @@ function CharacterContinuity(hook, incomingText) {
                   ? "success"
                   : (result && result.unchanged ? "unchanged" : "rejected"))))));
       applyOperationOutcomeDrain(owner, plan, parsed.candidate, result, outcome);
-      if (plan.semanticAssessment === true && plan.semanticAssessmentResolved !== true) {
-        updatePendingOperationRetry(plan, outcome);
-        CC.last.operationOutcome = "Assessment " + outcome;
-        CC.last.operationDrainChange = "No drain change";
-      }
     }
     if (cleanupNotes.length && parsed.candidate) {
       CC.last.warning = [CC.last.warning, normalizedCandidate
@@ -19568,8 +20817,7 @@ function CharacterContinuity(hook, incomingText) {
       const namePending = viewEvidenceAge(item, character) < settings.NAME_EVIDENCE_OPPORTUNITIES;
       return statePending || viewPending || relationshipPending || turningPending || namePending;
     });
-    const unreviewed = available.filter(item => !(item.assessedNoChangeBy
-      && item.assessedNoChangeBy[character.key]));
+    const unreviewed = available.filter(item => evidenceHasUnreviewedAssessmentFamily(item, character));
     const oldest = available.length ? Math.max(...available.map(item => viewEvidenceAge(item, character))) : 0;
     return character.name + " " + available.length + " available, " + unreviewed.length
       + " unreviewed, oldest durable age " + oldest + "/"
@@ -19721,7 +20969,11 @@ function CharacterContinuity(hook, incomingText) {
   function selectedOperationStatus(plan) {
     const source = plan && typeof plan === "object" && !Array.isArray(plan) ? plan : {};
     if (source.operationSelectionFrozen !== true) return "Not scored";
-    return operationKindLabel(source.selectedOperationKind) + " | gain "
+    const kind = keyOf(source.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+      && MODEL_OPERATION_KINDS.includes(keyOf(source.assessmentScheduledKind))
+      ? keyOf(source.assessmentScheduledKind)
+      : keyOf(source.selectedOperationKind);
+    return operationKindLabel(kind) + " | gain "
       + Math.max(0, Number(source.selectedGain) || 0) + " | drain "
       + Math.max(0, Number(source.selectedDrain) || 0) + " | net "
       + (Number(source.selectedNet) || 0);
@@ -19736,7 +20988,12 @@ function CharacterContinuity(hook, incomingText) {
     if (!source) return "None";
     const ownerKey = normalizedTargetKey(source.ownerKey || source.retryFocusKey || stored.ownerKey);
     const owner = characters.find(character => character.key === ownerKey) || null;
-    const kind = operationKindLabel(source.selectedOperationKind);
+    const kind = operationKindLabel(
+      keyOf(source.selectedOperationKind) === ASSESSMENT_OPERATION_KIND
+        && MODEL_OPERATION_KINDS.includes(keyOf(source.assessmentScheduledKind))
+        ? source.assessmentScheduledKind
+        : source.selectedOperationKind
+    );
     const evidenceIds = unique(
       Array.isArray(source.evidenceIds) && source.evidenceIds.length
         ? source.evidenceIds
@@ -19833,7 +21090,7 @@ function CharacterContinuity(hook, incomingText) {
         + " | direct " + (candidate.direct ? "yes" : "no")
         + " | derived " + (candidate.derived ? "yes" : "no")
         + " | role " + (candidate.diagnosticOnly === true
-          ? "scripted signal diagnostic only"
+          ? "owner-family scheduling diagnostic"
           : (candidate.modelAnswerTemplateReady === false ? "model-answer template unavailable" : "model-answer template ready"))
         + " | allowed fields " + ((candidate.allowedFields || []).join(",") || "none")
         + " | sources " + ((candidate.sourceIds || []).join(",") || "none")
@@ -20110,9 +21367,12 @@ function CharacterContinuity(hook, incomingText) {
       "Current candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
-      "Portrayal packet: " + (CC.last.portrayalTier || "none"),
-      "Append capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
-        + " | context-modifier overflow unavailable; returned text is capped at max chars",
+      "Portrayal route: " + (CC.last.portrayalTier || "none")
+        + " | Model Context cards " + ((CC.last.projectionCards || []).join("; ") || "None"),
+      "Front Memory: " + (CC.last.frontMemoryMode || "clear")
+        + " | verified " + (CC.last.frontMemoryVerified ? "Yes" : "No"),
+      "Front Memory capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
+        + " | returned context remains capped at max chars",
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
@@ -20239,8 +21499,12 @@ function CharacterContinuity(hook, incomingText) {
       "Time-jump reset: " + (CC.last.timeJumpReset ? "Yes" : "No"),
       "CCO parse: " + CC.last.protocol,
       "Components: rules " + CC.last.rulesTokens + ", Outer " + CC.last.outerTokens + ", Names " + CC.last.namesTokens + ", Inner " + CC.last.innerTokens + ", State " + CC.last.stateTokens + ", Relationships " + CC.last.relationshipsTokens + ", Turning Points " + CC.last.turningPointsTokens + ", Views " + CC.last.viewsTokens + ", Experiences " + CC.last.experiencesTokens + ", evidence " + CC.last.evidenceTokens + ", source packet " + CC.last.sourcePacketTokens + ", task " + CC.last.taskTokens,
+      "Model Context cards / stored tokens: " + ((CC.last.projectionCards || []).join("; ") || "None")
+        + " / " + (CC.last.projectionTokens || 0),
+      "Front Memory mode / verified: " + (CC.last.frontMemoryMode || "clear")
+        + " / " + (CC.last.frontMemoryVerified ? "Yes" : "No"),
       "Operation task ceiling: " + settings.MAX_OPERATION_TASK_TOKENS
-        + " tokens | total turn limit: configured continuity budget",
+        + " tokens | outer control allowance: configured continuity budget",
       "Budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
@@ -20275,27 +21539,42 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   if (hook === "input") {
+    clearOwnedFrontMemoryState();
     beginInput(originalText);
+    prepareInputFrontMemory();
     writeAllStateCards();
+    refreshModelProjectionCards(CC.lastInput, recentStoryFromContext(""));
+    sealPreparedPlan(CC.currentPlan);
     writeStatusCard();
     return finish(originalText);
   }
 
   if (hook === "context" || hook === "contextAppend") {
     let result = buildContext();
-    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))) {
-      CC.last.context = "Cache-compatible append guard preserved the original platform context.";
-      CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
+    if (appendOnlyContext && result !== originalText && CC.last.frontMemoryVerified !== true) {
+      CC.last.context = "Front Memory mutation guard preserved the original platform context.";
+      CC.last.error = "The context result was not a verified Front Memory suffix replacement, so it was withheld.";
       result = originalText;
     }
-    writeAllStateCards();
     writeStatusCard();
     return finish(result);
   }
 
   if (hook === "output") {
     const result = processOutput(originalText);
+    clearOwnedFrontMemoryState();
     writeAllStateCards();
+    const outputLast = clone(CC.last);
+    prepareContinueFrontMemory(result);
+    const stagedPlan = CC.recoveryPending === true ? CC.currentPlan : CC.preparedContinuePlan;
+    const stagedMode = line(stagedPlan && stagedPlan.preparedTaskMode, 40);
+    const staged = !!(stagedPlan && stagedPlan.frontMemoryPrepared === true
+      && textOf(stagedPlan.preparedFrontTaskText).trim());
+    Object.assign(CC.last, outputLast);
+    CC.last.frontMemoryMode = staged ? "prepared-" + (stagedMode || "control") : "clear";
+    CC.last.frontMemoryVerified = false;
+    refreshModelProjectionCards(CC.lastInput, [recentStoryFromContext(""), result].filter(Boolean).join("\n"));
+    sealPreparedPlan(stagedPlan);
     writeStatusCard();
     return finish(result);
   }

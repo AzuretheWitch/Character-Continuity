@@ -4,15 +4,29 @@ Character Continuity, or **CC**, is an AI Dungeon companion script for keeping p
 
 CC gives each registered NPC a stable creator-authored foundation, a temporary private State, directional Relationships and Views, usable Names, persistent Experiences, and optional creator-authored Turning Points. It supplies only scene-relevant continuity to the model and validates every automatic update before saving it.
 
-The current package is **v2.01**.
+The current package is **v2.02-test-b2**. It is a test release containing the hybrid transport/liveness work plus one-owner/one-family operation scheduling and a smaller Front Memory task budget; keep a copy of v2.01 while evaluating it.
 
 The maintained release is **cache-compatible only**. Install the four canonical files named `Library`, `Input`, `Context`, and `Output`; the Context connector must begin with `// @cache-compatible` and use the `contextAppend` hook. Legacy non-cache Context installations are no longer supported.
+
+## Hybrid model-context routing in v2.02-test-b2
+
+CC no longer places the whole portrayal packet in the highest-priority context position.
+
+| Information | Route | When the model receives it |
+| --- | --- | --- |
+| Creator and managed source cards | Private, triggerless CC storage | Never directly |
+| Compact portrayal for one NPC | Generated `CC — Model Context — Name` Story Card | When the NPC's canonical name, an unambiguous Active alias, or a currently mentioned managed alias triggers it |
+| Current, possible-next, or prose-recovery instruction | CC-owned tagged block in `state.memory.frontMemory` | While the current task is active or Output has staged an unpromoted task for a possible Continue |
+| Ordinary story continuation | No CC Front Memory block | The model follows the normal scenario context |
+
+Each generated Model Context card combines a compact Outer/Inner foundation with bounded current State, current Turning Point stage, and a small relevant selection of Names, Relationships, Views, and Experiences. Its normal triggers are the canonical name and unambiguous Active aliases. When a managed Emerging, Retired, or Rejected form is actually mentioned, Input can add that form for the current context so the card can explain its status instead of treating it as a permanent trigger. Output refreshes the card after accepted continuity changes so Continue can use the new projection. CC preserves any Front Memory text outside its own `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` block.
 
 ## Documentation
 
 - [Installation](INSTALLATION.md) — install the Library code, add the correct Input/Context/Output connectors, create starting cards, and verify the script.
 - [Configuration](CONFIGURATION.md) — every `CC — Settings` option, relationship pace presets, and fixed safety limits.
 - [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md) — recommended workflows, complete six-card onboarding instructions, card formats, and troubleshooting.
+- [v2.02-test-b2 notes](V2.02-TEST-NOTES.md) — hybrid routing, one-family scheduling, task-budget tests, diagnostics, and rollback.
 
 ## What CC tracks
 
@@ -31,12 +45,13 @@ CC separates stable character foundations from continuity that should change dur
 | `Name's Experiences` | Creator baseline, then CC | Stores lasting events that remain important after temporary State expires. |
 | `Name's Turning Points` | Creator definition, then CC progress | Tracks optional durable change through a stable ID, Direction, Progress, active stage card, private stage key, and optional definitive Breakthrough condition. |
 | `Stage-card prefix — Stage` | Creator | Defines portrayal for one of the five Turning Point stages: Dormant, Emerging, Near Breakthrough, Achieved, or Integrating. CC preserves its creator-assigned Story Card type. |
+| `CC — Model Context — Name` | CC | Generated, compact, normally triggered portrayal reference. Do not edit it; edit the source cards instead. |
 | `CC — Settings` | Creator or player | Controls CC's editable runtime settings. |
 | `CC — Active NPCs` | Creator or player | Holds the five stable `N1`–`N5` active-roster slots and starts onboarding. |
 | `CC — Status` | CC | Separates the current hook/pass from the last input-turn action operation, and summarizes the roster, State, warnings, and version. |
 | `CC — Debug` | CC | Provides detailed diagnostics when `Debug: true`. |
 
-`Outer` and `Inner` remain the NPC's creator-authored foundation. CC may shorten an overlong copy when building model context, but story events do not rewrite those cards.
+`Outer` and `Inner` remain the NPC's creator-authored foundation. CC compacts them into the generated Model Context card, but story events do not rewrite the source cards.
 
 All character-owned Story Card titles use the possessive format. Wrapped continuity entries place the opening `{` and possessive header on separate lines. Current builds recognize legacy em-dash card titles and combined entry openings such as `{ Name's Outer:`, then attempt to migrate both in place without deleting or recreating the card. Turning Point router cards are deliberately excluded from ordinary managed-key/type migration so their creator-assigned keys and type remain intact; give those routers their exact possessive titles during setup.
 
@@ -54,11 +69,11 @@ State records what matters to an NPC **right now**:
 
 State is temporary. Each field expires after the configured number of completed AI responses unless new evidence refreshes it.
 
-An empty State is not filled merely because an NPC appears in a scene. CC supplies fresh completed evidence for assessment, and the model chooses a State record only when that evidence establishes a current change or confirmation. When a temporary private Thought or trigger is needed, the model may make a conservative character-specific inference from the completed event and the NPC's supplied Inner continuity, but it may not invent a new event, fact, commitment, or relationship change. If the returned Thought is unsuitable for direct private storage, CC can still commit the trigger-derived Feeling, Goal, Tension, About target, and Situation while reporting that the Thought was ignored.
+An empty State is not filled merely because an NPC appears in a scene. When State is the scheduled family, the model supplies a State record only if the fresh completed evidence establishes a current change or confirmation; otherwise it uses `K`. When a temporary private Thought or trigger is needed, the model may make a conservative character-specific inference from the completed event and the NPC's supplied Inner continuity, but it may not invent a new event, fact, commitment, or relationship change. If the returned Thought is unsuitable for direct storage, CC can still commit the trigger-derived Feeling, Goal, Tension, About target, and Situation while reporting that the Thought was ignored.
 
-When CC supplies a State block for a scene-relevant NPC, its fields are temporary pressures rather than a checklist: Thought may remain private, Feeling can color perception, Goal can be postponed or revised, and the NPC may choose what to express or conceal. Raw `Triggers` remain in the managed State card but are not repeated in the model-facing State block.
+When CC places a State block in an NPC's generated Model Context card, its fields are temporary pressures rather than a checklist: Thought may remain private, Feeling can color perception, Goal can be postponed or revised, and the NPC may choose what to express or conceal. Raw `Triggers` remain in the managed State card but are not repeated in the model-facing block.
 
-Seeing a block beginning with the following lines in the Context Viewer is normal:
+Seeing a block beginning with the following lines inside `CC — Model Context — Snow`, or in model context when that card triggers, is normal:
 
 ```text
 {
@@ -125,11 +140,11 @@ For each Turning Point, the creator writes one record in `Name's Turning Points`
 - **Achieved:** progress 30–39
 - **Integrating:** progress 40–49
 
-The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v2.01.
+The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v2.02-test-b2.
 
-The creator owns the Turning Point's meaning, Direction, stable ID, optional Breakthrough condition, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`. Keep the router Story Card's own trigger/key blank so the platform does not natively expose its private Entry; the managed `Stage trigger:` line inside that Entry is a separate data field. CC validates the exact private key on the current stage card, then directly supplies that card's Entry in a tagged model-facing block; it does not expose the whole router or rely on native trigger chaining. The assessment task lists currently available Turning Point IDs, their matching portrayal handles, movements, relevant comparison-stage text, and any definitive condition so the model can choose a grounded update. A matching `TP-…` portrayal handle in a returned record is normalized to the corresponding stable ID.
+The creator owns the Turning Point's meaning, Direction, stable ID, optional Breakthrough condition, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`. Keep the router Story Card's own trigger/key blank so the platform does not natively expose its private Entry; the managed `Stage trigger:` line inside that Entry is a separate data field. CC validates the exact private key on the current stage card, then places only the resolved current-stage guidance in that NPC's generated Model Context card. The assessment task lists currently available Turning Point IDs, movements, relevant comparison-stage text, and any definitive condition so the model can choose a grounded update.
 
-With optimized append-only context, an older stage block may remain physically visible in cached context. Each new CC portrayal block includes a `CURRENT TP` handle and revision selecting the only authoritative matching `TP STAGE` block. That newest revision supersedes older tagged or untagged stage passages, so only the selected current block contributes stage guidance. These controls are expected in the Context Viewer and are stripped if a model echoes them into output.
+Because Model Context cards are updated in place, the next trigger receives only the currently resolved stage guidance rather than a chain of cached stage packets.
 
 The default `Growth-only` setting processes Growth Turning Points; see the [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md#turning-points) for setup and the [Configuration guide](CONFIGURATION.md) for mode controls.
 
@@ -160,21 +175,24 @@ On an eligible turn, CC:
 
 1. Detects registered NPCs relevant to the current scene.
 2. Selects one fixed focus NPC.
-3. Supplies that NPC's relevant foundations and continuity.
-4. Supplies a bounded set of fresh completed raw evidence rows, without assigning their semantic operation meaning, plus the currently legal target and card mechanics.
-5. Gives the model a `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX` contract.
-6. Lets the model select the relevant supplied evidence IDs and provide one complete Name, State, Relationship, View, or Turning Point record—or a complete `K` assessment when managed continuity stays unchanged.
-7. Checks record shape, supplied IDs, authorized targets, legal field values, current card identity, and transaction safety.
-8. Saves at most one update when those checks succeed.
-9. Removes the CCO record and any echoed CC controls before returning the story to the player.
+3. Relies on that NPC's triggered Model Context card for compact foundations and continuity.
+4. Schedules one legal operation family for that owner by lowest owner/family drain, then fairness and relevance tie-breaks.
+5. Supplies up to two fresh completed raw evidence rows without preclassifying their story meaning, plus the scheduled family's current target and card mechanics.
+6. Prepares a bounded `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX` contract during Input, or during the prior Output for a possible Continue, and stages it in CC's tagged Front Memory block before platform context assembly.
+7. Lets the model select the relevant supplied evidence IDs and provide one complete record from that scheduled Name, State, Relationship, View, or Turning Point family—or a complete `K` assessment when the shown family scope stays unchanged.
+8. Checks record shape, supplied IDs, authorized targets, legal field values, current card identity, and transaction safety.
+9. Saves at most one update when those checks succeed.
+10. Removes the CCO record and any echoed CC controls before returning the story to the player.
 
-The model interprets story meaning and supplies the operation details. JavaScript does not use regex scoring to preclassify the assessment evidence or choose an operation kind, target, evidence subset, Relationship field, View destination, or Turning Point movement. It enforces the protocol and managed-card mechanics, then performs verified transactional writes. Malformed, partial, stale, or unauthorized candidates are stripped or rejected without changing saved continuity. Complete punctuated story prose is preserved whenever possible.
+The scheduler chooses only the owner and operation family. The model still interprets the supplied story evidence and decides whether that family changed; for a change it supplies the target, evidence subset, field or destination, and explanation. JavaScript does not use regex scoring to decide that semantic result. It enforces the one-family protocol and managed-card mechanics, then performs verified transactional writes. Malformed, partial, stale, cross-family, or unauthorized candidates are stripped or rejected without changing saved continuity. Complete punctuated story prose is preserved whenever possible.
 
-The final assessment suffix is authoritative in optimized append-only context. A complete record may cite any unique subset of the supplied IDs while preserving their supplied order. A `K` record copies the complete supplied list and completes the review with continuity unchanged. A record that cites unavailable or reordered IDs is stale transport; CC strips it, preserves the story, adds no drain, and carries the assessment once. An omitted record likewise preserves the story and permits one bounded retry. A cut-off protocol fragment remains penalty-free and retryable.
+The verified Front Memory assessment is authoritative for that response. It advertises exactly one family. A complete operation may cite any unique subset of the supplied IDs while preserving their supplied order. A `K` record copies the complete supplied list and closes only that family's targets or Turning Point rows shown in the assessment. When bounding omits legal scope, the cited evidence remains reviewable for that family. A record that cites unavailable or reordered IDs is stale transport; CC strips it, preserves the story, adds no drain, and carries the assessment once. An omitted record likewise preserves the story and permits one bounded retry. A cut-off protocol fragment remains penalty-free and retryable.
+
+Drain is stored by owner and family, not by individual evidence signature or target. A completed operation or `K` assessment increases only that pair's drain; rejected or malformed attempts add a larger drain, while stale and cut-off transport add none. Drain decays on that owner's later opportunities, encouraging the scheduler to serve the other ready families without reducing the five-NPC active-cast limit.
 
 Every eligible focused action advances that owner's opportunity clock, including a completed `K` assessment and a turn whose complete assessment packet cannot fit. Durable evidence age and drain decay therefore continue to advance instead of waiting for an operation to be selected.
 
-Continuing without a new player input, including refreshing the Context Viewer after the real generation, can run a portrayal-only Continue pass. `CC — Status` therefore reports the **Current pass** separately from the **Last action task**, **selection**, **resolution**, and **mutation / drain**. The last-action rows preserve what happened on the actual input turn instead of being erased by the later preview.
+Output prepares a separate possible Continue plan after a completed generation. Refreshing the Context Viewer does not promote or consume that plan; only a clearly newer action count does. Its triggered Model Context cards and Front Memory task were already prepared by Output. A preparation fingerprint invalidates the queued task if source cards, settings, evidence, or managed state change before Context. `CC — Status` therefore reports the **Current pass** separately from the **Last action task**, **selection**, **resolution**, and **mutation / drain**.
 
 ## Retry and context protection
 
@@ -184,9 +202,12 @@ Retry restores the discarded generation's pre-turn snapshot, including:
 - active roster and stable slots
 - temporary State
 - Names, Relationships, Turning Points, Views, and Experiences
+- generated Model Context cards for persisted rollback consistency
 - operation meters and provenance
 
-CC also uses a bounded context budget and selects scene-relevant continuity instead of loading every saved record every turn. The configured Continuity budget governs the complete CC packet, including portrayal and any assessment task. An assessment task has a fixed 1,200-token ceiling inside that same total budget. In cache-compatible mode CC can fit the focused portrayal in full, compact, or emergency tiers, evict optional projections to reserve a complete assessment packet, or defer the assessment when the complete task still cannot fit. The portrayal tier is therefore a budget-fitting strategy, not a separate hidden budget.
+When Retry reruns Input, CC rebuilds and pre-stages the frozen task before Context. AI Continue has no player Input phase: if its retry is first detectable inside Context, the prior task and the possible-next task are mutually exclusive and platform assembly has already happened. This build therefore restores persisted continuity but authorizes no operation for that one Context-only retry response; its story remains prose-only.
+
+CC does not trigger every saved record. Each NPC receives one generated Model Context card capped at 4,400 characters, and only a matching name activates it. A temporary operation-task payload has a 600-token hard ceiling; the small `<CC_FRONT_MEMORY>` ownership wrapper and any unrelated pre-existing Front Memory are outside that measurement. Initial tasks are built to at most 592 estimated tokens so adding the positive Retry label still remains at or below 600. Because only one family is advertised, the fitter reduces evidence/reference detail within that family and defers only if no complete form fits. Input replaces any pending Continue block with the new Input/Retry task; Output replaces the consumed block with a possible Continue or recovery task when needed. Ordinary no-task turns have no CC Front Memory block. In enabled task verification, Context only verifies the exact complete block already present and returns its input byte-for-byte; disabled-mode cleanup may remove CC's owned block. The configured Continuity budget remains an outer safety allowance, but raising it does not enlarge generated portrayal cards or the operation-task ceiling.
 
 ## Scope
 
