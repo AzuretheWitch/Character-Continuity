@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.02-test-b3**.
+This reference describes **v2.02-test-b5**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -12,8 +12,8 @@ Keep every setting on its own line. `true` and `false` are recommended for Boole
 
 | Setting | Default | Accepted values | What it does |
 | --- | ---: | --- | --- |
-| `Enabled` | `true` | `true` or `false` | Turns CC processing on or off without removing source or managed continuity cards. When off, CC clears its Front Memory block and removes its derived Model Context cards so their name triggers do not remain active. |
-| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Outer safety allowance for CC's temporary control task and the context capacity available that turn. Portrayal now uses separately capped triggered Model Context cards, so raising this value does not enlarge them. |
+| `Enabled` | `true` | `true` or `false` | Turns CC processing on or off without removing source or managed continuity cards. When off, CC clears its Front Memory block, removes derived Model Context cards, and removes ordinary name triggers from Essentials while preserving its private identity marker. |
+| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Outer safety allowance for CC's temporary control task and the context capacity available that turn. Stable portrayal uses a separately capped Essentials card and dynamic continuity uses a separately capped Model Context card, so raising this value does not enlarge either. |
 | `State lifetime` | `3` | Whole number from `1` to `12` | Sets how many completed AI responses a temporary State field may survive without new evidence refreshing it. |
 | `Maximum active NPCs` | `5` | Whole number from `1` to `5` | Limits how many scene-relevant registered NPCs CC may treat as active at once. The roster itself still has five stable slots. |
 | `Dynamic cast` | `true` | `true` or `false` | Allows Side NPCs to become Main and inactive Main NPCs to become Side. `false` freezes those statuses. |
@@ -55,7 +55,7 @@ If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` an
 
 ### Continuity budget
 
-In v2.02-test-b3, portrayal and control use different routes. Compact portrayal lives in generated, name-triggered `CC — Model Context — Name` Story Cards. Front Memory contains only a current one-family assessment task, an unpromoted possible-next assessment staged for Continue, or a prose-recovery instruction; CC removes its tagged block when none is active.
+In v2.02-test-b5, portrayal and control use different routes. Compact portrayal lives in the creator-authored, name-triggered `Name's Essentials` Story Card. The generated `CC — Model Context — Name` card contains only dynamic continuity and agency guidance. Front Memory contains only a current one-family assessment task, an unpromoted possible-next assessment staged for Continue, or a prose-recovery instruction; CC removes its tagged block when none is active.
 
 An operation-task payload may use at most 600 estimated tokens; the `<CC_FRONT_MEMORY>` ownership tags and unrelated existing Front Memory are budgeted separately. Normal tasks are built to at most 592 tokens, reserving eight tokens so the positive Retry label remains inside the same 600-token hard ceiling. Input prepares the task before platform context assembly; Output can prepare a separate possible Continue task. The task is delivered only after Context verifies both its preparation fingerprint and that the incoming text already ends with the exact complete `state.memory.frontMemory` value for that plan. A card, settings, evidence, or managed-state change invalidates a stale prepared task. In enabled task verification, Context does not append, replace, resize, or truncate the task. Disabled-mode cleanup may remove CC's owned block. Text outside CC's own tags is preserved.
 
@@ -67,9 +67,9 @@ The final `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX` block inside `<CC_FR
 
 The owner opportunity clock advances once for every eligible focused action, including a completed `K` assessment and a turn whose complete packet cannot fit. This clock governs durable evidence age and operation-drain decay. Status reports evidence as `available` and `unreviewed`; `pending` is no longer used for every merely age-eligible ledger item.
 
-`info.maxChars` bounds task preparation, but the task is staged before platform context assembly rather than competing with the already assembled base text. Context never returns a partial task or tries to use an internal overflow area as writable capacity. `CC — Status` reports generated Model Context cards with their stored character and token estimates, Front Memory mode and verification, and control-task budget use.
+`info.maxChars` bounds task preparation, but the task is staged before platform context assembly rather than competing with the already assembled base text. Context never returns a partial task or tries to use an internal overflow area as writable capacity. `CC — Status` reports Essentials and generated Model Context character counts, Front Memory mode and verification, and control-task budget use.
 
-If context is crowded, keep Outer and Inner concise and remove redundant source prose. Each generated Model Context card first targets 1,000 characters or fewer for attention, has a hard 2,000-character Story Card ceiling, and adds optional State, development, Relationship, View, Name, and Experience material only as complete blocks. The foundation becomes more compact when a high-priority current block needs the room.
+If context is crowded, shorten Essentials first. Its hard limit is 1,000 characters and its preferred target is 850. The generated Model Context card contains no portrayal or Names; it admits only complete agency/current State/development/Relationship/View/Experience blocks, prefers 600 characters or fewer, and has a 1,000-character hard ceiling. The fitter omits a whole lower-priority dynamic block instead of shortening it or adding an ellipsis.
 
 ### State lifetime
 
@@ -79,7 +79,7 @@ State stores at most three trigger codes. If the model supplies more than three 
 
 ### Maximum active NPCs
 
-The roster always provides `N1` through `N5`, but this setting limits how many currently relevant NPCs CC treats as active for focus and update routing. Native Story Card matching can still activate more than one generated Model Context card when several registered names are explicitly present. The setting does not delete NPCs or change their stable roster slots.
+The roster always provides `N1` through `N5`, but this setting limits how many currently relevant NPCs CC treats as active for focus and update routing. Native Story Card matching can still activate more than one Essentials/Model Context pair when several registered names are explicitly present. The setting does not delete NPCs or change their stable roster slots.
 
 ### Dynamic cast
 
@@ -92,8 +92,8 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Limit | Value |
 | --- | ---: |
 | Stable active-roster slots | `5` |
-| Outer card context copy | `2,000` characters per NPC |
-| Inner card context copy | `2,000` characters per NPC |
+| Essentials preferred target | `850` characters per NPC |
+| Essentials hard ceiling | `1,000` characters per NPC |
 | Names card page | `1,000` characters |
 | Relationships card page | `1,000` characters |
 | Turning Points card page | `1,000` characters |
@@ -103,8 +103,8 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Imported Experience field | `5,000` characters before safe splitting |
 | Stored Experience record | `650` characters |
 | Model-facing Experience copy | `320` characters |
-| Generated Model Context preferred ceiling | `1,000` characters per NPC |
-| Generated Model Context hard ceiling | `2,000` characters per NPC |
+| Generated Model Context preferred ceiling | `600` characters per NPC |
+| Generated Model Context hard ceiling | `1,000` characters per NPC |
 | Generated Model Context triggers | `12` unambiguous canonical/Active forms plus currently mentioned managed forms per NPC |
 | Individual State value | `120` characters |
 | State triggers | `3` |

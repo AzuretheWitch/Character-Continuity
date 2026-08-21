@@ -1,5 +1,6 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.02-test-b3",
+  VERSION: "v2.02-test-b5",
+  ESSENTIALS_LABEL: "Essentials",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -16,6 +17,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_TITLE: "CC — Debug",
   CARD_TYPE: "Continuity",
   CARD_KEY_PREFIX: "__CC_STABLE_CARD__:",
+  ESSENTIALS_CARD_KEY_PREFIX: "__CC_ESSENTIALS__:",
   MODEL_CARD_TYPE: "Continuity",
   MODEL_CARD_TITLE_PREFIX: "CC — Model Context — ",
   MODEL_CARD_KEY_PREFIX: "__CC_MODEL_CARD__:",
@@ -41,6 +43,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
 
   MAX_ACTIVE_NPCS: 5,
   MIN_CONTINUITY_BUDGET: 1800,
+  PREFERRED_ESSENTIALS_CARD_CHARS: 850,
+  MAX_ESSENTIALS_CARD_CHARS: 1000,
   MAX_OUTER_CARD_CHARS: 2000,
   MAX_INNER_CARD_CHARS: 2000,
   MAX_VIEWS_CARD_CHARS: 1000,
@@ -60,6 +64,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   OPERATION_RETRY_HEADROOM_TOKENS: 8,
   PREFERRED_MODEL_CARD_CHARS: 1000,
   MAX_MODEL_CARD_CHARS: 2000,
+  PREFERRED_DYNAMIC_MODEL_CARD_CHARS: 600,
+  MAX_DYNAMIC_MODEL_CARD_CHARS: 1000,
   MAX_MODEL_CARD_TRIGGERS: 12,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_ASSESSMENT_TARGETS: 5,
@@ -89,7 +95,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 5,
+  MAINTENANCE_SCHEMA_VERSION: 6,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -649,10 +655,27 @@ function CharacterContinuity(hook, incomingText) {
     return logicalTitle ? settings.CARD_KEY_PREFIX + encodedManagedTitle(logicalTitle) : "";
   }
 
+  function essentialsCardMarker(title) {
+    const logicalTitle = line(title, 220);
+    return logicalTitle
+      ? settings.ESSENTIALS_CARD_KEY_PREFIX + encodedManagedTitle(logicalTitle)
+      : "";
+  }
+
+  function essentialsTitleFromKey(value) {
+    const marker = textOf(value).split(",")[0].trim();
+    if (!marker.startsWith(settings.ESSENTIALS_CARD_KEY_PREFIX)) return "";
+    return marker
+      ? decodedManagedTitle(marker.slice(settings.ESSENTIALS_CARD_KEY_PREFIX.length))
+      : "";
+  }
+
   function managedTitleFromKey(value) {
-    const source = textOf(value).trim();
-    if (!source.startsWith(settings.CARD_KEY_PREFIX)) return "";
-    return decodedManagedTitle(source.slice(settings.CARD_KEY_PREFIX.length));
+    const first = textOf(value).split(",")[0].trim();
+    if (first.startsWith(settings.CARD_KEY_PREFIX)) {
+      return decodedManagedTitle(first.slice(settings.CARD_KEY_PREFIX.length));
+    }
+    return essentialsTitleFromKey(first);
   }
 
   function defaultScriptCardTitle(value) {
@@ -660,6 +683,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   const OWNED_CARD_LABELS = [
+    settings.ESSENTIALS_LABEL,
     settings.OUTER_CHARACTER_LABEL,
     settings.INNER_CHARACTER_LABEL,
     settings.NAMES_LABEL,
@@ -743,12 +767,15 @@ function CharacterContinuity(hook, incomingText) {
     if (!source.trim()) return "";
 
     const profile = source.match(
-      /^\s*\{\s*(.+?)['’]s\s+(Outer|Inner)\s*:/i
+      /^\s*\{\s*(.+?)['’]s\s+(Essentials|Outer|Inner)\s*:/i
     );
     if (profile) {
-      const label = keyOf(profile[2]) === "outer"
-        ? settings.OUTER_CHARACTER_LABEL
-        : settings.INNER_CHARACTER_LABEL;
+      const profileLabel = keyOf(profile[2]);
+      const label = profileLabel === "essentials"
+        ? settings.ESSENTIALS_LABEL
+        : (profileLabel === "outer"
+          ? settings.OUTER_CHARACTER_LABEL
+          : settings.INNER_CHARACTER_LABEL);
       return ownedCardTitle(profile[1], label);
     }
 
@@ -1380,6 +1407,54 @@ function CharacterContinuity(hook, incomingText) {
     return created;
   }
 
+  function essentialsCardKeys(name, triggers = []) {
+    const title = ownedCardTitle(name, settings.ESSENTIALS_LABEL);
+    const marker = essentialsCardMarker(title);
+    const forms = unique([name].concat(Array.isArray(triggers) ? triggers : []), 160)
+      .map(value => line(value, 160))
+      .filter(value => value && !value.includes(",") && !/^__CC_/i.test(value));
+    return [marker].concat(forms.slice(0, settings.MAX_MODEL_CARD_TRIGGERS)).join(", ");
+  }
+
+  function pendingEssentialsCardKeys(name) {
+    return essentialsCardMarker(ownedCardTitle(name, settings.ESSENTIALS_LABEL));
+  }
+
+  function essentialsCardIdentityMatches(card, name, keys) {
+    const title = ownedCardTitle(name, settings.ESSENTIALS_LABEL);
+    const expectedKeys = textOf(keys);
+    return !!(card && title
+      && essentialsTitleFromKey(card.keys) === title
+      && (!expectedKeys || textOf(card.keys) === expectedKeys)
+      && keyOf(visibleTitleOf(card)) === keyOf(title));
+  }
+
+  function saveEssentialsCard(card, name, entry, triggers = [], pending = false) {
+    const index = cardIndex(card);
+    const title = ownedCardTitle(name, settings.ESSENTIALS_LABEL);
+    if (index < 0 || !title) return null;
+    const keys = pending
+      ? pendingEssentialsCardKeys(name)
+      : essentialsCardKeys(name, triggers);
+    return updateCardAt(
+      index,
+      keys,
+      entry,
+      settings.CARD_TYPE,
+      title,
+      true
+    );
+  }
+
+  function addEssentialsCard(name, entry, pending = true, triggers = []) {
+    const title = ownedCardTitle(name, settings.ESSENTIALS_LABEL);
+    if (!title) return null;
+    const keys = pending
+      ? pendingEssentialsCardKeys(name)
+      : essentialsCardKeys(name, triggers);
+    return addCardExact(title, keys, entry, settings.CARD_TYPE);
+  }
+
   function addCard(title, entry) {
     const cardTitle = line(title, 220);
     if (!cardTitle) return null;
@@ -1563,7 +1638,8 @@ function CharacterContinuity(hook, incomingText) {
       // Turning Point routers intentionally retain creator-authored trigger keys
       // and card types. Their exact possessive titles are required instead of
       // converting them into ordinary non-triggered CC cards.
-      if (intendedParts && keyOf(intendedParts.label) === keyOf(settings.TURNING_POINTS_LABEL)) return;
+      if (intendedParts && [settings.TURNING_POINTS_LABEL, settings.ESSENTIALS_LABEL]
+        .some(label => keyOf(intendedParts.label) === keyOf(label))) return;
       if (!intended || managedCardIdentityMatches(card, intended)) return;
       const saved = saveCard(card, entryOf(card), intended);
       if (saved && managedCardIdentityMatches(saved, intended)) migrated += 1;
@@ -1588,7 +1664,8 @@ function CharacterContinuity(hook, incomingText) {
     let failed = 0;
     cards.slice().forEach(card => {
       const parts = ownedCardTitleParts(physicalLogicalCardTitle(card));
-      if (!parts || parts.page !== 1) return;
+      if (!parts || parts.page !== 1
+        || keyOf(parts.label) === keyOf(settings.ESSENTIALS_LABEL)) return;
       const labelKey = keyOf(parts.label);
       const headerLabel = labelKey === keyOf(settings.OUTER_CHARACTER_LABEL)
         ? settings.OUTER_CHARACTER_LABEL
@@ -1626,7 +1703,8 @@ function CharacterContinuity(hook, incomingText) {
       if (!intended || !parts) return;
       const label = keyOf(parts.label);
       let boundary = "";
-      if ([settings.OUTER_CHARACTER_LABEL, settings.INNER_CHARACTER_LABEL, settings.STATE_LABEL]
+      if ([settings.ESSENTIALS_LABEL, settings.OUTER_CHARACTER_LABEL,
+        settings.INNER_CHARACTER_LABEL, settings.STATE_LABEL]
         .some(value => keyOf(value) === label)) {
         const nonempty = entryOf(card).replace(/\r/g, "").split("\n")
           .map(row => row.trim()).filter(Boolean);
@@ -1863,6 +1941,9 @@ function CharacterContinuity(hook, incomingText) {
       .map(record => record.card)
       .sort((left, right) => cardIndex(right) - cardIndex(left))
       .forEach(removeCard);
+    catalogNamedLabel(settings.ESSENTIALS_LABEL).records.forEach(record => {
+      saveEssentialsCard(record.card, record.owner, entryOf(record.card), [], true);
+    });
     if (contextHook) {
       const frontMemory = beginFrontMemoryContext(originalText);
       const cleared = frontMemory.commit("");
@@ -2202,6 +2283,21 @@ function CharacterContinuity(hook, incomingText) {
     "Accepted Nickname",
     "Rejected Nickname"
   ];
+  const ESSENTIALS_REQUIRED_FIELDS = [
+    "Name, age, gender, pronouns",
+    "Race/Species",
+    "Physical attributes",
+    "Personality",
+    "Wants",
+    "Principles",
+    "Starting status"
+  ];
+  const ESSENTIALS_OPTIONAL_FIELDS = [
+    "Clothing style",
+    "Mannerisms",
+    "Fears",
+    "Mental wounds"
+  ];
 
   function onboardingFieldRows(source, label) {
     const pattern = new RegExp(
@@ -2265,6 +2361,37 @@ function CharacterContinuity(hook, incomingText) {
       "Physical attributes: ",
       "Clothing style: ",
       "Starting status: ",
+      "}"
+    ].join("\n");
+  }
+
+  function onboardingEssentialsTemplate(name) {
+    return [
+      "{",
+      name + "'s Essentials:",
+      "Onboarding: Pending",
+      "Ready: No",
+      "Outer:",
+      "Name, age, gender, pronouns: ",
+      "Race/Species: ",
+      "Physical attributes: ",
+      "Clothing style: ",
+      "Starting status: ",
+      "Inner:",
+      "Personality: ",
+      "Mannerisms: ",
+      "Wants: ",
+      "Fears: ",
+      "Mental wounds: ",
+      "Principles: ",
+      "Names:",
+      "Canonical: " + name,
+      "",
+      "Alias: ",
+      "Status: ",
+      "Use: ",
+      "Progress: ",
+      "Reason: ",
       "}"
     ].join("\n");
   }
@@ -2344,7 +2471,7 @@ function CharacterContinuity(hook, incomingText) {
     const rows = textOf(source).replace(/\r/g, "").split("\n");
     if (!onboardingMarkerPresent(source)) {
       const profileHeader = rows.findIndex(row =>
-        /^.*?['’]s[ \t]+(?:Outer|Inner)[ \t]*:[ \t]*$/i.test(row.trim())
+        /^.*?['’]s[ \t]+(?:Essentials|Outer|Inner)[ \t]*:[ \t]*$/i.test(row.trim())
       );
       const opening = rows.findIndex(row => row.trim());
       const insertion = profileHeader >= 0 ? profileHeader + 1 : Math.max(0, opening + 1);
@@ -2364,7 +2491,11 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingOuterNames() {
-    return catalogNamedOwners(settings.OUTER_CHARACTER_LABEL);
+    return uniqueNameForms(
+      catalogNamedOwners(settings.ESSENTIALS_LABEL)
+        .concat(catalogNamedOwners(settings.OUTER_CHARACTER_LABEL)),
+      160
+    );
   }
 
   function onboardingCanonicalPermission(value) {
@@ -2589,6 +2720,176 @@ function CharacterContinuity(hook, incomingText) {
       errors.push("Names exceeds its 1,000-character limit");
     }
     return { entry, errors };
+  }
+
+  function essentialsNamesDraftSource(name, source) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    const start = rows.findIndex(row => /^[ \t]*Names[ \t]*:[ \t]*$/i.test(row));
+    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+      .filter(item => item.value);
+    const closing = nonempty.length && nonempty[nonempty.length - 1].value === "}"
+      ? nonempty[nonempty.length - 1].index
+      : rows.length;
+    const body = start >= 0 && start < closing ? rows.slice(start + 1, closing) : [];
+    return ["{", name + "'s Names:", ...body, "}"].join("\n");
+  }
+
+  function compactEssentialsNameLines(namesEntry) {
+    const rows = textOf(namesEntry).replace(/\r/g, "").split("\n");
+    const canonical = extractLine(namesEntry, "Canonical");
+    const starts = [];
+    rows.forEach((row, index) => {
+      if (/^[ \t]*Alias[ \t]*:/i.test(row)) starts.push(index);
+    });
+    const result = canonical ? ["Canonical: " + canonical] : [];
+    starts.forEach((start, recordIndex) => {
+      const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : rows.length;
+      const block = rows.slice(start, end).join("\n");
+      const alias = extractLine(block, "Alias");
+      const status = ["Emerging", "Active", "Retired", "Rejected"]
+        .find(value => sameNameForm(value, extractLine(block, "Status")));
+      const use = extractLine(block, "Use");
+      if (!alias || !status) return;
+      const qualifier = use && !sameNameForm(use, "None") ? " [" + use + "]" : "";
+      result.push(status + qualifier + ": " + alias);
+    });
+    return result;
+  }
+
+  function essentialsNamesBoundaryErrors(source, active) {
+    const rows = textOf(source).replace(/\r/g, "").split("\n");
+    const namesIndexes = rows.map((row, index) =>
+      (/^[ \t]*Names[ \t]*:[ \t]*$/i.test(row) ? index : -1)
+    ).filter(index => index >= 0);
+    if (namesIndexes.length !== 1) return ["requires exactly one Names heading"];
+    const namesIndex = namesIndexes[0];
+    const errors = [];
+    ESSENTIALS_REQUIRED_FIELDS.concat(ESSENTIALS_OPTIONAL_FIELDS).forEach(field => {
+      onboardingFieldRows(source, field).forEach(item => {
+        if (item.index > namesIndex) errors.push(field + " must appear before Names");
+      });
+    });
+    const canonical = onboardingFieldRows(source, "Canonical");
+    canonical.forEach(item => {
+      if (item.index < namesIndex) errors.push("Canonical must appear inside Names");
+    });
+    if (active) {
+      const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+        .filter(item => item.value);
+      const closing = nonempty.length && nonempty[nonempty.length - 1].value === "}"
+        ? nonempty[nonempty.length - 1].index
+        : rows.length;
+      for (let index = namesIndex + 1; index < closing; index += 1) {
+        const row = rows[index].trim();
+        if (!row || /^Canonical[ \t]*:/i.test(row)
+          || /^(?:Emerging|Active|Retired|Rejected)(?:[ \t]+\[[^\]\r\n]+\])?[ \t]*:[ \t]*[^\r\n]+$/i.test(row)) {
+          continue;
+        }
+        errors.push("Names contains unsupported active line " + (index + 1));
+      }
+    }
+    return errors;
+  }
+
+  function essentialsCanonicalDraft(name, source) {
+    const errors = [];
+    if (!onboardingProfileHeaderValid(source, name, settings.ESSENTIALS_LABEL)) {
+      errors.push("Essentials wrapper or owner header is invalid");
+    }
+    const values = {};
+    ESSENTIALS_REQUIRED_FIELDS.concat(ESSENTIALS_OPTIONAL_FIELDS).forEach(field => {
+      const matches = onboardingFieldRows(source, field);
+      if (matches.length > 1) errors.push("Essentials requires at most one " + field + " line");
+      values[field] = matches.length === 1 ? matches[0].value : "";
+    });
+    ESSENTIALS_REQUIRED_FIELDS.forEach(field => {
+      if (!values[field]) errors.push("Essentials requires one filled " + field + " line");
+    });
+    const identity = textOf(values["Name, age, gender, pronouns"])
+      .split(",").map(value => value.trim());
+    if (identity.length < 4 || identity.slice(0, 4).some(value => !value)) {
+      errors.push("Essentials identity needs name, age, gender, and pronouns");
+    } else if (!sameNameForm(identity[0], name)) {
+      errors.push("Essentials identity name must match the canonical owner " + name);
+    }
+    const startingStatus = normalizeCastStatus(values["Starting status"], "");
+    if (!startingStatus) errors.push("Essentials Starting status must be Main or Side");
+    const markerRows = onboardingFieldRows(source, "Onboarding");
+    if (markerRows.length !== 1 || keyOf(markerRows[0].value) !== "pending") {
+      errors.push("Essentials requires exactly one Onboarding: Pending line");
+    }
+    if (onboardingFieldRows(source, "Ready").length !== 1 || !onboardingReadyValue(source)) {
+      errors.push("Essentials requires exactly one Ready: No or Ready: Yes line");
+    }
+    const names = onboardingCanonicalNames(name, essentialsNamesDraftSource(name, source));
+    errors.push(...names.errors.map(error => "Essentials " + error));
+    errors.push(...essentialsNamesBoundaryErrors(source, false).map(error => "Essentials " + error));
+    const rows = [
+      "{",
+      name + "'s Essentials:",
+      "Outer:",
+      "Name, age, gender, pronouns: " + values["Name, age, gender, pronouns"],
+      "Race/Species: " + values["Race/Species"],
+      "Physical attributes: " + values["Physical attributes"]
+    ];
+    if (values["Clothing style"]) rows.push("Clothing style: " + values["Clothing style"]);
+    rows.push("Starting status: " + (startingStatus
+      ? (startingStatus === "main" ? "Main" : "Side")
+      : values["Starting status"]));
+    rows.push(
+      "Inner:",
+      "Personality: " + values.Personality
+    );
+    if (values.Mannerisms) rows.push("Mannerisms: " + values.Mannerisms);
+    rows.push("Wants: " + values.Wants);
+    if (values.Fears) rows.push("Fears: " + values.Fears);
+    if (values["Mental wounds"]) rows.push("Mental wounds: " + values["Mental wounds"]);
+    rows.push("Principles: " + values.Principles, "Names:");
+    rows.push(...compactEssentialsNameLines(names.entry));
+    rows.push("}");
+    const entry = rows.join("\n");
+    if (entry.length > settings.MAX_ESSENTIALS_CARD_CHARS) {
+      errors.push("Essentials is " + entry.length + "/"
+        + settings.MAX_ESSENTIALS_CARD_CHARS + " characters after blank optional fields are removed");
+    }
+    return { entry, namesEntry: names.entry, errors, values };
+  }
+
+  function activeEssentialsErrors(name, source) {
+    const errors = [];
+    if (!onboardingProfileHeaderValid(source, name, settings.ESSENTIALS_LABEL)) {
+      errors.push("wrapper or owner header is invalid");
+    }
+    if (onboardingFieldRows(source, "Onboarding").length
+      || onboardingFieldRows(source, "Ready").length) {
+      errors.push("active Essentials must not retain Onboarding or Ready controls");
+    }
+    ESSENTIALS_REQUIRED_FIELDS.forEach(field => {
+      const rows = onboardingFieldRows(source, field);
+      if (rows.length !== 1 || !rows[0].value) errors.push("missing required " + field);
+    });
+    ESSENTIALS_OPTIONAL_FIELDS.forEach(field => {
+      const rows = onboardingFieldRows(source, field);
+      if (rows.length > 1) errors.push("repeats optional " + field);
+    });
+    const identity = onboardingFieldRows(source, "Name, age, gender, pronouns");
+    const parts = identity.length === 1
+      ? identity[0].value.split(",").map(value => value.trim())
+      : [];
+    if (parts.length < 4 || parts.slice(0, 4).some(value => !value)
+      || !sameNameForm(parts[0], name)) errors.push("identity does not match " + name);
+    if (!normalizeCastStatus(extractLine(source, "Starting status"), "")) {
+      errors.push("Starting status must be Main or Side");
+    }
+    const canonical = onboardingFieldRows(source, "Canonical");
+    if (canonical.length !== 1 || !sameNameForm(canonical[0].value, name)) {
+      errors.push("Canonical must be " + name);
+    }
+    errors.push(...essentialsNamesBoundaryErrors(source, true));
+    if (textOf(source).length > settings.MAX_ESSENTIALS_CARD_CHARS) {
+      errors.push(textOf(source).length + "/" + settings.MAX_ESSENTIALS_CARD_CHARS + " characters");
+    }
+    return errors;
   }
 
   function onboardingCanonicalViews(name, source) {
@@ -2935,6 +3236,128 @@ function CharacterContinuity(hook, incomingText) {
     return { ok: true };
   }
 
+  function essentialsSeedTriggers(name, namesEntry) {
+    const rows = textOf(namesEntry).replace(/\r/g, "").split("\n");
+    const starts = [];
+    rows.forEach((row, index) => {
+      if (/^[ \t]*Alias[ \t]*:/i.test(row)) starts.push(index);
+    });
+    const active = [];
+    starts.forEach((start, recordIndex) => {
+      const end = recordIndex + 1 < starts.length ? starts[recordIndex + 1] : rows.length;
+      const block = rows.slice(start, end).join("\n");
+      const alias = extractLine(block, "Alias");
+      const status = extractLine(block, "Status");
+      const use = extractLine(block, "Use");
+      if (alias && sameNameForm(status, "Active") && !sameNameForm(use, "None")) active.push(alias);
+    });
+    return uniqueNameForms([name].concat(active), 160);
+  }
+
+  function onboardingCommitEssentialsPack(name, pack) {
+    const essentials = essentialsCanonicalDraft(name, entryOf(pack.essentials));
+    const views = onboardingCanonicalViews(name, entryOf(pack.views));
+    const relationships = onboardingCanonicalRelationships(name, entryOf(pack.relationships));
+    const experiences = onboardingCanonicalExperiences(name, entryOf(pack.experiences));
+    const errors = essentials.errors.concat(
+      views.errors,
+      relationships.errors,
+      experiences.errors
+    );
+    if (onboardingReadyValue(entryOf(pack.essentials)) !== "yes") {
+      errors.unshift("Essentials Ready must be Yes before activation");
+    }
+    if (errors.length) return { ok: false, error: errors[0] };
+    const namesTitle = namedTitle(name, settings.NAMES_LABEL);
+    const existingNames = namedCards(name, settings.NAMES_LABEL);
+    if (existingNames.length > 1) return { ok: false, error: "conflicting Names cards" };
+    const priorDeck = capturePhysicalCardDeck();
+    try {
+      const saveOrdinary = (card, title, entry) => {
+        const saved = card ? saveCard(card, entry, title) : addCard(title, entry);
+        if (!saved || entryOf(saved) !== entry || !managedCardIdentityMatches(saved, title)) {
+          throw new Error("could not verify " + title);
+        }
+        return saved;
+      };
+      const authoritativeNamesEntry = existingNames[0]
+        ? entryOf(existingNames[0])
+        : essentials.namesEntry;
+      pack.names = existingNames[0]
+        || saveOrdinary(null, namesTitle, authoritativeNamesEntry);
+      pack.views = saveOrdinary(pack.views, namedTitle(name, settings.VIEWS_LABEL), views.entry);
+      pack.relationships = saveOrdinary(
+        pack.relationships,
+        namedTitle(name, settings.RELATIONSHIPS_LABEL),
+        relationships.entry
+      );
+      pack.experiences = saveOrdinary(
+        pack.experiences,
+        onboardingExperiencesTitle(name),
+        experiences.entry
+      );
+      const triggers = essentialsSeedTriggers(name, authoritativeNamesEntry);
+      const savedEssentials = saveEssentialsCard(
+        pack.essentials,
+        name,
+        essentials.entry,
+        triggers,
+        false
+      );
+      const expectedKeys = essentialsCardKeys(name, triggers);
+      if (!savedEssentials || entryOf(savedEssentials) !== essentials.entry
+        || !essentialsCardIdentityMatches(savedEssentials, name, expectedKeys)) {
+        throw new Error("could not verify " + ownedCardTitle(name, settings.ESSENTIALS_LABEL));
+      }
+      pack.essentials = savedEssentials;
+    } catch (error) {
+      const restored = restorePhysicalCardDeck(priorDeck);
+      return {
+        ok: false,
+        error: "activation transaction failed at " + (error.message || "an unknown card")
+          + (restored ? "" : "; rollback was incomplete")
+      };
+    }
+    return { ok: true };
+  }
+
+  function legacyEssentialsDraft(name, outerSource, innerSource, namesSource) {
+    const rows = [
+      "{",
+      name + "'s Essentials:",
+      "Onboarding: Pending",
+      "Ready: No",
+      "Outer:",
+      "Name, age, gender, pronouns: " + extractLine(outerSource, "Name, age, gender, pronouns"),
+      "Race/Species: " + extractLine(outerSource, "Race/Species"),
+      "Physical attributes: " + extractLine(outerSource, "Physical attributes"),
+      "Clothing style: " + extractLine(outerSource, "Clothing style"),
+      "Starting status: " + extractLine(outerSource, "Starting status"),
+      "Inner:",
+      "Personality: " + extractLine(innerSource, "Personality"),
+      "Mannerisms: " + extractLine(innerSource, "Mannerisms"),
+      "Wants: " + extractLine(innerSource, "Wants"),
+      "Fears: " + extractLine(innerSource, "Fears"),
+      "Mental wounds: " + extractLine(innerSource, "Mental wounds"),
+      "Principles: " + extractLine(innerSource, "Principles"),
+      "Names:",
+      "Canonical: " + name
+    ];
+    const source = textOf(namesSource).replace(/\r/g, "").split("\n");
+    const canonicalIndex = source.findIndex(row => /^[ \t]*Canonical[ \t]*:/i.test(row));
+    const closingIndex = source.map(row => row.trim()).lastIndexOf("}");
+    if (canonicalIndex >= 0 && closingIndex > canonicalIndex) {
+      rows.push(...source.slice(canonicalIndex + 1, closingIndex));
+    } else {
+      rows.push("", "Alias: ", "Status: ", "Use: ", "Progress: ", "Reason: ");
+    }
+    rows.push("}");
+    const filled = rows.join("\n");
+    return filled.length <= settings.MAX_ESSENTIALS_CARD_CHARS
+      ? filled
+      : onboardingEssentialsTemplate(name);
+  }
+
   function onboardingExactCards(title) {
     return catalogRecordsByTitle(title).map(record => record.card);
   }
@@ -2960,8 +3383,9 @@ function CharacterContinuity(hook, incomingText) {
       const card = item.card;
       const owner = item.owner;
       if (!owner) return;
-      const pendingOwner = namedCards(owner, settings.OUTER_CHARACTER_LABEL)
-        .some(outer => onboardingMarkerPresent(entryOf(outer)));
+      const pendingOwner = namedCards(owner, settings.ESSENTIALS_LABEL)
+        .concat(namedCards(owner, settings.OUTER_CHARACTER_LABEL))
+        .some(profile => onboardingMarkerPresent(entryOf(profile)));
       const aliases = textOf(entryOf(card)).replace(/\r/g, "").split("\n")
         .map(row => {
           const match = row.match(/^[ \\t]*Alias[ \\t]*:[ \\t]*(.*?)[ \\t]*$/i);
@@ -2975,6 +3399,118 @@ function CharacterContinuity(hook, incomingText) {
     return owners;
   }
 
+  function ensureEssentialsOnboarding(slot) {
+    const name = slot.name;
+    let essentialsCards = namedCards(name, settings.ESSENTIALS_LABEL);
+    const outerCards = namedCards(name, settings.OUTER_CHARACTER_LABEL);
+    const innerCards = namedCards(name, settings.INNER_CHARACTER_LABEL);
+    const legacyOnboarding = outerCards.some(card => onboardingMarkerPresent(entryOf(card)))
+      || innerCards.some(card => onboardingMarkerPresent(entryOf(card)));
+    if (!essentialsCards.length && legacyOnboarding) return false;
+    if (!essentialsCards.length && !inputHook) return outerCards.length ? false : true;
+    if (!essentialsCards.length) {
+      const aliasOwners = storedAliasOwners(name);
+      if (!outerCards.length && aliasOwners.length) {
+        slot.valid = false;
+        activeRosterDiagnostics.push(slot.code + " matched an existing Alias for "
+          + aliasOwners.join(", ") + "; enter that identity's canonical name instead.");
+        return true;
+      }
+      const legacyOuter = outerCards.length === 1 ? outerCards[0] : null;
+      const legacyInner = innerCards.length === 1 ? innerCards[0] : null;
+      const legacyNames = namedCards(name, settings.NAMES_LABEL);
+      const migration = !!(legacyOuter && legacyInner);
+      const draft = migration
+        ? legacyEssentialsDraft(
+          name,
+          entryOf(legacyOuter),
+          entryOf(legacyInner),
+          legacyNames.length === 1 ? entryOf(legacyNames[0]) : ""
+        )
+        : onboardingEssentialsTemplate(name);
+      const created = addEssentialsCard(name, draft, true);
+      if (!created) {
+        slot.valid = false;
+        activeRosterDiagnostics.push(name
+          + " could not be onboarded because its Essentials template could not be created.");
+        return true;
+      }
+      essentialsCards = [created];
+      activeRosterDiagnostics.push(migration
+        ? (name + " received a pending Essentials migration draft; legacy Outer/Inner remain active until approval.")
+        : (name + " confirmed; the four-card Essentials creator template was initialized."));
+    }
+    if (essentialsCards.length !== 1) {
+      slot.valid = false;
+      activeRosterDiagnostics.push(name
+        + " has conflicting Essentials cards and remains unavailable until only one remains.");
+      return true;
+    }
+    let essentials = essentialsCards[0];
+    const pending = onboardingMarkerPresent(entryOf(essentials));
+    if (!pending) return true;
+    if (!inputHook) return true;
+    const normalized = onboardingInsertControls(entryOf(essentials), true);
+    if (normalized !== entryOf(essentials)
+      || !essentialsCardIdentityMatches(essentials, name, pendingEssentialsCardKeys(name))) {
+      const saved = saveEssentialsCard(essentials, name, normalized, [], true);
+      if (!saved) {
+        slot.valid = false;
+        activeRosterDiagnostics.push(name
+          + " remains pending because its Essentials controls or private key could not be restored.");
+        return true;
+      }
+      essentials = saved;
+    }
+    const pack = {
+      essentials,
+      views: ensureOnboardingPackCard(
+        name,
+        namedTitle(name, settings.VIEWS_LABEL),
+        onboardingViewsTemplate,
+        "Views"
+      ),
+      relationships: ensureOnboardingPackCard(
+        name,
+        namedTitle(name, settings.RELATIONSHIPS_LABEL),
+        onboardingRelationshipsTemplate,
+        "Relationships"
+      ),
+      experiences: ensureOnboardingPackCard(
+        name,
+        onboardingExperiencesTitle(name),
+        onboardingExperiencesTemplate,
+        "Experiences"
+      )
+    };
+    if (Object.values(pack).some(card => !card)) {
+      slot.valid = false;
+      return true;
+    }
+    const ready = onboardingReadyValue(entryOf(essentials));
+    if (!ready) {
+      activeRosterDiagnostics.push(name
+        + " remains pending: Essentials needs exactly one Ready: No or Ready: Yes line.");
+      return true;
+    }
+    if (ready !== "yes") {
+      const draft = essentialsCanonicalDraft(name, entryOf(essentials));
+      const firstBlocker = draft.errors.length ? "; first blocker: " + draft.errors[0] : "";
+      activeRosterDiagnostics.push(name + " Essentials onboarding is pending at "
+        + entryOf(essentials).length + "/" + settings.MAX_ESSENTIALS_CARD_CHARS
+        + " characters" + firstBlocker + "; set Ready to Yes after review.");
+      return true;
+    }
+    const committed = onboardingCommitEssentialsPack(name, pack);
+    if (committed.ok) {
+      activeRosterDiagnostics.push(name
+        + " Essentials onboarding completed; blank optional fields were removed and native triggers activated.");
+    } else {
+      activeRosterDiagnostics.push(name + " remains pending: " + committed.error + ".");
+    }
+    return true;
+  }
+
   function ensureConfirmedOnboarding(slot) {
     if (!slot || !slot.valid || !slot.name) return;
     const reserved = ["self", "player", "the player"].includes(nameKeyOf(slot.name));
@@ -2983,6 +3519,7 @@ function CharacterContinuity(hook, incomingText) {
       activeRosterDiagnostics.push(slot.code + " named the Player or Self and was ignored as an NPC slot.");
       return;
     }
+    if (ensureEssentialsOnboarding(slot)) return;
     let outerCards = namedCards(slot.name, settings.OUTER_CHARACTER_LABEL);
     let innerCards = namedCards(slot.name, settings.INNER_CHARACTER_LABEL);
     let createdOuter = false;
@@ -3135,8 +3672,13 @@ function CharacterContinuity(hook, incomingText) {
   let rosterSkippedProfileCount = 0;
 
   function discoverCharacters() {
-    const label = settings.OUTER_CHARACTER_LABEL;
-    const prepared = catalogNamedLabel(label).records;
+    const essentialsPrepared = catalogNamedLabel(settings.ESSENTIALS_LABEL).records
+      .filter(item => !onboardingMarkerPresent(entryOf(item.card)));
+    const essentialsOwnerKeys = new Set(essentialsPrepared.map(item => item.ownerKey).filter(Boolean));
+    const legacyPrepared = catalogNamedLabel(settings.OUTER_CHARACTER_LABEL).records
+      .filter(item => !essentialsOwnerKeys.has(item.ownerKey));
+    const prepared = essentialsPrepared.map(item => ({ ...item, foundationMode: "essentials" }))
+      .concat(legacyPrepared.map(item => ({ ...item, foundationMode: "legacy" })));
     preparedProfileCount = new Set(prepared.map(item => item.ownerKey).filter(Boolean)).size;
     const rosterKeys = activeNpcRoster.card
       ? new Set(activeNpcRoster.slots
@@ -3151,6 +3693,7 @@ function CharacterContinuity(hook, incomingText) {
         name: item.owner,
         key: item.ownerKey,
         source: entryOf(item.card),
+        foundationMode: item.foundationMode,
         duplicateCount: 0
       };
     }).filter(candidate => candidate && candidate.key);
@@ -3175,32 +3718,47 @@ function CharacterContinuity(hook, incomingText) {
         first.duplicateCount = group.length - 1;
         accepted.push(first);
         characterDiscoveryDiagnostics.push(
-          first.name + " has " + group.length + " exact Outer cards; using the first and excluding "
+          first.name + " has " + group.length + " exact "
+            + (first.foundationMode === "essentials" ? "Essentials" : "Outer")
+            + " cards; using the first and excluding "
             + first.duplicateCount + " duplicate" + (first.duplicateCount === 1 ? "" : "s") + "."
         );
         return;
       }
       characterDiscoveryDiagnostics.push(
         first.name + " has " + group.length
-          + " conflicting Outer cards; excluded this identity until only one remains."
+          + " conflicting " + (first.foundationMode === "essentials" ? "Essentials" : "Outer")
+          + " cards; excluded this identity until only one remains."
       );
     });
 
-    return accepted.map(candidate => {
+    return accepted.filter(candidate => {
+      if (candidate.foundationMode !== "essentials") return true;
+      const errors = activeEssentialsErrors(candidate.name, candidate.source);
+      if (!errors.length) return true;
+      characterDiscoveryDiagnostics.push(candidate.name
+        + " Essentials is inactive: " + errors.join(", ") + ".");
+      return false;
+    }).map(candidate => {
       const { index, name, duplicateCount } = candidate;
+      const essentialsMode = candidate.foundationMode === "essentials";
       let outerCard = candidate.card;
-      outerCard = saveCard(
-        outerCard,
-        entryOf(outerCard),
-        namedTitle(name, settings.OUTER_CHARACTER_LABEL)
-      ) || outerCard;
+      if (!essentialsMode) {
+        outerCard = saveCard(
+          outerCard,
+          entryOf(outerCard),
+          namedTitle(name, settings.OUTER_CHARACTER_LABEL)
+        ) || outerCard;
+      }
       const source = entryOf(outerCard);
       const pronouns = parseOuterPronouns(source);
       const rawStartingStatus = extractLine(source, "Starting status");
       const parsedStartingStatus = normalizeCastStatus(rawStartingStatus, "");
       const outerProfile = buildOuterProfile(name, source);
       const wrapper = outerWrapperStatus(source);
-      const matchingInnerCards = namedCards(name, settings.INNER_CHARACTER_LABEL);
+      const matchingInnerCards = essentialsMode
+        ? [outerCard]
+        : namedCards(name, settings.INNER_CHARACTER_LABEL);
       let innerCard = matchingInnerCards[0] || null;
       let innerConflict = false;
       let duplicateInnerCount = 0;
@@ -3221,7 +3779,7 @@ function CharacterContinuity(hook, incomingText) {
           );
         }
       }
-      if (innerCard) {
+      if (innerCard && !essentialsMode) {
         innerCard = saveCard(
           innerCard,
           entryOf(innerCard),
@@ -3245,17 +3803,23 @@ function CharacterContinuity(hook, incomingText) {
       const outerWarnings = [];
       const innerWarnings = [];
       if (duplicateCount) {
-        outerWarnings.push("Using the first Outer card; excluded " + duplicateCount + " exact duplicate"
+        outerWarnings.push("Using the first " + (essentialsMode ? "Essentials" : "Outer")
+          + " card; excluded " + duplicateCount + " exact duplicate"
           + (duplicateCount === 1 ? "" : "s") + ".");
       }
-      if (!wrapper.opening && !wrapper.closing) outerWarnings.push("Outer wrapper { } missing.");
-      else if (!wrapper.opening) outerWarnings.push("Opening Outer wrapper { missing.");
-      else if (!wrapper.closing) outerWarnings.push("Closing Outer wrapper } missing.");
+      const foundationLabel = essentialsMode ? "Essentials" : "Outer";
+      if (!wrapper.opening && !wrapper.closing) outerWarnings.push(foundationLabel + " wrapper { } missing.");
+      else if (!wrapper.opening) outerWarnings.push("Opening " + foundationLabel + " wrapper { missing.");
+      else if (!wrapper.closing) outerWarnings.push("Closing " + foundationLabel + " wrapper } missing.");
       if (!parsedStartingStatus) outerWarnings.push("Starting status missing or invalid; defaulted to Side.");
       if (onboardingPending) {
         outerWarnings.push("Confirmed onboarding pending: complete " + onboardingMissing.join(", ") + ".");
-      } else if (outerProfile.missing.length) {
-        outerWarnings.push("Missing: " + outerProfile.missing.join(", ") + ".");
+      } else {
+        const requiredOuterMissing = outerProfile.missing.filter(field =>
+          !essentialsMode || !ESSENTIALS_OPTIONAL_FIELDS.includes(field));
+        if (requiredOuterMissing.length) {
+          outerWarnings.push("Missing: " + requiredOuterMissing.join(", ") + ".");
+        }
       }
       if (outerProfile.truncated) {
         outerWarnings.push("Shortened " + outerProfile.originalChars + " → " + outerProfile.retainedChars + " characters.");
@@ -3269,12 +3833,16 @@ function CharacterContinuity(hook, incomingText) {
           innerWarnings.push("Using the first Inner card; excluded " + duplicateInnerCount + " exact duplicate"
             + (duplicateInnerCount === 1 ? "" : "s") + ".");
         }
-        const innerWrapper = outerWrapperStatus(innerSource);
-        if (!innerWrapper.opening && !innerWrapper.closing) innerWarnings.push("Inner wrapper { } missing.");
-        else if (!innerWrapper.opening) innerWarnings.push("Opening Inner wrapper { missing.");
-        else if (!innerWrapper.closing) innerWarnings.push("Closing Inner wrapper } missing.");
-        if (!onboardingPending && innerProfile.missing.length) {
-          innerWarnings.push("Missing: " + innerProfile.missing.join(", ") + ".");
+        if (!essentialsMode) {
+          const innerWrapper = outerWrapperStatus(innerSource);
+          if (!innerWrapper.opening && !innerWrapper.closing) innerWarnings.push("Inner wrapper { } missing.");
+          else if (!innerWrapper.opening) innerWarnings.push("Opening Inner wrapper { missing.");
+          else if (!innerWrapper.closing) innerWarnings.push("Closing Inner wrapper } missing.");
+        }
+        const requiredInnerMissing = innerProfile.missing.filter(field =>
+          !essentialsMode || !ESSENTIALS_OPTIONAL_FIELDS.includes(field));
+        if (!onboardingPending && requiredInnerMissing.length) {
+          innerWarnings.push("Missing: " + requiredInnerMissing.join(", ") + ".");
         }
         if (innerProfile.truncated) {
           innerWarnings.push("Shortened " + innerProfile.originalChars + " → " + innerProfile.retainedChars + " characters.");
@@ -3297,6 +3865,9 @@ function CharacterContinuity(hook, incomingText) {
         innerWarnings,
         outerCard,
         innerCard,
+        essentialsCard: essentialsMode ? outerCard : null,
+        essentialsMode,
+        foundationMode: essentialsMode ? "essentials" : "legacy",
         onboardingGenerated,
         onboardingPending,
         onboardingMissing,
@@ -10628,56 +11199,103 @@ function CharacterContinuity(hook, incomingText) {
       : "";
   }
 
-  function projectionOuterAnchor(character, essential) {
-    const source = character && character.outer ? character.outer : "";
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
-    const rows = essential
-      ? [
-        compactOperationField(source, "Name, age, gender, pronouns", 55),
-        compactOperationField(source, "Race/Species", 30),
-        compactOperationField(source, "Physical attributes", 80)
-      ]
-      : [
-        compactOperationField(source, "Name, age, gender, pronouns", 80),
-        compactOperationField(source, "Race/Species", 40),
-        compactOperationField(source, "Physical attributes", 80),
-        compactOperationField(source, "Clothing style", 45)
-      ];
-    const completeRows = rows.filter(Boolean);
-    return completeRows.length
-      ? ["{", displayName + "'s compact Outer:", ...completeRows, "}"].join("\n")
-      : "";
+  const PROJECTION_PROFILE_FIELDS = [
+    { scope: "outer", label: "Name, age, gender, pronouns", essential: true, priority: 0 },
+    { scope: "outer", label: "Race/Species", essential: true, priority: 5 },
+    { scope: "outer", label: "Physical attributes", essential: true, priority: 3 },
+    { scope: "outer", label: "Clothing style", essential: false, supportPriority: 1 },
+    { scope: "inner", label: "Personality", essential: true, priority: 1 },
+    { scope: "inner", label: "Mannerisms", essential: false, supportPriority: 0 },
+    { scope: "inner", label: "Wants", essential: true, priority: 4 },
+    { scope: "inner", label: "Fears", essential: false, supportPriority: 2 },
+    { scope: "inner", label: "Mental wounds", essential: false, supportPriority: 3 },
+    { scope: "inner", label: "Principles", essential: true, priority: 2 }
+  ];
+
+  function projectionCharacterName(character) {
+    return textOf(character && character.name).replace(/\s+/g, " ").trim() || "NPC";
   }
 
-  function projectionInnerAnchor(character, essential) {
-    const source = character && character.inner ? character.inner : "";
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
-    const rows = essential
-      ? [
-        compactOperationField(source, "Personality", 65),
-        compactOperationField(source, "Wants", 40),
-        compactOperationField(source, "Principles", 70)
-      ]
-      : [
-        compactOperationField(source, "Personality", 80),
-        compactOperationField(source, "Mannerisms", 45),
-        compactOperationField(source, "Wants", 55),
-        compactOperationField(source, "Fears", 40),
-        compactOperationField(source, "Mental wounds", 40),
-        compactOperationField(source, "Principles", 90)
-      ];
-    const completeRows = rows.filter(Boolean);
-    return completeRows.length
-      ? ["{", displayName + "'s compact Inner:", ...completeRows, "}"].join("\n")
-      : "";
+  function projectionCompleteValue(value) {
+    return textOf(value).replace(/\r/g, "").replace(/\s*\n\s*/g, " ").trim();
+  }
+
+  function projectionSafeValue(value) {
+    return projectionCompleteValue(value).replace(/\{/g, "⦃").replace(/\}/g, "⦄");
+  }
+
+  function projectionProfileFields(character, essential) {
+    return PROJECTION_PROFILE_FIELDS.filter(definition => definition.essential === essential)
+      .map(definition => {
+        const source = definition.scope === "outer"
+          ? character && character.outer
+          : character && character.inner;
+        const value = extractLine(source || "", definition.label);
+        return value ? { ...definition, value } : null;
+      }).filter(Boolean);
+  }
+
+  function projectionProfileBlock(character, scope, fields, qualifier) {
+    const selected = (Array.isArray(fields) ? fields : []).filter(field => field.scope === scope);
+    if (!selected.length) return "";
+    const section = scope === "outer" ? "Outer" : "Inner";
+    return [
+      "{",
+      projectionCharacterName(character) + "'s " + qualifier + " " + section + ":",
+      ...selected.map(field => field.label + ": " + field.value),
+      "}"
+    ].join("\n");
+  }
+
+  function projectionHeader(character) {
+    return projectionCharacterName(character)
+      + " continuity; only while already relevant—do not introduce from this card. Keep NPC agency and private thoughts. The player controls player actions, speech, inner life, identity, consent, boundaries, and commitments.";
+  }
+
+  function projectionCoreEntry(character, fields) {
+    return [
+      projectionHeader(character),
+      projectionProfileBlock(character, "outer", fields, "compact"),
+      projectionProfileBlock(character, "inner", fields, "compact")
+    ].filter(Boolean).join("\n\n");
+  }
+
+  function hardLimitedProjectionFields(character, fields) {
+    const source = Array.isArray(fields) ? fields : [];
+    const candidates = [];
+    const combinations = 1 << source.length;
+    for (let mask = 1; mask < combinations; mask += 1) {
+      const selected = source.filter((field, index) => (mask & (1 << index)) !== 0);
+      const entry = projectionCoreEntry(character, selected);
+      if (entry.length > settings.MAX_MODEL_CARD_CHARS) continue;
+      candidates.push({
+        selected,
+        count: selected.length,
+        balanced: selected.some(field => field.scope === "outer")
+          && selected.some(field => field.scope === "inner"),
+        priority: selected.reduce((total, field) => total + (source.length - field.priority), 0),
+        chars: entry.length
+      });
+    }
+    const balanced = candidates.some(candidate => candidate.balanced);
+    const pool = balanced ? candidates.filter(candidate => candidate.balanced) : candidates;
+    pool.sort((left, right) => right.count - left.count
+      || right.priority - left.priority || right.chars - left.chars);
+    return pool.length ? pool[0].selected : [];
+  }
+
+  function projectionSupportingProfileBlocks(character) {
+    return projectionProfileFields(character, false)
+      .sort((left, right) => left.supportPriority - right.supportPriority)
+      .map(field => projectionProfileBlock(character, field.scope, [field], "additional"));
   }
 
   function projectionStateLine(character) {
     const state = normalizeState(CC.npcs[character.key] && CC.npcs[character.key].state, CC.stateClock);
     const parts = [];
     const add = (label, value) => {
-      const compact = shortenProfileValue(value, 40);
-      if (compact) parts.push(label + ": " + compact);
+      const complete = projectionSafeValue(value);
+      if (complete) parts.push(label + ": " + complete);
     };
     add("Thought", state.thought.value);
     add("Feeling", state.feeling.value);
@@ -10685,11 +11303,10 @@ function CharacterContinuity(hook, incomingText) {
     add("Tension", state.tension.value);
     add("Situation", state.situation.value);
     if (state.target.name) {
-      parts.push("About: " + shortenProfileValue(modelTargetName(state.target.key, state.target.name), 50));
+      parts.push("About: " + projectionSafeValue(modelTargetName(state.target.key, state.target.name)));
     }
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
     return parts.length
-      ? ["{", displayName + "'s current private State:", ...parts, "}"].join("\n")
+      ? ["{", projectionCharacterName(character) + "'s current private State:", ...parts, "}"].join("\n")
       : "";
   }
 
@@ -15032,8 +15649,8 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function modelProjectionMarkerFromCard(card) {
-    return textOf(card && card.keys).split(",").map(value => value.trim())
-      .find(value => value.startsWith(settings.MODEL_CARD_KEY_PREFIX)) || "";
+    const first = textOf(card && card.keys).split(",")[0].trim();
+    return first.startsWith(settings.MODEL_CARD_KEY_PREFIX) ? first : "";
   }
 
   function managedModelProjectionRecords() {
@@ -15070,6 +15687,9 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function modelProjectionTriggers(character, currentInput, recent) {
+    if (character && character.essentialsMode && Array.isArray(character.essentialsTriggers)) {
+      return character.essentialsTriggers.slice(0, settings.MAX_MODEL_CARD_TRIGGERS);
+    }
     const identity = nameIdentityForKey("npc:" + character.key);
     if (!identity) return [character.name];
     const identityData = namesForIdentity(identity.key);
@@ -15090,8 +15710,139 @@ function CharacterContinuity(hook, incomingText) {
       return matches.length === 1 && matches[0].key === identity.key;
     });
     return unique(forms, 160)
-      .filter(form => form && !form.includes(","))
+      .filter(form => form && !form.includes(",") && !/^__CC_/i.test(form))
       .slice(0, settings.MAX_MODEL_CARD_TRIGGERS);
+  }
+
+  function essentialsCreatorPrefix(entry) {
+    const rows = textOf(entry).replace(/\r/g, "").split("\n");
+    const namesIndex = rows.findIndex(row => /^[ \t]*Names[ \t]*:[ \t]*$/i.test(row));
+    if (namesIndex >= 0) return rows.slice(0, namesIndex).join("\n");
+    const nonempty = rows.map((value, index) => ({ value: value.trim(), index }))
+      .filter(item => item.value);
+    const closing = nonempty.length && nonempty[nonempty.length - 1].value === "}"
+      ? nonempty[nonempty.length - 1].index
+      : rows.length;
+    return rows.slice(0, closing).join("\n");
+  }
+
+  function compactEssentialsRecordLine(record) {
+    if (!record || !record.alias || !record.status) return "";
+    const use = nameUseModelText(record);
+    const qualifier = use && !sameNameForm(use, "None") ? " [" + use + "]" : "";
+    return record.status + qualifier + ": " + record.alias;
+  }
+
+  function essentialsMirrorPlan(character, currentInput, recent, active) {
+    const identity = nameIdentityForKey("npc:" + character.key);
+    const identityData = identity ? namesForIdentity(identity.key) : null;
+    const records = identityData ? identityData.contextRecords : [];
+    const mentioned = records.filter(record =>
+      aliasMentioned([currentInput, recent].filter(Boolean).join("\n"), record.alias)
+    );
+    const statusPriority = { Active: 0, Rejected: 1, Emerging: 2, Retired: 3 };
+    const ordered = [];
+    mentioned.concat(records.slice().sort((left, right) =>
+      (statusPriority[left.status] ?? 9) - (statusPriority[right.status] ?? 9)
+        || left.page - right.page || left.line - right.line
+    )).forEach(record => {
+      if (record && !ordered.some(item => item.aliasKey === record.aliasKey)) ordered.push(record);
+    });
+    const prefix = essentialsCreatorPrefix(entryOf(character.essentialsCard));
+    const lines = ["Names:", "Canonical: " + character.name];
+    const included = [];
+    ordered.forEach(record => {
+      const row = compactEssentialsRecordLine(record);
+      if (!row) return;
+      const candidate = [prefix].concat(lines, row, "}").join("\n");
+      if (candidate.length <= settings.MAX_ESSENTIALS_CARD_CHARS) {
+        lines.push(row);
+        included.push(record);
+      }
+    });
+    const entry = [prefix].concat(lines, "}").join("\n");
+    const mentionedKeys = new Set(mentioned.map(record => record.aliasKey));
+    const triggers = uniqueNameForms([character.name].concat(included.filter(record =>
+      mentionedKeys.has(record.aliasKey)
+        || (record.status === "Active"
+          && (record.use && record.use.permissions || []).some(permission => permission.key !== "none"))
+    ).map(record => record.alias)), 160)
+      .filter(value => value && !value.includes(",") && !/^__CC_/i.test(value))
+      .filter(value => {
+        if (sameNameForm(value, character.name)) return true;
+        const matches = identityReferenceMatches(value, false);
+        return matches.length === 1 && matches[0].key === identity.key;
+      })
+      .slice(0, settings.MAX_MODEL_CARD_TRIGGERS);
+    return {
+      ok: !!prefix && entry.length <= settings.MAX_ESSENTIALS_CARD_CHARS,
+      entry,
+      triggers,
+      included,
+      omitted: records.filter(record => !included.some(item => item.aliasKey === record.aliasKey))
+    };
+  }
+
+  function refreshEssentialsCards(currentInput, recent, active) {
+    let ok = true;
+    const eligibleCards = new Set(characters.filter(character => character.essentialsMode)
+      .map(character => character.essentialsCard));
+    catalogNamedLabel(settings.ESSENTIALS_LABEL).records.forEach(record => {
+      if (eligibleCards.has(record.card)) return;
+      const stripped = saveEssentialsCard(
+        record.card,
+        record.owner,
+        entryOf(record.card),
+        [],
+        true
+      );
+      if (!stripped) {
+        ok = false;
+        CC.last.warning = [CC.last.warning,
+          record.owner + " inactive Essentials native triggers could not be withheld."]
+          .filter(Boolean).join(" ");
+      }
+    });
+    characters.filter(character => character.essentialsMode).forEach(character => {
+      const plan = essentialsMirrorPlan(character, currentInput, recent, active);
+      if (!plan.ok) {
+        ok = false;
+        character.essentialsTriggers = [];
+        character.essentialsOmittedNames = [];
+        const disabled = saveEssentialsCard(
+          character.essentialsCard,
+          character.name,
+          entryOf(character.essentialsCard),
+          [],
+          true
+        );
+        if (disabled) character.essentialsCard = disabled;
+        CC.last.warning = [CC.last.warning,
+          character.name + " Essentials could not fit its Canonical Names line within 1,000 characters; native triggers were withheld."]
+          .filter(Boolean).join(" ");
+        return;
+      }
+      const saved = saveEssentialsCard(
+        character.essentialsCard,
+        character.name,
+        plan.entry,
+        plan.triggers,
+        false
+      );
+      if (!saved) {
+        ok = false;
+        CC.last.warning = [CC.last.warning,
+          character.name + " Essentials mirror or native triggers could not be refreshed."]
+          .filter(Boolean).join(" ");
+        return;
+      }
+      character.essentialsCard = saved;
+      character.outerCard = saved;
+      character.innerCard = saved;
+      character.essentialsTriggers = plan.triggers;
+      character.essentialsOmittedNames = plan.omitted.map(record => record.alias);
+    });
+    return ok;
   }
 
   function projectionNameSelections(character, currentInput, recent, active) {
@@ -15159,18 +15910,15 @@ function CharacterContinuity(hook, incomingText) {
     return (ownerData && ownerData.contextRecords || []).map(record => {
       const resolution = turningPointStageCardResolution(record, character, record.progress.stageRecord);
       if (!resolution.ok) return "";
-      const guidance = shortenProfileValue(
-        extractLine(resolution.entry, "Entry") || resolution.entry.replace(/[{}]/g, " "),
-        160
-      );
+      const guidance = extractLine(resolution.entry, "Entry")
+        || projectionCompleteValue(resolution.entry.replace(/[{}]/g, " "));
       if (!guidance) return "";
-      const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
       return [
         "{",
-        displayName + "'s current Development:",
-        "Arc: " + shortenProfileValue(record.title, 70),
-        "Stage: " + shortenProfileValue(record.progress.normalized, 40),
-        "Guidance: " + guidance,
+        projectionCharacterName(character) + "'s current Development:",
+        "Arc: " + projectionSafeValue(record.title),
+        "Stage: " + projectionSafeValue(record.progress.normalized),
+        "Guidance: " + projectionSafeValue(guidance),
         "}"
       ].join("\n");
     }).filter(Boolean).slice(0, 2);
@@ -15183,13 +15931,12 @@ function CharacterContinuity(hook, incomingText) {
       ? selection.fields
       : modelRelationshipFields(record);
     if (!record || !fields || !fields.length) return "";
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
     const rows = [
       "{",
-      displayName + "'s relevant Relationship:",
-      "About: " + shortenProfileValue(modelRelationshipTargetName(record), 60)
+      projectionCharacterName(character) + "'s relevant Relationship:",
+      "About: " + projectionSafeValue(modelRelationshipTargetName(record))
     ];
-    fields.forEach(field => rows.push(field.field + ": " + shortenProfileValue(field.text, 30)));
+    fields.forEach(field => rows.push(field.field + ": " + projectionSafeValue(field.text)));
     rows.push("}");
     return rows.join("\n");
   }
@@ -15198,12 +15945,11 @@ function CharacterContinuity(hook, incomingText) {
     const selection = Array.isArray(selections) ? selections[0] : null;
     const record = selection && (selection.record || selection);
     if (!record) return "";
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
     return [
       "{",
-      displayName + "'s relevant View:",
-      "About: " + shortenProfileValue(modelViewTargetName(record), 60),
-      "View: " + record.category + " — " + shortenProfileValue(safeModelViewText(record.explanation), 100),
+      projectionCharacterName(character) + "'s relevant View:",
+      "About: " + projectionSafeValue(modelViewTargetName(record)),
+      "View: " + projectionSafeValue(record.category) + " — " + projectionSafeValue(record.explanation),
       "}"
     ].join("\n");
   }
@@ -15214,12 +15960,12 @@ function CharacterContinuity(hook, incomingText) {
     if (!identity || !record) return "";
     return [
       "{",
-      shortenProfileValue(identity.headerOwner, 80) + "'s relevant Name:",
-      "Canonical: " + shortenProfileValue(identity.canonical, 60),
-      "Alias: " + shortenProfileValue(record.alias, 60),
-      "Status: " + shortenProfileValue(record.status, 30),
-      "Use: " + shortenProfileValue(nameUseModelText(record), 60),
-      "Reason: " + shortenProfileValue(safeModelViewText(record.reason), 100),
+      projectionSafeValue(identity.headerOwner) + "'s relevant Name:",
+      "Canonical: " + projectionSafeValue(identity.canonical),
+      "Alias: " + projectionSafeValue(record.alias),
+      "Status: " + projectionSafeValue(record.status),
+      "Use: " + projectionSafeValue(nameUseModelText(record)),
+      "Reason: " + projectionSafeValue(record.reason),
       "}"
     ].join("\n");
   }
@@ -15227,64 +15973,77 @@ function CharacterContinuity(hook, incomingText) {
   function projectionExperienceBlock(character, selection) {
     const record = selection && (selection.record || selection);
     if (!record) return "";
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
     return [
       "{",
-      displayName + "'s relevant Experience:",
-      "About: " + shortenProfileValue(modelTargetName(record.targetKey, record.targetName), 60),
-      "Experience: " + shortenProfileValue(experiencePhrase(record.situation), 140),
+      projectionCharacterName(character) + "'s relevant Experience:",
+      "About: " + projectionSafeValue(modelTargetName(record.targetKey, record.targetName)),
+      "Experience: " + projectionSafeValue(record.situation),
       "}"
     ].join("\n");
   }
 
   function modelProjectionEntry(character, currentInput, recent, active) {
+    if (character && character.essentialsMode) {
+      const blocks = [projectionHeader(character)];
+      const optional = [];
+      const stateBlock = projectionStateLine(character);
+      if (stateBlock) optional.push(stateBlock);
+      optional.push(...projectionTurningPointBlocks(character));
+      const relationships = relevantRelationshipRecords(
+        character, active, currentInput, recent
+      ).slice(0, 1);
+      const relationshipBlock = projectionRelationshipBlock(character, relationships);
+      if (relationshipBlock) optional.push(relationshipBlock);
+      const views = relevantViewRecords(
+        character, active, currentInput, recent, [], false
+      ).slice(0, 1);
+      const viewBlock = projectionViewBlock(character, views);
+      if (viewBlock) optional.push(viewBlock);
+      const experience = relevantExperienceRecords(
+        character, currentInput, recent, []
+      )[0] || null;
+      const experienceBlock = experience ? projectionExperienceBlock(character, experience) : "";
+      if (experienceBlock) optional.push(experienceBlock);
+      optional.forEach(block => {
+        const candidate = blocks.concat(block).join("\n\n");
+        if (candidate.length <= settings.PREFERRED_DYNAMIC_MODEL_CARD_CHARS) blocks.push(block);
+      });
+      const entry = blocks.join("\n\n");
+      return entry.length <= settings.MAX_DYNAMIC_MODEL_CARD_CHARS ? entry : "";
+    }
+    const essentialFields = projectionProfileFields(character, true);
+    let core = projectionCoreEntry(character, essentialFields);
+    if (core.length > settings.MAX_MODEL_CARD_CHARS) {
+      const fittedFields = hardLimitedProjectionFields(character, essentialFields);
+      core = projectionCoreEntry(character, fittedFields);
+      return core.length <= settings.MAX_MODEL_CARD_CHARS ? core : "";
+    }
+    if (core.length > settings.PREFERRED_MODEL_CARD_CHARS) return core;
+
     const optional = [];
     const stateBlock = projectionStateLine(character);
     if (stateBlock) optional.push(stateBlock);
     optional.push(...projectionTurningPointBlocks(character));
+    const names = projectionNameSelections(character, currentInput, recent, active);
+    const namesBlock = names.identity ? projectionNameBlock(names.identity, names.selections) : "";
+    if (namesBlock) optional.push(namesBlock);
+    optional.push(...projectionSupportingProfileBlocks(character));
     const relationships = projectionRelationshipSelections(character, currentInput, recent, active);
     const relationshipBlock = projectionRelationshipBlock(character, relationships);
     if (relationshipBlock) optional.push(relationshipBlock);
     const views = projectionViewSelections(character, currentInput, recent, active);
     const viewsBlock = projectionViewBlock(character, views);
     if (viewsBlock) optional.push(viewsBlock);
-    const names = projectionNameSelections(character, currentInput, recent, active);
-    const namesBlock = names.identity ? projectionNameBlock(names.identity, names.selections) : "";
-    if (namesBlock) optional.push(namesBlock);
     const experience = projectionExperienceSelection(character, currentInput, recent);
     const experienceBlock = experience ? projectionExperienceBlock(character, experience) : "";
     if (experienceBlock) optional.push(experienceBlock);
-
-    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
-    const header = displayName
-      + " continuity; only while already relevant—do not introduce from this card. Keep NPC agency and private thoughts. The player controls player actions, speech, inner life, identity, consent, boundaries, and commitments.";
-    const regularAnchors = [
-      projectionOuterAnchor(character, false),
-      projectionInnerAnchor(character, false)
-    ].filter(Boolean);
-    const essentialAnchors = [
-      projectionOuterAnchor(character, true),
-      projectionInnerAnchor(character, true)
-    ].filter(Boolean);
-    let blocks = [header].concat(regularAnchors);
-    const regularCore = blocks.join("\n\n");
-    const firstOptional = optional[0] || "";
-    if (regularCore.length > settings.PREFERRED_MODEL_CARD_CHARS
-      || (firstOptional
-        && blocks.concat(firstOptional).join("\n\n").length > settings.PREFERRED_MODEL_CARD_CHARS)) {
-      blocks = [header].concat(essentialAnchors);
-    }
-    const core = blocks.join("\n\n");
-    if (core.length > settings.MAX_MODEL_CARD_CHARS) return "";
-    const fitLimit = core.length <= settings.PREFERRED_MODEL_CARD_CHARS
-      ? settings.PREFERRED_MODEL_CARD_CHARS
-      : settings.MAX_MODEL_CARD_CHARS;
+    const blocks = [core];
     optional.forEach(block => {
       const candidate = blocks.concat(block).join("\n\n");
-      if (candidate.length <= fitLimit) blocks.push(block);
+      if (candidate.length <= settings.PREFERRED_MODEL_CARD_CHARS) blocks.push(block);
     });
     const entry = blocks.join("\n\n");
-    return entry.length <= settings.MAX_MODEL_CARD_CHARS ? entry : core;
+    return entry.length <= settings.PREFERRED_MODEL_CARD_CHARS ? entry : core;
   }
 
   function writeModelProjectionCard(character, currentInput, recent, active) {
@@ -15293,7 +16052,10 @@ function CharacterContinuity(hook, incomingText) {
     const triggers = modelProjectionTriggers(character, currentInput, recent);
     const keys = [marker].concat(triggers).join(", ");
     const entry = modelProjectionEntry(character, currentInput, recent, active);
-    if (!entry || entry.length > settings.MAX_MODEL_CARD_CHARS) {
+    const hardLimit = character.essentialsMode
+      ? settings.MAX_DYNAMIC_MODEL_CARD_CHARS
+      : settings.MAX_MODEL_CARD_CHARS;
+    if (!entry || entry.length > hardLimit) {
       return { ok: false, label: character.name + " (generated entry exceeds Story Card limit)" };
     }
     const markerMatches = currentCardCatalog().records
@@ -15340,6 +16102,7 @@ function CharacterContinuity(hook, incomingText) {
     const active = (CC.activeKeys || []).map(key => characters.find(character => character.key === key))
       .filter(Boolean);
     const relevanceCast = active.length ? active : eligible.slice(0, runtime.maxActive);
+    refreshEssentialsCards(currentInput, recent, relevanceCast);
     const results = eligible.map(character =>
       writeModelProjectionCard(character, currentInput, recent, relevanceCast)
     );
@@ -21465,6 +22228,16 @@ function CharacterContinuity(hook, incomingText) {
       "Scene / model / focus: " + (activeNames.join(" → ") || "None") + " / " + (modelActiveNames.join(" → ") || "None") + " / " + focusName,
       "Model omissions: " + ((CC.last.modelOmitted || []).join("; ") || "None"),
       "Cast: " + (characters.map(castStatus).join("; ") || "None") + " | Dynamic " + (runtime.dynamicCast ? "on" : "off"),
+      "Essentials: " + (characters.filter(character => character.essentialsMode).map(character =>
+        character.name + " " + entryOf(character.essentialsCard).length + "/"
+          + settings.MAX_ESSENTIALS_CARD_CHARS + " chars"
+          + (entryOf(character.essentialsCard).length > settings.PREFERRED_ESSENTIALS_CARD_CHARS
+            ? " (above " + settings.PREFERRED_ESSENTIALS_CARD_CHARS + " preferred)"
+            : "")
+          + ((character.essentialsOmittedNames || []).length
+            ? " | omitted Names " + character.essentialsOmittedNames.join(", ")
+            : "")
+      ).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),
       "Last Name: " + (CC.last.lastName || "None"),
       "State: " + (characters.map(stateStatus).join("; ") || "None"),
@@ -21570,6 +22343,10 @@ function CharacterContinuity(hook, incomingText) {
       "Card wrapper migration: " + (wrapperMigrationDiagnostics.join("; ") || "None"),
       "Identity discovery: " + (characterDiscoveryDiagnostics.join("; ") || "None"),
       "Outer: " + (characters.map(outerStatus).join("; ") || "None"),
+      "Essentials: " + (characters.filter(character => character.essentialsMode).map(character =>
+        character.name + " " + entryOf(character.essentialsCard).length + "/"
+          + settings.MAX_ESSENTIALS_CARD_CHARS + " chars"
+      ).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),
       "Names pages: " + ((namesStore && namesStore.pageStats || []).join("; ") || "None"),
       "Names diagnostics: " + ((namesStore && namesStore.diagnostics || []).join("; ") || "None"),
