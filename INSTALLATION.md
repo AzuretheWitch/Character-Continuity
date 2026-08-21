@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs the cache-compatible **v2.02-test-b5** release of Character Continuity in an AI Dungeon Scenario. Keep a recoverable copy of v2.01 while testing. For the cleanest first setup, use a duplicate, new, or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs the cache-compatible **v2.02-test-fm-instructions** release of Character Continuity in an AI Dungeon Scenario. Keep a recoverable copy of v2.01 while testing. For the cleanest first setup, use a duplicate, new, or otherwise clean Scenario and start a fresh Adventure after saving it.
 
 CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
 
@@ -82,9 +82,9 @@ modifier(text);
 
 > **Critical:** Input must call `CharacterContinuity("input", text)`, cache-compatible Context must call `CharacterContinuity("contextAppend", text)`, and Output must call `CharacterContinuity("output", text)`. Keep the first-line Context directive, pass the second argument, and return CC's replacement text.
 
-On an eligible focused turn, Input prepares a tagged block in `state.memory.frontMemory` before platform context assembly. It begins with `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX`, identifies one fixed NPC and one scheduled operation family, and supplies fresh completed raw evidence without deciding whether that family changed. It includes only that family's legal targets, current mechanics, one CCO operation form, and `K`. Output can pre-stage the corresponding task for a possible Continue. The model selects the relevant supplied evidence IDs and completes either the scheduled operation or `K` for that family's shown scope remaining unchanged as its first nonblank line, then writes the scene from the next line. The Output connector removes that control record before the player sees the story and replaces the consumed block only when a Continue or recovery task is ready.
+On an eligible focused turn, CC appends a tagged `CC CURRENT ASSESSMENT — CONTEXT PACKET` to ordinary Context. That packet supplies fresh completed raw evidence without assigning its semantic operation meaning, along with legal targets, current card mechanics, and available CCO forms. CC places only a short mandatory-compliance instruction in the actual `state.memory.frontMemory` suffix. The model follows the appended packet, completes either one continuity operation or `K` for continuity unchanged as its first nonblank line, then writes the scene from the next line. The Output connector removes that control record before the player sees the story and clears CC's temporary Front Memory block.
 
-CC wraps only its own temporary task in `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` and preserves Front Memory text outside those tags. In enabled task verification, Context returns its input unchanged and marks a task delivered only when the incoming text already ends with the exact complete staged Front Memory value. Disabled-mode cleanup may remove CC's owned block. A recovery turn receives a short recovery task; an ordinary story-only turn receives no CC Front Memory block.
+CC wraps only its short temporary instruction in `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` and preserves Front Memory text outside those tags. Evidence, target maps, mechanics, and CCO templates remain in the appended `<CC_CONTEXT_PACKET>...</CC_CONTEXT_PACKET>`. An operation is marked delivered only when CC verifies both the complete Context packet and the Front Memory instruction in the returned context. A recovery turn receives a short recovery instruction; an ordinary story-only turn receives no CC Front Memory block.
 
 Save all four script areas.
 
@@ -126,67 +126,71 @@ There are two supported approaches.
 
 This is the fastest method when the Scenario creator already knows the starting cast.
 
-Create one Custom Essentials card for each starting NPC.
+Create one Custom Outer card and one Custom Inner card for each starting NPC.
 
-Example Essentials card:
+Example Outer card:
 
-- **Name:** `Snow's Essentials`
+- **Name:** `Snow's Outer`
 - **Entry:**
 
 ```text
 {
-Snow's Essentials:
-Outer:
+Snow's Outer:
 Name, age, gender, pronouns: Snow, 31, woman, she/her
 Race/Species: arctic fox demi-human
-Physical attributes: medium height, sturdy, silver-white hair, pale-grey eyes, white ears and tail
-Clothing style: practical dark layers and a café apron
+Physical attributes: medium height, sturdy build, silver-white hair, pale-grey eyes, white ears and tail
+Clothing style: practical dark layers, a café apron, and sturdy boots
 Starting status: Main
-Inner:
+}
+```
+
+Example Inner card:
+
+- **Name:** `Snow's Inner`
+- **Entry:**
+
+```text
+{
+Snow's Inner:
 Personality: collected, observant, pragmatic, patient, quietly caring
 Mannerisms: speaks calmly and precisely; uses dry humor, silence, and practical acts
 Wants: keep the inn safe, sustainable, and welcoming
 Fears: trusting someone who leaves again
 Mental wounds: past abandonment taught her to carry burdens alone
 Principles: seek clear consent; accept refusal; care without controlling; protect privacy
-Names:
-Canonical: Snow
 }
 ```
 
 Rules:
 
-- Use the exact same canonical name in the card name, header, identity line, and `Canonical` line.
+- Use the exact same canonical name in both card names and headers.
 - Put the opening `{` and possessive card header on separate lines.
 - Keep one opening `{` and one closing `}`.
-- Required fields are `Name, age, gender, pronouns`, `Race/Species`, `Physical attributes`, `Personality`, `Wants`, `Principles`, and `Starting status`.
-- `Clothing style`, `Mannerisms`, `Fears`, and `Mental wounds` are optional; omit blank optional lines from a finished card.
+- Fill every listed Outer and Inner field.
 - `Starting status` must be `Main` or `Side`.
-- Keep the complete Essentials Entry at or below 1,000 characters. Aim for 850 or fewer so the model can attend to it reliably.
-- Finished Essentials displays compact name lines after `Canonical`, for example `Active [General]: Frost` or `Rejected: Fox`. The separate Names ledger remains authoritative; do not add an alias only to this mirror.
 - Do not create a State card manually.
-- Optional Views, Relationships, and Experiences baselines may also be added before play. If directly authoring initial aliases rather than using onboarding, put their complete records in a matching `Name's Names` baseline and mirror them compactly in Essentials.
+- Optional Names, Views, Relationships, and Experiences baselines may also be added before play.
 - Optional creator-authored Turning Points may be added separately by following the [Turning Points guide](CREATOR-PLAYER-GUIDE.md#turning-points); they are not part of onboarding.
 
-The current build still reads legacy Outer/Inner cards. It creates a pending Essentials migration draft for review and leaves those legacy sources active until the creator approves the draft; it never deletes them automatically.
+The current build still reads legacy combined openings such as `{ Snow's Outer:` and normalizes them to the split form in place.
 
-When no `CC — Active NPCs` card exists yet, CC seeds its roster from completed Essentials cards, and still recognizes completed legacy Outer cards, up to the five-slot limit.
+When no `CC — Active NPCs` card exists yet, CC seeds its roster from completed Outer cards, up to the five-slot limit.
 
 ### Option B: use confirmed onboarding
 
 Start with no cards for the new NPC. After the Adventure initializes, enter the NPC's canonical name in an empty `N#` line inside `CC — Active NPCs`.
 
-CC creates four visible setup cards—Essentials, Views, Relationships, and Experiences—and keeps the NPC pending until the whole pack passes validation. On activation it creates the authoritative Names ledger and managed State card. See [Confirmed onboarding](CREATOR-PLAYER-GUIDE.md#confirmed-onboarding) for the complete walkthrough and card templates.
+CC creates a six-card setup pack and keeps the NPC pending until the whole pack passes validation. See [Confirmed onboarding](CREATOR-PLAYER-GUIDE.md#confirmed-onboarding) for the complete walkthrough and card templates.
 
 ## 6. Leave managed triggers alone
 
-Do not create ordinary scene triggers for CC's managed storage cards. The activated Essentials card is the intentional exception: CC gives it the canonical name and unambiguous Active aliases so its compact portrayal enters context only when relevant.
+Do not create ordinary scene triggers for CC's source or storage cards. CC keeps those cards private and triggerless.
 
 After activation, CC may place an internal-looking value in a managed card's trigger or key field so the script can preserve that card's identity across hooks. Leave that value in place.
 
-For each activated NPC, CC also creates `CC — Model Context — Name`. It uses the same relevant name routing but contains only the player-agency reminder and dynamic State, Turning Point development, Relationship, View, or Experience blocks that fit. It never copies stable portrayal or Names. Its preferred limit is 600 characters and its hard limit is 1,000. A managed Emerging, Retired, or Rejected alias may be added transiently when that exact form is currently mentioned. Do not edit this generated card or its keys; edit Essentials or the applicable managed source card instead. Input and Output refresh it automatically.
+For each activated NPC, CC creates `CC — Model Context — Name`. This generated card is the exception: its normal keys contain the canonical name and unambiguous Active aliases so AI Dungeon can activate a compact portrayal only when relevant. A managed Emerging, Retired, or Rejected alias may be added transiently when that exact form is currently mentioned, allowing the card to explain its status. Do not edit this generated card or its keys; edit the NPC's source cards instead. Input and Output refresh it automatically.
 
-Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02-test-b5 validates that key and copies only the current stage guidance into the NPC's generated Model Context card. Keeping ordinary triggers off every stage card prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
+Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02-test-fm-instructions validates that key and copies only the current stage guidance into the NPC's generated Model Context card. Keeping ordinary triggers off every stage card prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
 
 The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. When movement is currently legal, the assessment can list a compact Turning Point ID, progress, movement, comparison-stage, and condition reference for the model.
 
@@ -205,18 +209,16 @@ Look for:
 - `CC — Active NPCs`
 - `CC — Status`
 - `Player's Names`
-- `Name's Essentials` for each activated NPC
-- `Name's Names` for each activated NPC
 - `Name's State` for each activated NPC
 - `CC — Model Context — Name` for each activated NPC
 
 `CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: v2.02-test-b5
+Version: v2.02-test-fm-instructions
 ```
 
-For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02-test-b5 text permanently.
+For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02-test-fm-instructions text permanently.
 
 An initial State card may be empty. Mere scene participation does not seed State; it fills only after CC accepts a supported, evidence-grounded State change or confirmation.
 
@@ -249,7 +251,9 @@ const modifier = (text) => {
 modifier(text);
 ```
 
-The example order is valid only when `OtherScript` preserves the complete current `state.memory.frontMemory` value as the actual suffix. If another Context function appends after Front Memory, do not combine it with this verification path until that function can insert its content before the Front Memory suffix. At the moment CC runs—and when the combined modifier returns—the exact Front Memory value must remain at the end of `text`; otherwise CC safely withholds its task or the final-response contract is no longer last. Test the combined setup in a duplicate Scenario before publishing it.
+Use the integration order recommended by the other script. Test the combined setup in a duplicate Scenario before publishing it.
+
+Place CC last among Context functions that append or replace suffix text. At the moment CC runs, the current `state.memory.frontMemory` value must still be the actual end of `text`; otherwise CC safely withholds its task and reports a suffix-verification error.
 
 ## Installation checklist
 
@@ -259,19 +263,18 @@ The example order is valid only when `OtherScript` preserves the complete curren
 - [ ] Output calls and returns `CharacterContinuity("output", text)`.
 - [ ] Scripts are enabled in the Scenario and account Gameplay settings.
 - [ ] `Player's Identity` exists, or the generic fallback is acceptable.
-- [ ] Every directly authored starting NPC has one complete Essentials card at or below 1,000 characters.
-- [ ] Every Essentials card contains all seven required fields; blank optional fields are omitted from finished cards.
+- [ ] Every directly authored starting NPC has completed Outer and Inner cards.
 - [ ] No State cards were created manually.
 - [ ] A fresh Adventure was started after saving.
 - [ ] `CC — Status` reports the same version as the installed Library's `VERSION` value.
-- [ ] Each activated NPC has a name-triggered Essentials card, an authoritative Names ledger, and one generated `CC — Model Context — Name` card.
-- [ ] Before Context, staging reports `Front Memory: prepared-operation | verified No`; after Context authorizes an assessment, it reports `Front Memory: operation | verified Yes`. After Output, `prepared-operation | verified No` is normal when a possible Continue task is staged.
+- [ ] Each activated NPC has one generated `CC — Model Context — Name` card with name triggers.
+- [ ] On an assessment turn, Context contains one complete `<CC_CONTEXT_PACKET>` and `CC — Status` reports `Front Memory: operation | verified Yes`; after Output it reports `Front Memory: clear`.
 
 ## Quick installation troubleshooting
 
 If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above and confirm that Context begins with `// @cache-compatible`. On assessment turns, the model places one completed CCO record on the first nonblank output line and begins story prose on the next line; the Output connector strips accepted, unchanged, stale, rejected, malformed, and cut-off control forms before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
 
-Seeing a populated private State block inside a triggered `CC — Model Context — Name` card in the **Context Viewer** is expected; that is how CC supplies bounded dynamic continuity. Stable portrayal should come from the separate triggered Essentials card, and neither portrayal fields nor Names should be duplicated in Model Context. On assessment turns, a tagged Front Memory task is also expected. Neither the tags nor raw `(CCO|...)` data should appear in visible story.
+Seeing a populated private State block inside a triggered `CC — Model Context — Name` card in the **Context Viewer** is expected; that is how CC supplies bounded private continuity for portrayal. On assessment turns, a complete tagged Context packet and a short tagged Front Memory instruction are also expected. Neither the tags nor raw `(CCO|...)` data should appear in visible story.
 
 For additional diagnosis, see [Troubleshooting](CREATOR-PLAYER-GUIDE.md#troubleshooting).
 

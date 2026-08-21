@@ -4,13 +4,13 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; the model interprets bounded fresh evidence and supplies any narrow continuity change, while CC validates its structure and current managed-card mechanics before saving it.
 
-The current package is **v2.02-test-b5**. Keep a recoverable v2.01 copy while evaluating it. This build is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`.
+The current package is **v2.02-test-fm-instructions**. Keep a recoverable v2.01 copy while evaluating it. This build is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`.
 
 ## Before you begin
 
 Two expectations prevent most confusion:
 
-1. **An onboarding pack is a set of forms, not AI-completed character creation.** CC creates four visible cards and their field titles. A creator or player completes Essentials, may add optional baselines, and explicitly approves activation. CC creates Names and State only after activation.
+1. **An onboarding pack is a set of forms, not AI-completed character creation.** CC creates the six cards and their field titles. A creator or player completes Outer and Inner, may add optional baselines, and explicitly approves activation.
 2. **A State card does not need to fill immediately.** CC creates it only after activation and fills it only when an eligible turn produces a valid, evidence-grounded State operation.
 
 Do not manually write State or raw `(CCO|...)` control records.
@@ -24,12 +24,12 @@ Do not manually write State or raw `(CCO|...)` control records.
 | Change CC settings | Yes | Yes |
 | Add or reconnect an NPC through the roster | Yes | Yes |
 | Complete an onboarding pack | Yes | Yes |
-| Deliberately revise Essentials | Yes | Yes, for their own Adventure |
+| Deliberately revise Outer or Inner | Yes | Yes, for their own Adventure |
 | Author an optional Turning Point tracker and its five stage cards | Yes | Yes, for their own Adventure |
 | Manually write State or hidden CCO records | No | No |
 | Let Names, Relationships, Views, Experiences, and Turning Point progress evolve after activation | CC | CC |
 
-Essentials is the creator-owned foundation. It combines stable Outer and Inner portrayal and mirrors compact names. State and the authoritative Names ledger are managed by CC. Relationships, Views, and Experiences can begin with creator-authored baselines, then become managed continuity during play. Turning Points are optional creator-authored arcs: the creator owns each definition, optional definitive `Breakthrough`, and all five stage-card entries, while CC manages only `Progress`, `Active card`, and `Stage trigger` during play.
+Outer and Inner are the creator-owned foundation. State is managed by CC. Names, Relationships, Views, and Experiences can begin with creator-authored baselines, then become managed continuity during play. Turning Points are optional creator-authored arcs: the creator owns each definition, optional definitive `Breakthrough`, and all five stage-card entries, while CC manages only `Progress`, `Active card`, and `Stage trigger` during play.
 
 ## Creator workflow
 
@@ -38,9 +38,9 @@ For a Scenario intended for other players:
 1. Follow the complete [installation guide](INSTALLATION.md), including all three exact connectors.
 2. Add `Player's Identity`, using a suitable default or placeholder.
 3. Decide how each starting NPC will be created:
-   - directly author one completed Essentials card in the Scenario, or
+   - directly author completed Outer and Inner cards in the Scenario, or
    - use onboarding in a private test Adventure.
-4. Add any desired starting Views, Relationships, or Experiences. Onboarding aliases belong in the pending Essentials form and are moved into the Names ledger on activation.
+4. Add any desired starting Names, Views, Relationships, or Experiences.
 5. Optionally author each NPC's Turning Point tracker and five matching stage Story Cards. Turning Points are separate from onboarding.
 6. Start a fresh test Adventure.
 7. Confirm the roster, context budget, Turning Point mode, and version in `CC — Status`.
@@ -49,11 +49,11 @@ For a Scenario intended for other players:
 10. Test onboarding if players will be allowed to add NPCs.
 11. Confirm that no raw `(CCO|...)` record appears in visible story history.
 
-Changes made inside a test Adventure do not rewrite the parent Scenario. If you use onboarding to design an NPC who should exist for every future player, copy or export that NPC's finalized Essentials, Names, Views, Relationships, and Experiences cards back into the Scenario before publishing. Copy any optional Turning Point tracker and stage cards separately; CC does not add them to the onboarding pack.
+Changes made inside a test Adventure do not rewrite the parent Scenario. If you use onboarding to design an NPC who should exist for every future player, copy or export that NPC's finalized six setup cards back into the Scenario before publishing. Copy any optional Turning Point tracker and stage cards separately; CC does not add them to the onboarding pack.
 
 ### Directly authored starting NPCs
 
-Direct authoring is best when the initial cast is already known. Each NPC needs one complete `Name's Essentials` card at or below 1,000 characters. Do not include onboarding controls in a finished direct-authored card, omit empty optional fields, and do not manually create `Name's State`.
+Direct authoring is best when the initial cast is already known. Each NPC needs a complete `Name's Outer` card and a complete `Name's Inner` card. Do not include onboarding controls in a finished direct-authored pair, and do not manually create `Name's State`.
 
 Use [the installation guide's templates](INSTALLATION.md#option-a-author-completed-cards-before-play) for the exact minimum format.
 
@@ -100,55 +100,41 @@ Save the card and continue once.
 
 `N1` through `N5` are stable active-routing slots, not permanent character IDs. A gap is valid and should remain a gap until another NPC is deliberately assigned to it.
 
-### 2. Find the four generated setup cards
+### 2. Find the six generated setup cards
 
 For a genuinely new name, CC creates:
 
 | Card | Required content before activation | What to do |
 | --- | --- | --- |
-| `Mira Vale's Essentials` | Seven required portrayal/status fields | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing; aliases are optional. |
+| `Mira Vale's Outer` | Every listed character field | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing. |
+| `Mira Vale's Inner` | Every listed character field | Complete it. Keep `Onboarding: Pending` while editing. |
+| `Mira Vale's Names` | No alias records required | Add starting aliases, or leave the blank five-field Alias record untouched. |
 | `Mira Vale's Views` | No View records required | Add baseline Views, or leave all five category headings empty. |
 | `Mira Vale's Relationships` | No Relationship records required | Add baselines, or leave the blank six-field record untouched. |
 | `Mira Vale's Experiences` | No Experience records required | Add prior Experiences, or leave the blank About/Experience pair untouched. |
 
-All four cards are validated together. Essentials must contain every required field and remain at or below 1,000 characters. Views, Relationships, and Experiences may contain no baseline records, but their wrappers, headings, and blank field titles must remain intact until activation.
+All six cards are validated together. Outer and Inner must be complete. The other four may contain no baseline records, but their wrappers, headings, and blank field titles must remain intact until activation.
 
-CC does **not** create `Mira Vale's Names` or `Mira Vale's State` while onboarding is pending. Both managed cards are created only after successful activation.
+CC does **not** create `Mira Vale's State` while onboarding is pending.
 
-All character-owned cards use possessive titles, and wrapped continuity entries use split wrappers. The current build recognizes legacy em-dash titles and combined openings, then attempts to migrate both in place. `CC — Debug` reports these results on its `Card title migration` and `Card wrapper migration` lines.
+All character-owned cards use possessive titles, and wrapped continuity entries use split wrappers. The current build recognizes legacy em-dash titles and combined openings such as `{ Mira Vale's Outer:`, then attempts to migrate both in place. `CC — Debug` reports these results on its `Card title migration` and `Card wrapper migration` lines.
 
-Turning Points are not a fifth onboarding card. If this NPC needs one, activate and verify the four-card pack first, then author the tracker and five stage Story Cards described in [Turning Points](#turning-points).
+Turning Points are not a seventh onboarding card. If this NPC needs one, activate and verify the six-card pack first, then author the tracker and five stage Story Cards described in [Turning Points](#turning-points).
 
-### 3. Complete Essentials
+### 3. Complete Outer
 
 Generated form:
 
 ```text
 {
-Mira Vale's Essentials:
+Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
-Outer:
 Name, age, gender, pronouns:
 Race/Species:
 Physical attributes:
 Clothing style:
 Starting status:
-Inner:
-Personality:
-Mannerisms:
-Wants:
-Fears:
-Mental wounds:
-Principles:
-Names:
-Canonical: Mira Vale
-
-Alias:
-Status:
-Use:
-Progress:
-Reason:
 }
 ```
 
@@ -156,23 +142,69 @@ Completed example:
 
 ```text
 {
-Mira Vale's Essentials:
+Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
-Outer:
 Name, age, gender, pronouns: Mira Vale, 29, woman, she/her
 Race/Species: human
 Physical attributes: tall, wiry, brown skin, cropped black curls, amber eyes
-Clothing style: weathered coat and practical boots
+Clothing style: weathered travel coat, fitted trousers, and practical boots
 Starting status: Side
-Inner:
+}
+```
+
+Requirements:
+
+- The first identity value must exactly match the canonical roster name.
+- The identity line needs name, age, gender, and pronouns.
+- `Race/Species`, `Physical attributes`, and `Clothing style` must be filled.
+- `Starting status` must be `Main` or `Side`.
+- Outer must contain exactly one `Ready` line.
+- Keep `Ready: No` until all six cards have been reviewed.
+
+### 4. Complete Inner
+
+Generated form:
+
+```text
+{
+Mira Vale's Inner:
+Onboarding: Pending
+Personality:
+Mannerisms:
+Wants:
+Fears:
+Mental wounds:
+Principles:
+}
+```
+
+Completed example:
+
+```text
+{
+Mira Vale's Inner:
+Onboarding: Pending
 Personality: observant, self-contained, practical, wry, slow to trust
-Mannerisms: checks exits; rolls a coin across her knuckles while thinking
-Wants: freedom to choose where she belongs
-Fears: dependence on another controlling group
-Mental wounds: conditional protection taught her to expect hidden prices
-Principles: ask before intervening; repay care; never bargain away another's agency
-Names:
+Mannerisms: checks exits on arrival; rolls a coin across her knuckles while thinking
+Wants: earn enough freedom to choose where she belongs
+Fears: becoming dependent on another controlling group
+Mental wounds: years of conditional protection taught her to expect hidden prices
+Principles: ask before intervening; repay genuine care; never bargain away another person's agency
+}
+```
+
+Every listed Inner field must contain a value.
+
+### 5. Optionally add Names
+
+The generated card contains a canonical line and one blank five-field alias record. Keep the canonical line unchanged.
+
+Example:
+
+```text
+{
+Mira Vale's Names:
 Canonical: Mira Vale
 
 Alias: Mira
@@ -182,18 +214,6 @@ Progress:
 Reason: Her accepted first-name form.
 }
 ```
-
-Requirements:
-
-- The first identity value and `Canonical` value must exactly match the roster name.
-- Required: `Name, age, gender, pronouns`, `Race/Species`, `Physical attributes`, `Personality`, `Wants`, `Principles`, and `Starting status`.
-- Optional: `Clothing style`, `Mannerisms`, `Fears`, and `Mental wounds`. They may remain blank while pending; CC removes blank optional lines during activation.
-- `Starting status` must be `Main` or `Side`.
-- Essentials must contain exactly one `Onboarding` and one `Ready` line while pending.
-- Keep the complete pending Entry at or below 1,000 characters and aim for 850 or fewer.
-- Keep `Ready: No` until all four cards have been reviewed.
-
-The Alias/Status/Use/Progress/Reason group is optional onboarding input. Repeat the complete five-field group for another alias. If there are no aliases, leave the generated blank group in place while pending.
 
 Supported statuses:
 
@@ -211,17 +231,17 @@ Supported statuses:
 
 Several specific users may be comma-separated. `General` and `None` must stand alone.
 
-On activation, CC moves these full alias records into the new authoritative `Mira Vale's Names` ledger and replaces them in Essentials with a compact mirror. For example:
+To add another alias, repeat the complete Alias, Status, Use, Progress, and Reason group. If there are no aliases, leave the generated blank group in place:
 
 ```text
-Canonical: Mira Vale
-Active [General]: Mira
-Rejected: Mirror-Mira
+Alias:
+Status:
+Use:
+Progress:
+Reason:
 ```
 
-Do not use the compact form in the pending draft; it is the active-card display format. Progress and Reason remain available in the Names ledger even though Essentials omits them.
-
-### 4. Optionally add Views
+### 6. Optionally add Views
 
 Keep all five headings once and in this order. Add each record as `Target — explanation`:
 
@@ -246,7 +266,7 @@ Each target may appear only once. A target may be:
 
 If there are no baseline Views, leave the five headings empty.
 
-### 5. Optionally add Relationships
+### 7. Optionally add Relationships
 
 One Relationship record contains exactly six fields:
 
@@ -278,7 +298,7 @@ You may provide a stage by itself or add a short explanation after `—`. During
 
 To add another Relationship, repeat the complete About, Role, Trust, Closeness, Boundaries, and Conflict group. If there are no baseline Relationships, leave the generated blank six-field group in place.
 
-### 6. Optionally add Experiences
+### 8. Optionally add Experiences
 
 Example:
 
@@ -294,9 +314,9 @@ About and Experience must either both be filled or both remain blank. Describe a
 
 To add another Experience, repeat the About and Experience pair.
 
-### 7. Activate the pack
+### 9. Activate the pack
 
-After reviewing all four cards, change only this line in Essentials:
+After reviewing all six cards, change only this line in Outer:
 
 ```text
 Ready: No
@@ -310,24 +330,18 @@ Ready: Yes
 
 Then continue once.
 
-CC validates all four cards as one transaction:
+CC validates all six cards as one transaction:
 
-- If every card is valid, CC removes the onboarding controls and blank optional Essentials fields, converts onboarding aliases to compact display lines, activates the NPC in the same stable slot, and creates the authoritative Names ledger and managed State card.
+- If every card is valid, CC removes the onboarding controls, activates the NPC in the same stable slot, and creates the managed State card.
 - If any card is invalid, the whole pack remains pending and no partial activation is committed.
 
 Read `CC — Status` for the first validation problem. If more detail is needed, set `Debug: true`, continue once, and inspect `CC — Debug`.
 
 After correcting an error, leave `Ready: Yes` in place and continue again.
 
-### Migrating legacy Outer and Inner cards
-
-b5 remains compatible with completed legacy characters. When it finds a roster NPC with legacy Outer and Inner but no Essentials, it creates a pending Essentials migration draft. If the legacy portrayal and name baseline fit, the draft is prefilled; otherwise CC supplies a blank safe template rather than clipping content. The legacy cards remain active while the draft is pending.
-
-Review and compact the draft to 1,000 characters or fewer, confirm all seven required fields, then change `Ready: No` to `Ready: Yes`. CC activates Essentials without deleting the legacy cards. Existing legacy onboarding that was already pending in the older six-card format also continues through the old validation route, so an upgrade does not strand an in-progress character.
-
 ## Reconnecting or removing an NPC
 
-If a roster name already has a completed Essentials card, entering its exact canonical name reconnects that existing identity instead of creating a new onboarding pack. A legacy NPC with completed Outer and Inner cards is also recognized.
+If a roster name already has completed Outer and Inner cards, entering its exact canonical name reconnects that existing identity instead of creating a new onboarding pack.
 
 If the supplied name is an established alias for another NPC, CC rejects it and asks for the canonical identity.
 
@@ -341,7 +355,7 @@ Removing a roster name does not delete the NPC's continuity cards. Re-enter the 
 
 ## Editing cards after activation
 
-- Edit **Essentials** only when deliberately revising the stable character foundation. Preserve its headings and 1,000-character hard limit; CC may refresh only its compact Names mirror.
+- Edit **Outer** or **Inner** only when deliberately revising the stable character foundation.
 - Edit **Player's Identity** when the Player character's name or pronouns need correction.
 - Edit **CC — Settings** for runtime behavior.
 - Edit **CC — Active NPCs** for onboarding, removal, or reconnection.
@@ -350,25 +364,9 @@ Removing a roster name does not delete the NPC's continuity cards. Re-enter the 
 
 If you intentionally edit a managed continuity card, preserve its exact wrapper, headings, complete record groups, and canonical names. Invalid records are preserved for inspection but excluded from model context and automatic updates.
 
-## Essentials and dynamic Model Context
-
-An activated Essentials card is the stable, creator-visible portrayal source. It is itself name-triggered, so CC does not need to copy those same fields into another card. Keep it at or below 1,000 characters; 850 or fewer is preferred. Its compact Names section is a readable mirror only:
-
-```text
-Names:
-Canonical: Mira Vale
-Active [General]: Mira
-Retired [Player]: Sparrow
-Rejected: Mirror-Mira
-```
-
-The full `Name's Names` card remains authoritative for Use, Progress, Reason, and automatic name operations. CC refreshes the compact mirror when that ledger changes, so never add or change an alias only in the mirror.
-
-`CC — Model Context — Name` is a separate generated dynamic card. It contains the player-agency reminder and whichever complete current State, Turning Point development, Relationship, View, or Experience blocks fit and are relevant. It contains no Essentials portrayal and no Names. The preferred size is 600 characters and the hard ceiling is 1,000; CC skips a lower-priority block whole instead of clipping it.
-
 ## Turning Points
 
-Turning Points are optional creator-authored arcs for durable character change. They are separate from the four-card onboarding pack: CC neither creates nor fills a Turning Point tracker or its stage cards. Add them only after the NPC has a completed Essentials foundation.
+Turning Points are optional creator-authored arcs for durable character change. They are separate from the six-card onboarding pack: CC neither creates nor fills a Turning Point tracker or its stage cards. Add them only after the NPC has a completed Outer and Inner foundation.
 
 Each Turning Point needs:
 
@@ -456,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.02-test-b5 the private key is a deterministic identity and validation key: CC validates it, then copies the resolved current-stage guidance into the NPC's generated Model Context card. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.02-test-fm-instructions the private key is a deterministic identity and validation key: CC validates it, then copies the resolved current-stage guidance into the NPC's generated Model Context card. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -491,7 +489,7 @@ The router field is preferred because it keeps the definitive mechanical conditi
 
 CC never exposes the whole Turning Point router as portrayal context. For every valid current Turning Point, it resolves the exact current stage and places a compact `current Development` block in that NPC's generated `CC — Model Context — Name` card. The final assessment can separately list each currently legal stable ID and movement, current Progress, a compact comparison-stage reference, and any definitive condition.
 
-CC updates the generated card in place after a progress transaction. On the next trigger, the model receives the newly resolved stage rather than an appended chain of old stage blocks. The generated development block does not expose the router, private trigger, or stable ID.
+CC updates the generated card in place after a progress transaction. On the next trigger, the model receives the newly resolved stage rather than an appended chain of old stage blocks. The generated portrayal block does not expose the router, private trigger, or stable ID.
 
 ### 5. Understand progress movement
 
@@ -527,19 +525,19 @@ Start a fresh test Adventure and inspect `CC — Status`. With `Debug: true`, `C
 
 ## How hidden assessment records work
 
-CC chooses the focused NPC, schedules one legal Name, State, Relationship, View, or Turning Point family, and supplies at most two fresh raw `E#` rows. Family choice uses owner/family drain and fairness; JavaScript still does not decide whether the story evidence actually supports a change in that family. During Input—or during the prior Output for a possible Continue—it prepares a temporary tagged Front Memory block beginning `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX`. The block lists at most five current target codes, compact mechanics for only the scheduled family, up to three Turning Point choices when Turning Point is scheduled, one CCO operation form, and `K`. Normal tasks fit within 592 estimated tokens so the positive Retry form remains inside the 600-token hard ceiling. Context authorizes that exact complete block without expanding it.
+CC chooses the focused NPC and supplies at most two fresh raw `E#` rows. JavaScript does not assign those rows to State, Name, Relationship, View, or Turning Point meaning. A temporary appended Context block begins `CC CURRENT ASSESSMENT — CONTEXT PACKET` and lists the current target codes, field choices, card mechanics, and available CCO forms. CC's tagged Front Memory contains only a short instruction requiring the model to follow that packet and complete one offered record.
 
 The model then:
 
 1. interprets the supplied evidence;
-2. selects any unique supplied evidence subset in supplied order and completes the one scheduled `S`, `N`, `R`, `V`, or `T` record, or completes `K` with the full supplied list when that family's shown scope stays unchanged; and
+2. selects any unique supplied evidence subset in supplied order and completes one available `S`, `N`, `R`, `V`, or `T` record, or completes `K` with the full supplied list when managed continuity stays unchanged; and
 3. continues with complete story prose from the next line.
 
 The Output connector removes the CCO line and echoed CC controls before returning the response. It checks record shape, supplied IDs, target codes, legal field values, current managed-card identity and movement, evidence reuse, and transaction safety. It does not rescore the prose to choose a different semantic operation. Players therefore see the scene, not the assessment section.
 
-Only the verified current Front Memory assessment is authoritative. An operation may cite a subset of its supplied IDs, but each ID must still be available, unique, and in supplied order. A record from another family is rejected. `K` must copy the full supplied list and closes only the scheduled family's shown targets or Turning Point rows. If bounding omitted legal scope, that evidence remains reviewable for the family on a later opportunity. A completed operation or `K` adds drain only to that owner/family pair; drain decays on later opportunities and normally lets another ready family go next. A record that cites unavailable or reordered IDs is `stale contract stripped`; CC preserves the story, adds no operation drain, and carries the same assessment once. An omitted record or cut-off protocol fragment also preserves usable story and can receive one bounded retry. Malformed and unauthorized records are stripped before story is returned and do not mutate continuity.
+Only the verified current Context packet and its matching Front Memory instruction authorize an operation. An operation may cite a subset of its supplied IDs, but each ID must still be available, unique, and in supplied order. `K` must copy the full supplied list. A record that cites unavailable or reordered IDs is `stale contract stripped`; CC preserves the story, adds no operation drain, and carries the same assessment once. An omitted record or cut-off protocol fragment also preserves usable story and can receive one bounded retry. Malformed and unauthorized records are stripped before story is returned and do not mutate continuity.
 
-The listed CCO forms are the supported assessment interface. CC may normalize harmless presentation wrapping around an otherwise complete record, but it does not infer missing semantic fields from story prose. JavaScript fixes the family for transport and rotation; the model decides whether that family changed and supplies the semantic operation details.
+The listed CCO forms are the supported assessment interface. CC may normalize harmless presentation wrapping around an otherwise complete record, but it does not infer missing semantic fields from story prose or replace the model's operation choice with a JavaScript-selected one.
 
 ## Understanding State
 
@@ -548,7 +546,7 @@ A managed State card contains temporary fields such as Thought, Feeling, Goal, T
 Its lifecycle is:
 
 1. CC creates the State card when an NPC activates.
-2. On an eligible focused turn where State is the scheduled family, CC gives the model fresh evidence and the State form. The model uses State only for a supported current change or confirmation; mere participation instead produces `K`.
+2. On an eligible focused turn, CC gives the model fresh evidence and the available assessment forms. The model may choose State only for a supported current change or confirmation; mere participation can instead produce `K`.
 3. The generated output begins with one completed hidden CCO assessment record and continues with story prose on the next line.
 4. The Output connector passes that generated text back through CC.
 5. CC validates the State record's structure and current managed-card mechanics and saves an accepted candidate transactionally.
@@ -633,9 +631,9 @@ Read `Current task`, `Last action task`, `Last action selection`, `Last action r
 (CCO|T|S|E22|chosen_not_kept|Breakthrough|Sydney tells the full truth and accepts the free response.)
 ```
 
-When Turning Point is the scheduled family, the model uses `T`, literal target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. A matching current `TP-…` portrayal handle is also accepted and normalized to its stable ID. Character names, Turning Point display names, and stage labels such as `Achieved` remain descriptive context rather than movement codes. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
+The model chooses `T`, target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. A matching current `TP-…` portrayal handle is also accepted and normalized to its stable ID. Character names, Turning Point display names, and stage labels such as `Achieved` remain descriptive context rather than movement codes. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
 
-The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.02-test-b5 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
+The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.02-test-fm-instructions safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
 
 A record citing unavailable or reordered evidence is reported as `stale contract stripped`, adds no drain, and carries the current assessment once. A structurally broken current record is `malformed stripped`; a well-formed record that uses an unavailable target, field, card identity, movement, reused source, or unsafe write is `rejected`. In every case, CC strips the assessment material and preserves complete punctuated story prose.
 
@@ -655,9 +653,9 @@ One blank automatic response immediately after the Scenario opening is expected.
 ### An onboarding NPC stays pending
 
 - Remember that CC creates blank onboarding forms; it does not invent or fill the character foundation.
-- Keep exactly one `Onboarding: Pending` and one `Ready: Yes` line in Essentials when attempting activation.
-- Fill all seven required Essentials fields and keep the Entry at or below 1,000 characters.
-- Blank optional Essentials fields are valid and will be removed on activation.
+- Keep exactly one `Onboarding: Pending` line in Outer and Inner.
+- Keep exactly one `Ready: Yes` line in Outer when attempting activation.
+- Fill every required Outer and Inner field.
 - Keep the optional blank-card structures and their field titles intact.
 - Use canonical names in the roster and About fields.
 - Remove conflicting duplicate cards.
@@ -665,13 +663,13 @@ One blank automatic response immediately after the Scenario opening is expected.
 
 ### An NPC is registered but not model-facing
 
-CC routes an activated NPC's Essentials and generated Model Context card through canonical names and unambiguous Active aliases. Mention or interact with the NPC, or bring them back into the current scene. Also check:
+CC creates one generated Model Context card for every activated NPC, but AI Dungeon includes it only when a canonical name or unambiguous Active alias triggers it. Mention or interact with the NPC, or bring them back into the current scene. Also check:
 
 - the NPC is still present in `CC — Active NPCs`
 - `Maximum active NPCs` is high enough
-- Essentials is complete and no more than 1,000 characters
+- Outer and Inner are complete
 - the NPC is not still onboarding
-- exactly one Essentials and one `CC — Model Context — Name` card exist and their keys include the canonical name
+- exactly one `CC — Model Context — Name` card exists and its keys include the canonical name
 
 ### A card has an internal-looking trigger
 
@@ -726,7 +724,7 @@ Useful lines include:
 - `Pending operation retry`
 - `Operation task ceiling`
 - `Portrayal route`
-- `Model Context cards / stored characters and tokens`
+- `Model Context cards / stored tokens`
 - `Front Memory mode / verified`
 - `Active NPC slots`
 - `Card title migration`
