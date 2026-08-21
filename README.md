@@ -4,11 +4,11 @@ Character Continuity, or **CC**, is an AI Dungeon companion script for keeping p
 
 CC gives each registered NPC a stable creator-authored foundation, a temporary private State, directional Relationships and Views, usable Names, persistent Experiences, and optional creator-authored Turning Points. It supplies only scene-relevant continuity to the model and validates every automatic update before saving it.
 
-The current package is **v2.02-test-b2**. It is a test release containing the hybrid transport/liveness work plus one-owner/one-family operation scheduling and a smaller Front Memory task budget; keep a copy of v2.01 while evaluating it.
+The current package is **v2.02-test-b3**. It is a test release containing the hybrid transport/liveness work plus one-owner/one-family operation scheduling, a smaller Front Memory task budget, and Story Card-safe generated portrayal limits; keep a copy of v2.01 while evaluating it.
 
 The maintained release is **cache-compatible only**. Install the four canonical files named `Library`, `Input`, `Context`, and `Output`; the Context connector must begin with `// @cache-compatible` and use the `contextAppend` hook. Legacy non-cache Context installations are no longer supported.
 
-## Hybrid model-context routing in v2.02-test-b2
+## Hybrid model-context routing in v2.02-test-b3
 
 CC no longer places the whole portrayal packet in the highest-priority context position.
 
@@ -19,14 +19,14 @@ CC no longer places the whole portrayal packet in the highest-priority context p
 | Current, possible-next, or prose-recovery instruction | CC-owned tagged block in `state.memory.frontMemory` | While the current task is active or Output has staged an unpromoted task for a possible Continue |
 | Ordinary story continuation | No CC Front Memory block | The model follows the normal scenario context |
 
-Each generated Model Context card combines a compact Outer/Inner foundation with bounded current State, current Turning Point stage, and a small relevant selection of Names, Relationships, Views, and Experiences. Its normal triggers are the canonical name and unambiguous Active aliases. When a managed Emerging, Retired, or Rejected form is actually mentioned, Input can add that form for the current context so the card can explain its status instead of treating it as a permanent trigger. Output refreshes the card after accepted continuity changes so Continue can use the new projection. CC preserves any Front Memory text outside its own `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` block.
+Each generated Model Context card combines a compact Outer/Inner foundation with whichever complete current blocks fit for State, the current Turning Point stage, and relevant Names, Relationships, Views, or Experiences. It targets no more than 1,000 characters for model attention and can never exceed AI Dungeon's 2,000-character Story Card limit. Current State and development are considered before lower-priority records, and the foundation becomes more compact when necessary to admit a complete high-priority block. Its normal triggers are the canonical name and unambiguous Active aliases. When a managed Emerging, Retired, or Rejected form is actually mentioned, Input can add that form for the current context so the card can explain its status instead of treating it as a permanent trigger. Output refreshes the card after accepted continuity changes so Continue can use the new projection. CC preserves any Front Memory text outside its own `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` block.
 
 ## Documentation
 
 - [Installation](INSTALLATION.md) — install the Library code, add the correct Input/Context/Output connectors, create starting cards, and verify the script.
 - [Configuration](CONFIGURATION.md) — every `CC — Settings` option, relationship pace presets, and fixed safety limits.
 - [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md) — recommended workflows, complete six-card onboarding instructions, card formats, and troubleshooting.
-- [v2.02-test-b2 notes](V2.02-TEST-NOTES.md) — hybrid routing, one-family scheduling, task-budget tests, diagnostics, and rollback.
+- [v2.02-test-b3 notes](V2.02-TEST-NOTES.md) — hybrid routing, one-family scheduling, Story Card limits, task-budget tests, diagnostics, and rollback.
 
 ## What CC tracks
 
@@ -140,7 +140,7 @@ For each Turning Point, the creator writes one record in `Name's Turning Points`
 - **Achieved:** progress 30–39
 - **Integrating:** progress 40–49
 
-The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v2.02-test-b2.
+The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v2.02-test-b3.
 
 The creator owns the Turning Point's meaning, Direction, stable ID, optional Breakthrough condition, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`. Keep the router Story Card's own trigger/key blank so the platform does not natively expose its private Entry; the managed `Stage trigger:` line inside that Entry is a separate data field. CC validates the exact private key on the current stage card, then places only the resolved current-stage guidance in that NPC's generated Model Context card. The assessment task lists currently available Turning Point IDs, movements, relevant comparison-stage text, and any definitive condition so the model can choose a grounded update.
 
@@ -207,7 +207,7 @@ Retry restores the discarded generation's pre-turn snapshot, including:
 
 When Retry reruns Input, CC rebuilds and pre-stages the frozen task before Context. AI Continue has no player Input phase: if its retry is first detectable inside Context, the prior task and the possible-next task are mutually exclusive and platform assembly has already happened. This build therefore restores persisted continuity but authorizes no operation for that one Context-only retry response; its story remains prose-only.
 
-CC does not trigger every saved record. Each NPC receives one generated Model Context card capped at 4,400 characters, and only a matching name activates it. A temporary operation-task payload has a 600-token hard ceiling; the small `<CC_FRONT_MEMORY>` ownership wrapper and any unrelated pre-existing Front Memory are outside that measurement. Initial tasks are built to at most 592 estimated tokens so adding the positive Retry label still remains at or below 600. Because only one family is advertised, the fitter reduces evidence/reference detail within that family and defers only if no complete form fits. Input replaces any pending Continue block with the new Input/Retry task; Output replaces the consumed block with a possible Continue or recovery task when needed. Ordinary no-task turns have no CC Front Memory block. In enabled task verification, Context only verifies the exact complete block already present and returns its input byte-for-byte; disabled-mode cleanup may remove CC's owned block. The configured Continuity budget remains an outer safety allowance, but raising it does not enlarge generated portrayal cards or the operation-task ceiling.
+CC does not trigger every saved record. Each NPC receives one generated Model Context card that targets at most 1,000 characters and has an absolute 2,000-character platform ceiling; only a matching name activates it. Optional information is admitted only as complete blocks. A temporary operation-task payload has a 600-token hard ceiling; the small `<CC_FRONT_MEMORY>` ownership wrapper and any unrelated pre-existing Front Memory are outside that measurement. Initial tasks are built to at most 592 estimated tokens so adding the positive Retry label still remains at or below 600. Because only one family is advertised, the fitter reduces evidence/reference detail within that family and defers only if no complete form fits. Input replaces any pending Continue block with the new Input/Retry task; Output replaces the consumed block with a possible Continue or recovery task when needed. Ordinary no-task turns have no CC Front Memory block. In enabled task verification, Context only verifies the exact complete block already present and returns its input byte-for-byte; disabled-mode cleanup may remove CC's owned block. The configured Continuity budget remains an outer safety allowance, but raising it does not enlarge generated portrayal cards or the operation-task ceiling.
 
 ## Scope
 

@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.02-test-b2",
+  VERSION: "v2.02-test-b3",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -58,7 +58,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   OPERATION_DRAIN_CAP: 12,
   MAX_OPERATION_TASK_TOKENS: 600,
   OPERATION_RETRY_HEADROOM_TOKENS: 8,
-  MAX_MODEL_CARD_CHARS: 4400,
+  PREFERRED_MODEL_CARD_CHARS: 1000,
+  MAX_MODEL_CARD_CHARS: 2000,
   MAX_MODEL_CARD_TRIGGERS: 12,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_ASSESSMENT_TARGETS: 5,
@@ -10627,6 +10628,71 @@ function CharacterContinuity(hook, incomingText) {
       : "";
   }
 
+  function projectionOuterAnchor(character, essential) {
+    const source = character && character.outer ? character.outer : "";
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    const rows = essential
+      ? [
+        compactOperationField(source, "Name, age, gender, pronouns", 55),
+        compactOperationField(source, "Race/Species", 30),
+        compactOperationField(source, "Physical attributes", 80)
+      ]
+      : [
+        compactOperationField(source, "Name, age, gender, pronouns", 80),
+        compactOperationField(source, "Race/Species", 40),
+        compactOperationField(source, "Physical attributes", 80),
+        compactOperationField(source, "Clothing style", 45)
+      ];
+    const completeRows = rows.filter(Boolean);
+    return completeRows.length
+      ? ["{", displayName + "'s compact Outer:", ...completeRows, "}"].join("\n")
+      : "";
+  }
+
+  function projectionInnerAnchor(character, essential) {
+    const source = character && character.inner ? character.inner : "";
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    const rows = essential
+      ? [
+        compactOperationField(source, "Personality", 65),
+        compactOperationField(source, "Wants", 40),
+        compactOperationField(source, "Principles", 70)
+      ]
+      : [
+        compactOperationField(source, "Personality", 80),
+        compactOperationField(source, "Mannerisms", 45),
+        compactOperationField(source, "Wants", 55),
+        compactOperationField(source, "Fears", 40),
+        compactOperationField(source, "Mental wounds", 40),
+        compactOperationField(source, "Principles", 90)
+      ];
+    const completeRows = rows.filter(Boolean);
+    return completeRows.length
+      ? ["{", displayName + "'s compact Inner:", ...completeRows, "}"].join("\n")
+      : "";
+  }
+
+  function projectionStateLine(character) {
+    const state = normalizeState(CC.npcs[character.key] && CC.npcs[character.key].state, CC.stateClock);
+    const parts = [];
+    const add = (label, value) => {
+      const compact = shortenProfileValue(value, 40);
+      if (compact) parts.push(label + ": " + compact);
+    };
+    add("Thought", state.thought.value);
+    add("Feeling", state.feeling.value);
+    add("Goal", state.goal.value);
+    add("Tension", state.tension.value);
+    add("Situation", state.situation.value);
+    if (state.target.name) {
+      parts.push("About: " + shortenProfileValue(modelTargetName(state.target.key, state.target.name), 50));
+    }
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    return parts.length
+      ? ["{", displayName + "'s current private State:", ...parts, "}"].join("\n")
+      : "";
+  }
+
   function temporaryStateLine(character) {
     const state = normalizeState(CC.npcs[character.key] && CC.npcs[character.key].state, CC.stateClock);
     const parts = [];
@@ -15095,53 +15161,130 @@ function CharacterContinuity(hook, incomingText) {
       if (!resolution.ok) return "";
       const guidance = shortenProfileValue(
         extractLine(resolution.entry, "Entry") || resolution.entry.replace(/[{}]/g, " "),
-        560
+        160
       );
       if (!guidance) return "";
+      const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
       return [
         "{",
-        character.name + "'s current Development:",
-        "Arc: " + record.title,
-        "Stage: " + record.progress.normalized,
+        displayName + "'s current Development:",
+        "Arc: " + shortenProfileValue(record.title, 70),
+        "Stage: " + shortenProfileValue(record.progress.normalized, 40),
         "Guidance: " + guidance,
         "}"
       ].join("\n");
     }).filter(Boolean).slice(0, 2);
   }
 
-  function modelProjectionEntry(character, currentInput, recent, active) {
-    const header = [
-      "Character continuity reference for " + character.name + ".",
-      "Use it only when " + character.name + " is already present or relevant; this card is not a reason to introduce the character.",
-      "Portray an independent perspective and keep private thoughts private unless the character chooses to reveal them. The player alone controls the player's actions, speech, inner life, identity, consent, boundaries, and commitments."
+  function projectionRelationshipBlock(character, selections) {
+    const selection = Array.isArray(selections) ? selections[0] : null;
+    const record = selection && (selection.record || selection);
+    const fields = selection && selection.fields
+      ? selection.fields
+      : modelRelationshipFields(record);
+    if (!record || !fields || !fields.length) return "";
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    const rows = [
+      "{",
+      displayName + "'s relevant Relationship:",
+      "About: " + shortenProfileValue(modelRelationshipTargetName(record), 60)
+    ];
+    fields.forEach(field => rows.push(field.field + ": " + shortenProfileValue(field.text, 30)));
+    rows.push("}");
+    return rows.join("\n");
+  }
+
+  function projectionViewBlock(character, selections) {
+    const selection = Array.isArray(selections) ? selections[0] : null;
+    const record = selection && (selection.record || selection);
+    if (!record) return "";
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    return [
+      "{",
+      displayName + "'s relevant View:",
+      "About: " + shortenProfileValue(modelViewTargetName(record), 60),
+      "View: " + record.category + " — " + shortenProfileValue(safeModelViewText(record.explanation), 100),
+      "}"
     ].join("\n");
-    let anchors = [compactOperationOuterAnchor(character), compactOperationInnerAnchor(character)].filter(Boolean);
-    const compactCore = [header].concat(anchors).join("\n\n");
-    if (compactCore.length > settings.MAX_MODEL_CARD_CHARS) {
-      anchors = [emergencyPortrayalOuterAnchor(character), emergencyPortrayalInnerAnchor(character)].filter(Boolean);
-    }
-    const blocks = [header].concat(anchors);
+  }
+
+  function projectionNameBlock(identity, selections) {
+    const selection = Array.isArray(selections) ? selections[0] : null;
+    const record = selection && (selection.record || selection);
+    if (!identity || !record) return "";
+    return [
+      "{",
+      shortenProfileValue(identity.headerOwner, 80) + "'s relevant Name:",
+      "Canonical: " + shortenProfileValue(identity.canonical, 60),
+      "Alias: " + shortenProfileValue(record.alias, 60),
+      "Status: " + shortenProfileValue(record.status, 30),
+      "Use: " + shortenProfileValue(nameUseModelText(record), 60),
+      "Reason: " + shortenProfileValue(safeModelViewText(record.reason), 100),
+      "}"
+    ].join("\n");
+  }
+
+  function projectionExperienceBlock(character, selection) {
+    const record = selection && (selection.record || selection);
+    if (!record) return "";
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    return [
+      "{",
+      displayName + "'s relevant Experience:",
+      "About: " + shortenProfileValue(modelTargetName(record.targetKey, record.targetName), 60),
+      "Experience: " + shortenProfileValue(experiencePhrase(record.situation), 140),
+      "}"
+    ].join("\n");
+  }
+
+  function modelProjectionEntry(character, currentInput, recent, active) {
     const optional = [];
-    const stateBlock = temporaryStateLine(character);
+    const stateBlock = projectionStateLine(character);
     if (stateBlock) optional.push(stateBlock);
     optional.push(...projectionTurningPointBlocks(character));
     const relationships = projectionRelationshipSelections(character, currentInput, recent, active);
-    const relationshipBlock = renderRelevantRelationshipsBlock(character, relationships);
+    const relationshipBlock = projectionRelationshipBlock(character, relationships);
     if (relationshipBlock) optional.push(relationshipBlock);
     const views = projectionViewSelections(character, currentInput, recent, active);
-    const viewsBlock = renderRelevantViewsBlock(character, views);
+    const viewsBlock = projectionViewBlock(character, views);
     if (viewsBlock) optional.push(viewsBlock);
     const names = projectionNameSelections(character, currentInput, recent, active);
-    const namesBlock = names.identity ? renderRelevantNamesBlock(names.identity, names.selections) : "";
+    const namesBlock = names.identity ? projectionNameBlock(names.identity, names.selections) : "";
     if (namesBlock) optional.push(namesBlock);
     const experience = projectionExperienceSelection(character, currentInput, recent);
-    const experienceBlock = experience ? renderRelevantExperienceBlock(character, experience) : "";
+    const experienceBlock = experience ? projectionExperienceBlock(character, experience) : "";
     if (experienceBlock) optional.push(experienceBlock);
+
+    const displayName = shortenProfileValue(character && character.name ? character.name : "NPC", 80);
+    const header = displayName
+      + " continuity; only while already relevant—do not introduce from this card. Keep NPC agency and private thoughts. The player controls player actions, speech, inner life, identity, consent, boundaries, and commitments.";
+    const regularAnchors = [
+      projectionOuterAnchor(character, false),
+      projectionInnerAnchor(character, false)
+    ].filter(Boolean);
+    const essentialAnchors = [
+      projectionOuterAnchor(character, true),
+      projectionInnerAnchor(character, true)
+    ].filter(Boolean);
+    let blocks = [header].concat(regularAnchors);
+    const regularCore = blocks.join("\n\n");
+    const firstOptional = optional[0] || "";
+    if (regularCore.length > settings.PREFERRED_MODEL_CARD_CHARS
+      || (firstOptional
+        && blocks.concat(firstOptional).join("\n\n").length > settings.PREFERRED_MODEL_CARD_CHARS)) {
+      blocks = [header].concat(essentialAnchors);
+    }
+    const core = blocks.join("\n\n");
+    if (core.length > settings.MAX_MODEL_CARD_CHARS) return "";
+    const fitLimit = core.length <= settings.PREFERRED_MODEL_CARD_CHARS
+      ? settings.PREFERRED_MODEL_CARD_CHARS
+      : settings.MAX_MODEL_CARD_CHARS;
     optional.forEach(block => {
       const candidate = blocks.concat(block).join("\n\n");
-      if (candidate.length <= settings.MAX_MODEL_CARD_CHARS) blocks.push(block);
+      if (candidate.length <= fitLimit) blocks.push(block);
     });
-    return blocks.join("\n\n");
+    const entry = blocks.join("\n\n");
+    return entry.length <= settings.MAX_MODEL_CARD_CHARS ? entry : core;
   }
 
   function writeModelProjectionCard(character, currentInput, recent, active) {
@@ -15150,6 +15293,9 @@ function CharacterContinuity(hook, incomingText) {
     const triggers = modelProjectionTriggers(character, currentInput, recent);
     const keys = [marker].concat(triggers).join(", ");
     const entry = modelProjectionEntry(character, currentInput, recent, active);
+    if (!entry || entry.length > settings.MAX_MODEL_CARD_CHARS) {
+      return { ok: false, label: character.name + " (generated entry exceeds Story Card limit)" };
+    }
     const markerMatches = currentCardCatalog().records
       .filter(record => modelProjectionMarkerFromCard(record.card) === marker)
       .map(record => record.card);
@@ -15170,7 +15316,8 @@ function CharacterContinuity(hook, incomingText) {
     CC.cardHashes[title] = hashString(entry + "\u241f" + keys);
     return {
       ok: true,
-      label: character.name + " " + estimateTokens(entry) + "t / " + triggers.length + " trigger"
+      label: character.name + " " + entry.length + "c / " + estimateTokens(entry) + "t / "
+        + triggers.length + " trigger"
         + (triggers.length === 1 ? "" : "s"),
       tokens: estimateTokens(entry)
     };
@@ -21499,7 +21646,8 @@ function CharacterContinuity(hook, incomingText) {
       "Time-jump reset: " + (CC.last.timeJumpReset ? "Yes" : "No"),
       "CCO parse: " + CC.last.protocol,
       "Components: rules " + CC.last.rulesTokens + ", Outer " + CC.last.outerTokens + ", Names " + CC.last.namesTokens + ", Inner " + CC.last.innerTokens + ", State " + CC.last.stateTokens + ", Relationships " + CC.last.relationshipsTokens + ", Turning Points " + CC.last.turningPointsTokens + ", Views " + CC.last.viewsTokens + ", Experiences " + CC.last.experiencesTokens + ", evidence " + CC.last.evidenceTokens + ", source packet " + CC.last.sourcePacketTokens + ", task " + CC.last.taskTokens,
-      "Model Context cards / stored tokens: " + ((CC.last.projectionCards || []).join("; ") || "None")
+      "Model Context cards / stored characters and tokens: "
+        + ((CC.last.projectionCards || []).join("; ") || "None")
         + " / " + (CC.last.projectionTokens || 0),
       "Front Memory mode / verified: " + (CC.last.frontMemoryMode || "clear")
         + " / " + (CC.last.frontMemoryVerified ? "Yes" : "No"),

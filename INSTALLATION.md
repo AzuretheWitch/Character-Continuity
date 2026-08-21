@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs the cache-compatible **v2.02-test-b2** release of Character Continuity in an AI Dungeon Scenario. Keep a recoverable copy of v2.01 while testing. For the cleanest first setup, use a duplicate, new, or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs the cache-compatible **v2.02-test-b3** release of Character Continuity in an AI Dungeon Scenario. Keep a recoverable copy of v2.01 while testing. For the cleanest first setup, use a duplicate, new, or otherwise clean Scenario and start a fresh Adventure after saving it.
 
 CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
 
@@ -190,7 +190,7 @@ After activation, CC may place an internal-looking value in a managed card's tri
 
 For each activated NPC, CC creates `CC — Model Context — Name`. This generated card is the exception: its normal keys contain the canonical name and unambiguous Active aliases so AI Dungeon can activate a compact portrayal only when relevant. A managed Emerging, Retired, or Rejected alias may be added transiently when that exact form is currently mentioned, allowing the card to explain its status. Do not edit this generated card or its keys; edit the NPC's source cards instead. Input and Output refresh it automatically.
 
-Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02-test-b2 validates that key and copies only the current stage guidance into the NPC's generated Model Context card. Keeping ordinary triggers off every stage card prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
+Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02-test-b3 validates that key and copies only the current stage guidance into the NPC's generated Model Context card. Keeping ordinary triggers off every stage card prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
 
 The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. When movement is currently legal, the assessment can list a compact Turning Point ID, progress, movement, comparison-stage, and condition reference for the model.
 
@@ -215,10 +215,10 @@ Look for:
 `CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: v2.02-test-b2
+Version: v2.02-test-b3
 ```
 
-For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02-test-b2 text permanently.
+For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02-test-b3 text permanently.
 
 An initial State card may be empty. Mere scene participation does not seed State; it fills only after CC accepts a supported, evidence-grounded State change or confirmation.
 

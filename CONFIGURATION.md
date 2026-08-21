@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.02-test-b2**.
+This reference describes **v2.02-test-b3**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -55,7 +55,7 @@ If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` an
 
 ### Continuity budget
 
-In v2.02-test-b2, portrayal and control use different routes. Compact portrayal lives in generated, name-triggered `CC — Model Context — Name` Story Cards. Front Memory contains only a current one-family assessment task, an unpromoted possible-next assessment staged for Continue, or a prose-recovery instruction; CC removes its tagged block when none is active.
+In v2.02-test-b3, portrayal and control use different routes. Compact portrayal lives in generated, name-triggered `CC — Model Context — Name` Story Cards. Front Memory contains only a current one-family assessment task, an unpromoted possible-next assessment staged for Continue, or a prose-recovery instruction; CC removes its tagged block when none is active.
 
 An operation-task payload may use at most 600 estimated tokens; the `<CC_FRONT_MEMORY>` ownership tags and unrelated existing Front Memory are budgeted separately. Normal tasks are built to at most 592 tokens, reserving eight tokens so the positive Retry label remains inside the same 600-token hard ceiling. Input prepares the task before platform context assembly; Output can prepare a separate possible Continue task. The task is delivered only after Context verifies both its preparation fingerprint and that the incoming text already ends with the exact complete `state.memory.frontMemory` value for that plan. A card, settings, evidence, or managed-state change invalidates a stale prepared task. In enabled task verification, Context does not append, replace, resize, or truncate the task. Disabled-mode cleanup may remove CC's owned block. Text outside CC's own tags is preserved.
 
@@ -67,9 +67,9 @@ The final `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX` block inside `<CC_FR
 
 The owner opportunity clock advances once for every eligible focused action, including a completed `K` assessment and a turn whose complete packet cannot fit. This clock governs durable evidence age and operation-drain decay. Status reports evidence as `available` and `unreviewed`; `pending` is no longer used for every merely age-eligible ledger item.
 
-`info.maxChars` bounds task preparation, but the task is staged before platform context assembly rather than competing with the already assembled base text. Context never returns a partial task or tries to use an internal overflow area as writable capacity. `CC — Status` reports generated Model Context cards, their stored token estimates, Front Memory mode and verification, and control-task budget use.
+`info.maxChars` bounds task preparation, but the task is staged before platform context assembly rather than competing with the already assembled base text. Context never returns a partial task or tries to use an internal overflow area as writable capacity. `CC — Status` reports generated Model Context cards with their stored character and token estimates, Front Memory mode and verification, and control-task budget use.
 
-If context is crowded, keep Outer and Inner concise and remove redundant source prose. Each generated Model Context card is capped independently; optional State, development, Relationship, View, Name, and Experience blocks are added only while complete blocks fit.
+If context is crowded, keep Outer and Inner concise and remove redundant source prose. Each generated Model Context card first targets 1,000 characters or fewer for attention, has a hard 2,000-character Story Card ceiling, and adds optional State, development, Relationship, View, Name, and Experience material only as complete blocks. The foundation becomes more compact when a high-priority current block needs the room.
 
 ### State lifetime
 
@@ -103,7 +103,8 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Imported Experience field | `5,000` characters before safe splitting |
 | Stored Experience record | `650` characters |
 | Model-facing Experience copy | `320` characters |
-| Generated Model Context card | `4,400` characters per NPC |
+| Generated Model Context preferred ceiling | `1,000` characters per NPC |
+| Generated Model Context hard ceiling | `2,000` characters per NPC |
 | Generated Model Context triggers | `12` unambiguous canonical/Active forms plus currently mentioned managed forms per NPC |
 | Individual State value | `120` characters |
 | State triggers | `3` |

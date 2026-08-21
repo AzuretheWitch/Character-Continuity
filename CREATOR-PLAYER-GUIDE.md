@@ -4,7 +4,7 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; the model interprets bounded fresh evidence and supplies any narrow continuity change, while CC validates its structure and current managed-card mechanics before saving it.
 
-The current package is **v2.02-test-b2**. Keep a recoverable v2.01 copy while evaluating it. This build is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`.
+The current package is **v2.02-test-b3**. Keep a recoverable v2.01 copy while evaluating it. This build is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`.
 
 ## Before you begin
 
@@ -454,7 +454,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.02-test-b2 the private key is a deterministic identity and validation key: CC validates it, then copies the resolved current-stage guidance into the NPC's generated Model Context card. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.02-test-b3 the private key is a deterministic identity and validation key: CC validates it, then copies the resolved current-stage guidance into the NPC's generated Model Context card. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -633,7 +633,7 @@ Read `Current task`, `Last action task`, `Last action selection`, `Last action r
 
 When Turning Point is the scheduled family, the model uses `T`, literal target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. A matching current `TP-…` portrayal handle is also accepted and normalized to its stable ID. Character names, Turning Point display names, and stage labels such as `Achieved` remain descriptive context rather than movement codes. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
 
-The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.02-test-b2 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
+The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.02-test-b3 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
 
 A record citing unavailable or reordered evidence is reported as `stale contract stripped`, adds no drain, and carries the current assessment once. A structurally broken current record is `malformed stripped`; a well-formed record that uses an unavailable target, field, card identity, movement, reused source, or unsafe write is `rejected`. In every case, CC strips the assessment material and preserves complete punctuated story prose.
 
@@ -724,7 +724,7 @@ Useful lines include:
 - `Pending operation retry`
 - `Operation task ceiling`
 - `Portrayal route`
-- `Model Context cards / stored tokens`
+- `Model Context cards / stored characters and tokens`
 - `Front Memory mode / verified`
 - `Active NPC slots`
 - `Card title migration`
