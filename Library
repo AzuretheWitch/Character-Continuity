@@ -14491,8 +14491,21 @@ function characterContinuityRun(hook, incomingText) {
           }
         }
       }
+      // An unbalanced record must not swallow the rest of the reply. A genuinely
+      // truncated record is the last thing in the output -- that is the case
+      // terminalProtocolCutoff models. If real content follows the opener's own
+      // line, the record is merely malformed, so bound the damage to that line
+      // and keep scanning; otherwise one stray "(" blanks the player's whole turn.
+      let bounded = false;
+      if (!complete) {
+        const lineEnd = source.indexOf("\n", start);
+        if (lineEnd !== -1 && source.slice(lineEnd + 1).trim()) {
+          end = lineEnd;
+          bounded = true;
+        }
+      }
       spans.push({ start, end, complete, text: source.slice(start, end) });
-      if (!complete) break;
+      if (!complete && !bounded) break;
       opener.lastIndex = end;
       match = opener.exec(source);
     }
@@ -14522,7 +14535,11 @@ function characterContinuityRun(hook, incomingText) {
       const bareIndex = bareCcoIndex(result);
       if (bareIndex >= 0) result = result.slice(0, bareIndex);
       if (labelOnly.test(controlPresentationText(result))) result = "";
-      return result.replace(/[ \t]{2,}/g, " ").trimEnd();
+      // Collapse runs of whitespace only where a removal actually left a gap.
+      // Applying it to every line reformats the player's prose -- indented verse,
+      // letters and lists are left-flushed on turns where nothing was stripped.
+      if (result !== rawLine) result = result.replace(/[ \t]{2,}/g, " ");
+      return result.trimEnd();
     }).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
@@ -14745,10 +14762,23 @@ function characterContinuityRun(hook, incomingText) {
       removed.push(line(block, 220));
       return "";
     });
-    const unmatched = source.search(new RegExp(openTag, "i"));
-    if (unmatched >= 0) {
-      removed.push(line(source.slice(unmatched), 220));
-      source = source.slice(0, unmatched);
+    // An unmatched opener is usually the model echoing a bare tag mid-reply, not a
+    // truncated block -- that is why the echo table below exists. Truncating to
+    // end-of-text there deletes the rest of the story. Only truncate when nothing
+    // after the tag reads as finished prose (the genuine cut-off case); otherwise
+    // drop the tag alone and keep the reply.
+    for (let guard = 0; guard < 8; guard += 1) {
+      const unmatched = new RegExp(openTag, "i").exec(source);
+      if (!unmatched) break;
+      const after = source.slice(unmatched.index + unmatched[0].length);
+      if (hasTerminallyPunctuatedStory(after)) {
+        removed.push(line(unmatched[0], 220));
+        source = source.slice(0, unmatched.index) + after;
+      } else {
+        removed.push(line(source.slice(unmatched.index), 220));
+        source = source.slice(0, unmatched.index);
+        break;
+      }
     }
     source = source.replace(new RegExp(closeTag, "gi"), tag => {
       removed.push(line(tag, 220));
@@ -14822,8 +14852,14 @@ function characterContinuityRun(hook, incomingText) {
       source = source.replace(/(^|\n)[ \t]*(?:>\s*|[-+*]\s*)(?=\n|$)/g, "$1");
       source = source.replace(/(^|\n)[ \t]*(?:\*{2,}|_{2,}|`+)(?:[ \t]+(?:\*{2,}|_{2,}|`+))?[ \t]*(?=\n|$)/g, "$1");
     }
+    // Only normalise whitespace when something was actually removed. This runs on
+    // every output turn and its result is the base for every later stage, so
+    // applying it unconditionally strips the leading indentation of all prose --
+    // verse, letters and lists arrive left-flushed even when nothing was stripped.
     return {
-      text: source.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n"),
+      text: count > 0
+        ? source.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n")
+        : source.replace(/[ \t]+\n/g, "\n"),
       count,
       sample
     };
