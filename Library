@@ -1955,7 +1955,7 @@ function characterContinuityRun(hook, incomingText) {
       slot.name = name;
     });
     rows.forEach(row => {
-      const match = row.match(/^[ \\t]*N(\d+)[ \\t]*:/i);
+      const match = row.match(/^[ \t]*N(\d+)[ \t]*:/i);
       if (match && !activeNpcSlotCode(Number(match[1]))) {
         activeRosterDiagnostics.push("Unsupported active NPC slot N" + Number(match[1]) + " was ignored.");
       }
@@ -1973,7 +1973,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function onboardingMarkerPresent(source) {
-    return /^[ \\t]*Onboarding[ \\t]*:[ \\t]*Pending[ \\t]*$/im.test(textOf(source));
+    return /^[ \t]*Onboarding[ \t]*:[ \t]*Pending[ \t]*$/im.test(textOf(source));
   }
 
   const ONBOARDING_VIEW_CATEGORIES = ["Loves", "Likes", "Neutrals", "Dislikes", "Hates"];
@@ -2783,7 +2783,7 @@ function characterContinuityRun(hook, incomingText) {
         .some(outer => onboardingMarkerPresent(entryOf(outer)));
       const aliases = textOf(entryOf(card)).replace(/\r/g, "").split("\n")
         .map(row => {
-          const match = row.match(/^[ \\t]*Alias[ \\t]*:[ \\t]*(.*?)[ \\t]*$/i);
+          const match = row.match(/^[ \t]*Alias[ \t]*:[ \t]*(.*?)[ \t]*$/i);
           return match ? line(match[1], 160) : "";
         })
         .filter(value => value && !(pendingOwner
