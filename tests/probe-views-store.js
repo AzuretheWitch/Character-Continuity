@@ -1,21 +1,22 @@
 'use strict';
 /*
- * probe-views-store.js - the Views store must survive legal-but-non-canonical pages.
+ * probe-views-store.js - a View must persist regardless of its category order.
  *
- * parseViewsPage is deliberately lenient: it accepts "-", "–" and "—" as the
- * separator, trims rows, and matches category headings case-insensitively. So a
- * page a player hand-edited, or one written by an older version, parses fine but
- * does not equal its canonical render.
+ * verifyPlannedViews compared planned against reparsed records POSITIONALLY, but
+ * renderViewsPage emits them grouped in VIEW_CATEGORIES order while
+ * placePlannedRecord appends to the end of the plan. So once a page holds a
+ * record in a later category, adding one in an earlier category diverges and the
+ * whole transaction is rolled back -- silently. The card was written correctly
+ * (the entry comparison passes); only the positional loop fails, and the correct
+ * card is then thrown away by restoreManagedViewsCards.
  *
- * Confirmed defects that turned that into a permanent wedge:
- *   - repairViewsCollection verified EVERY repairable page against the canonical
- *     render, not just the ones it wrote, so one non-canonical page failed the
- *     whole repair -- including the duplicate removal that triggered it.
- *   - verifyPlannedViews compared planned vs reparsed records positionally while
- *     renderViewsPage regroups them by category, so inserts rolled back.
+ * views-bug.json adds Hates then Likes -- the failing order.
+ * views-control.json adds Likes then Hates -- the same two writes, ascending.
+ * The ONLY difference is category order, which is what makes this conclusive.
  *
- * Drives the real cco scenario on top of a seeded page and asserts the store
- * still converges and still accepts writes.
+ * Also covers repairViewsCollection, which verified every repairable page against
+ * the canonical render rather than only the pages it wrote, so a legal but
+ * non-canonical page (parseViewsPage accepts -, – and —) failed the whole repair.
  *
  *   node probe-views-store.js
  */
@@ -24,17 +25,15 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const BASE = require(path.join(__dirname, 'scenarios', 'cco.json'));
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'cc-views-'));
 let failures = 0;
 
-function run(label, seedCards) {
-  const scenario = Object.assign({}, BASE, {
-    name: label,
-    cards: (BASE.cards || []).concat(seedCards || []),
-  });
-  const scenarioPath = path.join(TMP, label.replace(/\W+/g, '-') + '.json');
-  const reportPath = path.join(TMP, label.replace(/\W+/g, '-') + '.report.json');
+function runScenario(name, mutate) {
+  const scenario = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'scenarios', name + '.json'), 'utf8'));
+  if (mutate) mutate(scenario);
+  const scenarioPath = path.join(TMP, name + '.json');
+  const reportPath = path.join(TMP, name + '.report.json');
   fs.writeFileSync(scenarioPath, JSON.stringify(scenario));
   const proc = spawnSync(process.execPath,
     [path.join(__dirname, 'run-scenario.js'), scenarioPath, '--json', reportPath, '--quiet'],
@@ -43,83 +42,68 @@ function run(label, seedCards) {
     return { error: (proc.stderr || proc.stdout || 'no report produced').slice(0, 300) };
   }
   const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
-  const views = (report.finalCards || []).filter(function (card) {
-    return /'s Views$/.test(String(card.title));
-  });
+  const card = (report.finalCards || []).filter(function (c) {
+    return /'s Views$/.test(String(c.title));
+  })[0];
+  const entry = card ? String(card.entry) : '';
   return {
     report: report,
-    views: views,
-    entry: views.length ? String(views[0].entry) : '',
+    entry: entry,
+    records: entry.split('\n').filter(function (row) { return /\s—\s/.test(row); }),
     throws: report.throws || [],
   };
 }
 
-function recordRows(entry) {
-  return entry.split('\n').filter(function (row) { return /\s—\s/.test(row); });
+function report(label, r, expected) {
+  if (r.error) { failures++; console.log('  FAIL  ' + label + ': ' + r.error); return; }
+  if (r.throws.length) {
+    failures++;
+    console.log('  FAIL  ' + label + ': ' + r.throws.length + ' hook throw(s)');
+    return;
+  }
+  const ok = r.records.length === expected;
+  if (!ok) failures++;
+  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + label + ': '
+    + r.records.length + '/' + expected + ' View record(s) persisted');
+  r.records.forEach(function (row) { console.log('          ' + row.trim()); });
 }
 
-// --- 1. baseline -----------------------------------------------------------
-console.log('--- baseline (no seeded page) ---');
-let baseline = 0;
-(function () {
-  const r = run('baseline', []);
-  if (r.error) { failures++; console.log('  FAIL  ' + r.error); return; }
-  if (!r.views.length) { failures++; console.log('  FAIL  no Views card produced'); return; }
-  baseline = recordRows(r.entry).length;
-  console.log('  PASS  Views card present, ' + baseline + ' canonical record(s), '
-    + r.throws.length + ' throw(s)');
-})();
+// --- 1. the failing order --------------------------------------------------
+console.log('--- two Views, DESCENDING category order (Hates then Likes) ---');
+report('descending', runScenario('views-bug'), 2);
 
-// --- 2. a non-canonical page must not wedge the store ----------------------
-console.log('\n--- a legal-but-non-canonical Views page (plain hyphen) ---');
-const SEEDED = {
-  title: "Mira Vale's Views",
-  keys: "__CC_STABLE_CARD__:Mira Vale's Views",
-  type: 'Continuity',
-  entry: ['{', "Mira Vale's Views:", 'Loves:', 'Likes:',
-    'Player - hand edited with a plain hyphen',
-    'Neutrals:', 'Dislikes:', 'Hates:', '}'].join('\n')
-};
+// --- 2. the control --------------------------------------------------------
+console.log('\n--- the same two Views, ASCENDING order (Likes then Hates) ---');
+report('ascending', runScenario('views-control'), 2);
 
+// --- 3. a legal but non-canonical page must not wedge repair ---------------
+console.log('\n--- a legal-but-non-canonical page (plain hyphen) ---');
 (function () {
-  const r = run('non-canonical', [SEEDED]);
-  if (r.error) { failures++; console.log('  FAIL  ' + r.error); return; }
-  if (!r.views.length) { failures++; console.log('  FAIL  the Views card vanished'); return; }
-  const records = recordRows(r.entry);
-  if (r.throws.length) {
-    failures++;
-    console.log('  FAIL  ' + r.throws.length + ' hook throw(s): '
-      + JSON.stringify(r.throws[0]).slice(0, 160));
-    return;
-  }
-  if (records.length === 0) {
-    failures++;
-    console.log('  FAIL  store wedged: no canonical record survived');
-    console.log('        ' + r.entry.replace(/\n/g, ' | '));
-    return;
-  }
-  console.log('  PASS  store converged: ' + records.length + ' canonical record(s), no throws');
-})();
-
-// --- 3. a duplicate Views page ---------------------------------------------
-console.log('\n--- a duplicate Views page ---');
-(function () {
-  const r = run('duplicate', [SEEDED, Object.assign({}, SEEDED, { keys: '' })]);
+  const r = runScenario('views-control', function (scenario) {
+    scenario.cards = (scenario.cards || []).concat([{
+      title: "Mira Vale's Views",
+      keys: "__CC_STABLE_CARD__:Mira Vale's Views",
+      type: 'Continuity',
+      entry: ['{', "Mira Vale's Views:", 'Loves:', 'Likes:',
+        'Player - hand edited with a plain hyphen',
+        'Neutrals:', 'Dislikes:', 'Hates:', '}'].join('\n')
+    }]);
+  });
   if (r.error) { failures++; console.log('  FAIL  ' + r.error); return; }
   if (r.throws.length) {
     failures++;
-    console.log('  FAIL  ' + r.throws.length + ' hook throw(s): '
-      + JSON.stringify(r.throws[0]).slice(0, 160));
+    console.log('  FAIL  ' + r.throws.length + ' hook throw(s)');
     return;
   }
-  console.log('  ' + (r.views.length === 1 ? 'PASS' : 'WARN') + '  ' + r.views.length
-    + ' Views card(s) remain, no throws'
-    + (r.views.length === 1 ? '' : ' (duplicate resolution tracked separately)'));
+  const ok = r.records.length > 0;
+  if (!ok) failures++;
+  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  store converged: '
+    + r.records.length + ' canonical record(s), no throws');
 })();
 
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 
 console.log('\n' + (failures === 0
-  ? 'Views store holds under non-canonical input.'
+  ? 'Views store holds: category order does not decide whether a View persists.'
   : failures + ' failure(s) in the Views store.'));
 process.exit(failures === 0 ? 0 : 1);
