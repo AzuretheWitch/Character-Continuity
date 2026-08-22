@@ -1752,16 +1752,12 @@ function characterContinuityRun(hook, incomingText) {
     const parts = textOf(extractLine(source, "Name, age, gender, pronouns"))
       .split(",")
       .map(value => value.trim());
-    let pronouns = "";
-    if (parts.length >= 4) {
-      pronouns = line(parts.pop(), 120);
-    } else {
-      parts.shift();
-      parts.shift();
-      parts.shift();
-      pronouns = line(parts.join(","), 120);
-    }
-    return pronouns;
+    // The field is "Name, age, gender, pronouns", so the pronouns are the fourth
+    // value and everything after it belongs to them. Taking the LAST value instead
+    // meant any trailing note -- "Snow, 31, woman, she/her, tall" -- was read as the
+    // pronouns, and an unrecognised value silently falls back to they/them, so the
+    // character was misgendered for the rest of the story.
+    return line(parts.slice(3).join(", "), 120);
   }
 
   function shortenProfileValue(value, maximum) {
@@ -18589,6 +18585,17 @@ function characterContinuityRun(hook, incomingText) {
       return result.ok
         ? finalizeViewMutationResult(owner, target, candidate, evidenceItems, priorState, result)
         : result;
+    }
+
+    // Every sibling path guards this; only the create branch did not, so a buried
+    // View plus a fresh active one could coexist for the same owner and target.
+    // That pair permanently blocks future burial and makes Recovered reconcile
+    // against a memory that was supposed to be put away.
+    if (buriedRecord) {
+      return {
+        ok: false,
+        error: "A buried View of " + target.name + " already exists, so a second active View cannot be created."
+      };
     }
 
     const result = transactViews(owner, ({ activePages }) => {
