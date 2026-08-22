@@ -1,0 +1,51 @@
+name: tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: ['18', '20', '22']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      # The Library is the deliverable; a syntax error in it is a hard failure
+      # regardless of what the behavioural suite says.
+      - name: Check Library parses
+        run: node --check Library
+
+      # verify.js runs every scenario and probe and aggregates their exit codes.
+      # No dependencies, no install step, nothing is written outside the temp dir.
+      - name: Run test suite
+        run: node tests/verify.js
+
+  bench:
+    name: benchmark
+    runs-on: ubuntu-latest
+    # Informational only: prints per-turn cost against a padded card deck so a
+    # regression is visible in the log. Never fails the build on timing.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Benchmark a 68-turn scenario with a 100-card deck
+        run: node tests/bench.js

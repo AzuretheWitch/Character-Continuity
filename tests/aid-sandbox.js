@@ -5,7 +5,7 @@
  * Loads the Character-Continuity Library into a vm context with the free globals
  * the platform supplies, and exposes the real CharacterContinuity function.
  *
- * NOTHING under f:/script-archive/... is modified. The library is read-only.
+ * The Library file is only ever read, never modified.
  */
 const fs = require('fs');
 const path = require('path');
