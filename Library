@@ -460,6 +460,17 @@ function characterContinuityRun(hook, incomingText) {
     return decodedManagedTitle(source.slice(settings.CARD_KEY_PREFIX.length));
   }
 
+  // Evidence that CC created this card, rather than a player card whose title
+  // merely matches the owned-title shape. A managed key or the Continuity type is
+  // proof CC wrote it; a recognisable CC entry wrapper covers cards whose key was
+  // lost but whose body is still one CC authored.
+  function cardOwnedByContinuity(card) {
+    if (!card) return false;
+    if (managedTitleFromKey(card.keys)) return true;
+    if (keyOf(card.type) === keyOf(settings.CARD_TYPE)) return true;
+    return !!managedTitleFromEntry(card);
+  }
+
   function defaultScriptCardTitle(value) {
     return keyOf(value) === keyOf(settings.SCRIPT_CARD_TITLE);
   }
@@ -1370,6 +1381,11 @@ function characterContinuityRun(hook, incomingText) {
       // converting them into ordinary non-triggered CC cards.
       if (intendedParts && keyOf(intendedParts.label) === keyOf(settings.TURNING_POINTS_LABEL)) return;
       if (!intended || managedCardIdentityMatches(card, intended)) return;
+      // Only migrate cards CC provably owns. A player is free to write their own
+      // lore card called "Sarah's State"; rewriting its keys strips the triggers
+      // it fires on and hands the card to CC to overwrite, with no notice beyond
+      // a Debug counter that is off by default.
+      if (!cardOwnedByContinuity(card)) return;
       const saved = saveCard(card, entryOf(card), intended);
       if (saved && managedCardIdentityMatches(saved, intended)) migrated += 1;
       else failed += 1;
@@ -1403,6 +1419,9 @@ function characterContinuityRun(hook, incomingText) {
       if (!headerLabel) return;
       const normalized = canonicalOwnedEntryWrapper(entryOf(card), parts.owner, headerLabel);
       if (!normalized.valid || !normalized.changed) return;
+      // saveCard rewrites keys and type as well as the entry, so the same
+      // ownership rule as migrateOwnedCardTitles applies here.
+      if (!cardOwnedByContinuity(card)) return;
       const saved = saveCard(card, normalized.entry, parts.title);
       if (saved && entryOf(saved) === normalized.entry) migrated += 1;
       else failed += 1;

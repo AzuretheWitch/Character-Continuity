@@ -26,6 +26,7 @@ const d = run(['probe-known-crash.js']); // intentionally exits 1 while the bug 
 const e = run(['probe-error-boundary.js']);
 const f = run(['probe-output-pipeline.js']);
 const g = run(['probe-views-store.js']);
+const h = run(['probe-card-ownership.js']);
 console.log('\n================================');
 console.log('smoke scenario   : ' + (a ? 'PASS' : 'FAIL'));
 console.log('cco scenario     : ' + (b ? 'PASS' : 'FAIL'));
@@ -34,4 +35,5 @@ console.log('known crash      : ' + (d ? 'FIXED' : 'STILL REPRODUCES (expected o
 console.log('error boundary   : ' + (e ? 'HOLDS' : 'FAIL'));
 console.log('output pipeline  : ' + (f ? 'HOLDS' : 'FAIL'));
 console.log('views store      : ' + (g ? 'HOLDS' : 'FAIL'));
-process.exitCode = a && b && c && d && e && f && g ? 0 : 1;
+console.log('card ownership   : ' + (h ? 'HOLDS' : 'FAIL'));
+process.exitCode = a && b && c && d && e && f && g && h ? 0 : 1;
