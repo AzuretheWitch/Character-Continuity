@@ -6313,7 +6313,12 @@ function characterContinuityRun(hook, incomingText) {
     nameIdentities.forEach(identity => {
       const identityData = namesForIdentity(identity.key);
       const records = identityData ? identityData.contextRecords : [];
-      const resolving = records.map(record => record.alias);
+      // Established forms only. Including Emerging records here put them inside
+      // `aliases`, and since every includeEmerging:false call site computes
+      // aliases.concat(includeEmerging ? emergingAliases : []), the false branch
+      // removed nothing -- the whole flag was inert and unconfirmed aliases were
+      // treated as established everywhere.
+      const resolving = records.filter(record => record.status !== "Emerging").map(record => record.alias);
       const emerging = records.filter(record => record.status === "Emerging").map(record => record.alias);
       const forms = uniqueNameForms([identity.canonical].concat(resolving), 160);
       if (identity.player) {
@@ -8310,7 +8315,11 @@ function characterContinuityRun(hook, incomingText) {
     let remaining = source;
     while (remaining.length > maximum) {
       const minimum = Math.floor(maximum * 0.45);
-      let cut = remaining.lastIndexOf(" ", maximum + 1);
+      // lastIndexOf returns the last space at an index <= fromIndex, so a fromIndex
+      // of maximum + 1 can cut at maximum + 1 and emit a chunk one character over
+      // the cap. The re-parse then marks it oversize and every later migration
+      // commit fails and rolls back, permanently.
+      let cut = remaining.lastIndexOf(" ", maximum);
       if (cut < minimum) {
         return {
           ok: false,
@@ -8332,6 +8341,11 @@ function characterContinuityRun(hook, incomingText) {
     chunks.push(remaining);
     if (chunks.join(" ") !== source) {
       return { ok: false, error: "An oversized Experience could not be divided losslessly." };
+    }
+    // Refuse the migration rather than writing a chunk the re-parse will reject:
+    // a boundary bug here degrades to a reported refusal, not a write/rollback loop.
+    if (chunks.some(chunk => chunk.length > maximum)) {
+      return { ok: false, error: "An oversized Experience could not be divided within the stored length limit." };
     }
     const records = chunks.map((chunk, index) => ({
       ...record,
@@ -11004,28 +11018,52 @@ function characterContinuityRun(hook, incomingText) {
       if (positive === negative) return "";
       return positive ? positiveDestination : negativeDestination;
     };
+    // The polarity tests below are bare keyword scans over narrative prose, so
+    // "she no longer trusts him" scored as a Trust GAIN -- the exact opposite of
+    // what the story said -- because the negative list is a disjoint set of words
+    // that a sentence phrased with "trust" itself never hits. keyOf has already
+    // flattened punctuation to spaces, so cues and keywords sit in one word stream
+    // and a cue plus the next few words can simply be blanked out. Note the
+    // apostrophe forms below are post-keyOf ("can t", not "can't"); the original
+    // "can't rely" spelling could never match.
+    const negationCue = "(?:no longer|never|not|cannot|can t|could not|couldn t|"
+      + "does not|doesn t|did not|didn t|do not|don t|stopped|refused|refuses|"
+      + "without|lost|losing|lack|lacks|lacked|failed to|far from|less)";
+    let negationPresent = false;
+    const affirmed = source.replace(
+      new RegExp("\\b" + negationCue + "\\b(?:\\s+\\S+){0,3}", "g"),
+      () => { negationPresent = true; return " "; }
+    );
+    // Affirmed: the keyword survives outside every negated span.
+    const affirms = pattern => pattern.test(affirmed);
+    // Negated: the keyword appears, but only inside a negated span.
+    const negates = pattern => negationPresent && pattern.test(source) && !pattern.test(affirmed);
     if (field === "Trust") {
       const severe = hasTrigger(["betrayal"]) || /\b(?:betray\w*|treacher\w*)\b/.test(source);
+      const trustGain = /\b(?:trust\w*|reliab\w*|dependab\w*|can rely|could rely|kept (?:a|the|his|her|their) promise)\b/;
       const negative = severe || hasTrigger(["trust_loss"])
-        || /\b(?:distrust\w*|dishonest\w*|unreliab\w*|cannot rely|can't rely|could not rely|deceiv\w*|lied|lying|broken promise)\b/.test(source);
-      const positive = hasTrigger(["trust_gain", "repair"])
-        || /\b(?:trust\w*|reliab\w*|dependab\w*|can rely|could rely|kept (?:a|the|his|her|their) promise)\b/.test(source);
+        || /\b(?:distrust\w*|dishonest\w*|unreliab\w*|cannot rely|can t rely|could not rely|deceiv\w*|lied|lying|broken promise)\b/.test(source)
+        || negates(trustGain);
+      const positive = hasTrigger(["trust_gain", "repair"]) || affirms(trustGain);
       return choose(positive, negative, "Trust", severe ? "Severe distrust" : "Distrust");
     }
     if (field === "Closeness") {
+      const closenessGain = /\b(?:close|closeness|bond\w*|affection\w*|reconnect\w*|intimacy|intimate)\b/;
       const negative = hasTrigger(["closeness_loss", "withdraw"])
-        || /\b(?:distant|distance|disconnect\w*|withdraw\w*|pull\w* away)\b/.test(source);
+        || /\b(?:distant|distance|disconnect\w*|withdraw\w*|pull\w* away)\b/.test(source)
+        || negates(closenessGain);
       const positive = hasTrigger(["closeness_gain", "affection", "reconnect"])
-        || /\b(?:close|closeness|bond\w*|affection\w*|reconnect\w*|intimacy|intimate)\b/.test(source);
+        || affirms(closenessGain);
       return choose(positive, negative, "Close", "Distant");
     }
     if (field === "Conflict") {
-      const repaired = hasTrigger(["repair"])
-        || /\b(?:resolved|made peace|reconcil\w*|repair\w*)\b/.test(source);
+      const repair = /\b(?:resolved|made peace|reconcil\w*|repair\w*)\b/;
+      const repaired = hasTrigger(["repair"]) || affirms(repair);
       const ruptured = hasTrigger(["betrayal"])
         || /\b(?:rupture\w*|severed ties|cut ties|irreparable|betray\w*)\b/.test(source);
       const conflict = ruptured || hasTrigger(["conflict", "anger", "boundary_crossed"])
-        || /\b(?:conflict\w*|fight\w*|argument\w*|anger|angry|hostil\w*|friction|strain)\b/.test(source);
+        || /\b(?:conflict\w*|fight\w*|argument\w*|anger|angry|hostil\w*|friction|strain)\b/.test(source)
+        || negates(repair);
       return choose(repaired, conflict, "Clear", ruptured ? "Rupture" : "Open conflict");
     }
     if (field === "Boundaries") {
