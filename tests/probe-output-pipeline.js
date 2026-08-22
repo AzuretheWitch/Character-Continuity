@@ -99,6 +99,24 @@ check('indented prose keeps its indentation',
       + ' :: ' + JSON.stringify(text.replace(/\n/g, '\\n').slice(0, 90));
   });
 
+
+console.log('\n--- a truncated generation must still reach the player ---');
+// AID cuts generations at the token limit, so a reply ending mid-sentence is
+// routine. Withholding the continuity bookkeeping is right; deleting the prose
+// the player waited for is not.
+check('reply cut off mid-sentence',
+  { modelOutput: 'Mira Vale sets the cup down and looks at you for a long moment, then she',
+    cco: '' },
+  function (text) { return text.indexOf('looks at you for a long moment') !== -1; }, shown);
+
+check('reply ending on a comma',
+  { modelOutput: 'She turns the coin over once, twice,', cco: '' },
+  function (text) { return text.indexOf('turns the coin over') !== -1; }, shown);
+
+check('properly punctuated reply (control)',
+  { modelOutput: 'She turns the coin over once, twice, and sets it down.', cco: '' },
+  function (text) { return text.indexOf('sets it down') !== -1; }, shown);
+
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 
 console.log('\n' + (failures === 0

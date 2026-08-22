@@ -19241,10 +19241,17 @@ function characterContinuityRun(hook, incomingText) {
         }
       }
 
-      CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
+      // Withholding the continuity bookkeeping here is right: an unfinished reply
+      // is not safe to derive state from. Deleting the prose is not. AI Dungeon
+      // truncates generations at the token limit routinely, so returning " " blanks
+      // the turn the player waited for and loses text no other copy of exists.
+      // Hand the prose back and leave recovery pending.
+      CC.last.output = story
+        ? "The response did not finish terminally punctuated prose, so it was delivered unchanged but no operation was applied and prose-only recovery remains pending."
+        : "No story prose survived; no operation was applied and prose-only recovery remains pending.";
       CC.last.error = "The response did not finish terminally punctuated story prose.";
       recordGenuineOutputResolution(plan);
-      return " ";
+      return story ? story : " ";
     }
 
     const nextGeneration = CC.visibleGenerationCount + 1;
