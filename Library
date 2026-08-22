@@ -90,7 +90,26 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_LOGS: false
 };
 
+// Outermost safety net. The hook body below sets up ~60 top-level statements
+// (player profile, runtime settings, store sessions) before dispatch is reached,
+// so a failure there cannot be reported through the Status card -- but it must
+// still not break the player's turn. Returning the platform's own text is a valid
+// result for every hook, and is trivially append-only for contextAppend.
 function CharacterContinuity(hook, incomingText) {
+  try {
+    return characterContinuityRun(hook, incomingText);
+  } catch (error) {
+    try {
+      log("[Character Continuity Stable] The " + hook + " hook failed before it could report: "
+        + (error && error.message ? error.message : error));
+    } catch (ignored) {
+      // log() is a platform global and may be absent; the pass-through below still holds.
+    }
+    return typeof incomingText === "string" && incomingText.length ? incomingText : " ";
+  }
+}
+
+function characterContinuityRun(hook, incomingText) {
   const settings = CHARACTER_CONTINUITY_STABLE_SETTINGS;
   const originalText = incomingText;
   const appendOnlyContext = hook === "contextAppend";
@@ -98,8 +117,10 @@ function CharacterContinuity(hook, incomingText) {
   const contextHook = hook === "context" || hook === "contextAppend";
   const outputHook = hook === "output";
   const rootState = state;
-  const historyList = history;
-  const cards = storyCards;
+  // The platform normally supplies these, but a missing or malformed global must
+  // not take the turn down before the hook body can degrade gracefully.
+  const historyList = Array.isArray(history) ? history : [];
+  const cards = Array.isArray(storyCards) ? storyCards : [];
   const STORE_KINDS = ["names", "views", "relationships", "turningpoints", "experiences"];
   const storeSession = STORE_KINDS.reduce((result, kind) => {
     result[kind] = {
@@ -20276,32 +20297,66 @@ function CharacterContinuity(hook, incomingText) {
     )));
   }
 
+  // The platform supplies no safety net: an uncaught throw in any hook breaks the
+  // player's turn outright. Every branch below degrades to passing the platform's
+  // own text through untouched, which is always a valid result for every hook --
+  // for contextAppend it is trivially append-only, so the cache contract holds.
+  function hookFailure(error) {
+    const detail = textOf(error && error.message ? error.message : error);
+    try {
+      CC.last.error = "The " + hook + " hook failed and its continuity work was withheld: "
+        + line(detail, 300);
+      writeStatusCard();
+    } catch (ignored) {
+      // State may be too damaged to report through; passing the text through still matters.
+    }
+    return finish(originalText);
+  }
+
   if (hook === "input") {
-    beginInput(originalText);
-    writeAllStateCards();
-    writeStatusCard();
+    try {
+      beginInput(originalText);
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
+    }
     return finish(originalText);
   }
 
   if (hook === "context" || hook === "contextAppend") {
-    let result = buildContext();
-    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))) {
-      CC.last.context = "Cache-compatible append guard preserved the original platform context.";
-      CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
-      result = originalText;
+    let result;
+    try {
+      result = buildContext();
+      if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))) {
+        CC.last.context = "Cache-compatible append guard preserved the original platform context.";
+        CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
+        result = originalText;
+      }
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
     }
-    writeAllStateCards();
-    writeStatusCard();
     return finish(result);
   }
 
   if (hook === "output") {
-    const result = processOutput(originalText);
-    writeAllStateCards();
-    writeStatusCard();
+    let result;
+    try {
+      result = processOutput(originalText);
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
+    }
     return finish(result);
   }
 
-  writeStatusCard();
+  try {
+    writeStatusCard();
+  } catch (error) {
+    return hookFailure(error);
+  }
   return finish(originalText);
 }

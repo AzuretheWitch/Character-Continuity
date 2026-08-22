@@ -23,9 +23,11 @@ const a = run(['run-scenario.js', path.join(__dirname, 'scenarios', 'smoke.json'
 const b = run(['run-scenario.js', path.join(__dirname, 'scenarios', 'cco.json')]);
 const c = run(['probe-adversarial.js']);
 const d = run(['probe-known-crash.js']); // intentionally exits 1 while the bug lives
+const e = run(['probe-error-boundary.js']);
 console.log('\n================================');
 console.log('smoke scenario   : ' + (a ? 'PASS' : 'FAIL'));
 console.log('cco scenario     : ' + (b ? 'PASS' : 'FAIL'));
 console.log('adversarial      : ' + (c ? 'PASS' : 'FAIL'));
 console.log('known crash      : ' + (d ? 'FIXED' : 'STILL REPRODUCES (expected on v2.01)'));
-process.exitCode = a && b && c ? 0 : 1;
+console.log('error boundary   : ' + (e ? 'HOLDS' : 'FAIL'));
+process.exitCode = a && b && c && d && e ? 0 : 1;
