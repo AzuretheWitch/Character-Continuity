@@ -1,0 +1,381 @@
+{
+  "name": "long: 60 turns of play after onboarding",
+  "contextHook": "contextAppend",
+  "startActionCount": 0,
+  "memory": "The Frostwake Inn sits at the edge of the northern road. Azure has just arrived.",
+  "info": {
+    "maxChars": 12000
+  },
+  "cards": [
+    {
+      "title": "Player's Identity",
+      "keys": "",
+      "type": "Continuity",
+      "entry": "Name: Azure\nPronouns: she/her"
+    }
+  ],
+  "turns": [
+    {
+      "label": "T1 opening - CC bootstraps its own cards",
+      "playerInput": "> You push open the inn door and stamp the snow from your boots.",
+      "modelOutput": "Warm air and woodsmoke roll over you. The common room is nearly empty."
+    },
+    {
+      "label": "T2 roster edit: request onboarding for Mira Vale",
+      "cards": [
+        {
+          "title": "CC — Active NPCs",
+          "entry": "{\nActive NPC slots:\nN1: Mira Vale\nN2: \nN3: \nN4: \nN5: \n}"
+        }
+      ],
+      "playerInput": "> You take a seat near the hearth and wait.",
+      "modelOutput": "A woman in a weathered travel coat watches you from the far table."
+    },
+    {
+      "label": "T3 complete Outer and Inner, Ready still No",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: No\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        },
+        {
+          "title": "Mira Vale's Inner",
+          "entry": "{\nMira Vale's Inner:\nOnboarding: Pending\nPersonality: observant, self-contained, practical, wry, slow to trust\nMannerisms: checks exits on arrival; rolls a coin across her knuckles while thinking\nWants: earn enough freedom to choose where she belongs\nFears: becoming dependent on another controlling group\nMental wounds: years of conditional protection taught her to expect hidden prices\nPrinciples: ask before intervening; repay genuine care; never bargain away another person's agency\n}"
+        }
+      ],
+      "playerInput": "> You nod to the woman by the far table.",
+      "modelOutput": "She returns the nod, unhurried, and goes back to her cup."
+    },
+    {
+      "label": "T4 approve activation: Ready: Yes",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: Yes\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        }
+      ],
+      "playerInput": "> You ask the innkeeper who the woman with the coin is.",
+      "modelOutput": "\"Mira Vale,\" the innkeeper says. \"Passing through, same as you.\""
+    },
+    {
+      "label": "T5 first interaction with the activated NPC",
+      "playerInput": "> You cross the room and ask Mira Vale if the northern road is still open.",
+      "modelOutput": "Mira Vale looks up. The coin stops on her knuckle. \"Open,\" she says, \"if you don't mind the drifts. I came down it this morning.\" She studies you a moment longer than politeness requires."
+    },
+    {
+      "label": "T6 continued interaction",
+      "playerInput": "> You sit down across from her and tell her your name.",
+      "modelOutput": "\"Azure,\" Mira Vale repeats, as if filing it somewhere. \"Mira.\" She does not offer a hand, but she does not move away either. \"You're going north, then. Alone?\""
+    },
+    {
+      "label": "T7 relationship-relevant beat",
+      "playerInput": "> You admit you are travelling alone and ask if she would consider going together.",
+      "modelOutput": "Mira Vale is quiet for a while. \"I don't travel with people I don't know,\" she says, then, after a pause, \"but I'd share a road for a day and see.\" It is not trust. It is the shape trust would take, if it came."
+    },
+    {
+      "label": "T8 quiet turn",
+      "playerInput": "> You agree, and order two bowls of stew.",
+      "modelOutput": "The stew arrives steaming. Mira Vale eats without ceremony, watching the door out of habit."
+    },
+    {
+      "label": "L1",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L2",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L3",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L4",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L5",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L6",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L7",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L8",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L9",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L10",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L11",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L12",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L13",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L14",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L15",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L16",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L17",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L18",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L19",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L20",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L21",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L22",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L23",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L24",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L25",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L26",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L27",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L28",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L29",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L30",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L31",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L32",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L33",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L34",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L35",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L36",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L37",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L38",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L39",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L40",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L41",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L42",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L43",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L44",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L45",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L46",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L47",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L48",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L49",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L50",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L51",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L52",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    },
+    {
+      "label": "L53",
+      "playerInput": "> You let the question go and talk about the weather instead.",
+      "modelOutput": "Mira Vale exhales. The coin starts moving across her knuckles again."
+    },
+    {
+      "label": "L54",
+      "playerInput": "> You share your last dried apple with her.",
+      "modelOutput": "She takes it. \"Thank you,\" she says, and means it, which surprises them both."
+    },
+    {
+      "label": "L55",
+      "playerInput": "> You ask if she trusts you yet.",
+      "modelOutput": "\"No,\" Mira Vale says. \"But I am not looking for reasons not to. That is new.\""
+    },
+    {
+      "label": "L56",
+      "playerInput": "> You walk in silence for an hour.",
+      "modelOutput": "The snow squeaks underfoot. She matches your pace without being asked."
+    },
+    {
+      "label": "L57",
+      "playerInput": "> You ask Mira Vale about the drifts on the pass.",
+      "modelOutput": "Mira Vale sketches the road in spilled ale. \"Two bad stretches. The rest is walkable.\""
+    },
+    {
+      "label": "L58",
+      "playerInput": "> You tell her you grew up further south.",
+      "modelOutput": "\"South,\" she says. \"Warm people. Thin coats.\" It is almost a joke."
+    },
+    {
+      "label": "L59",
+      "playerInput": "> You offer to carry part of her pack.",
+      "modelOutput": "She hesitates, then hands over the smaller roll. \"Don't make a thing of it.\""
+    },
+    {
+      "label": "L60",
+      "playerInput": "> You ask why she left the last place she stayed.",
+      "modelOutput": "Her face closes. \"Because staying had a price I stopped wanting to pay.\""
+    }
+  ]
+}
