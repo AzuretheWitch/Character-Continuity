@@ -5066,7 +5066,12 @@ function characterContinuityRun(hook, incomingText) {
       const verifiedPages = verifiedOwner
         ? (buried ? verifiedOwner.buriedPages : verifiedOwner.activePages)
         : [];
-      for (const page of repairablePages) {
+      // Verify only what was actually written. parseViewsPage is deliberately lenient
+      // (it accepts -, – and —, trims rows, and matches headings case-insensitively),
+      // so an untouched page written in any non-canonical but legal form never equals
+      // its canonical render -- which failed the whole repair, including the duplicate
+      // removal that triggered it. verifyPlannedViews already gets this right.
+      for (const page of repairablePages.filter(item => item.dirty)) {
         const expected = renderViewsPage(character, buried, page.page, page.records);
         const matching = verifiedPages.filter(item => item.page === page.page
           && entryOf(item.card) === expected && item.safe && !item.duplicatePage);
@@ -5613,11 +5618,17 @@ function characterContinuityRun(hook, incomingText) {
         const expectedEntry = renderViewsPage(
           character, set.buried, plan.page, plan.records
         );
+        // Compare as multisets, not positionally. renderViewsPage groups records by
+        // VIEW_CATEGORIES, so the reparsed page comes back in category order while
+        // plan.records is in insertion order -- placePlannedRecord appends. Any
+        // insert into a non-final category diverged and rolled the transaction back.
+        // entryOf === expectedEntry above is what actually proves the page is right.
+        const plannedSignatures = plan.records.map(plannedViewRecordSignature).sort();
+        const actualSignatures = page.records.map(plannedViewRecordSignature).sort();
         return page.safe && !page.duplicatePage
           && entryOf(page.card) === expectedEntry
           && page.records.length === plan.records.length
-          && page.records.every((record, index) =>
-            plannedViewRecordSignature(record) === plannedViewRecordSignature(plan.records[index]));
+          && actualSignatures.every((signature, index) => signature === plannedSignatures[index]);
       });
     });
   }
