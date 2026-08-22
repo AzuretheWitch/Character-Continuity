@@ -1060,8 +1060,6 @@ function characterContinuityRun(hook, incomingText) {
   function updateCardAt(index, keys, entry, type, intendedTitle, preserveExactFields = false) {
     if (!Number.isInteger(index) || index < 0 || index >= cards.length) return null;
     const current = cards[index];
-    const priorDeck = capturePhysicalCardDeck();
-    const targetImage = priorDeck[index];
     const priorTitle = line(titleOf(current), 220);
     const logicalTitle = line(intendedTitle || priorTitle, 220);
     const nextKeys = preserveExactFields
@@ -1085,6 +1083,13 @@ function characterContinuityRun(hook, incomingText) {
         ? unchanged
         : null;
     }
+    // Captured only once a write will actually be attempted. capturePhysicalCardDeck
+    // JSON-stringifies every card entry in the deck, and the no-op branch above is
+    // the common case: readRuntime, the title/wrapper migrations and every store
+    // parser re-save unchanged cards to assert identity. Capturing before that
+    // check paid a full-deck serialisation per identity re-assert.
+    const priorDeck = capturePhysicalCardDeck();
+    const targetImage = priorDeck[index];
     const restorePrior = () => restorePhysicalCardDeck(priorDeck);
     const verifiedUpdatedCard = () => {
       if (cards.length !== priorDeck.length) return null;
