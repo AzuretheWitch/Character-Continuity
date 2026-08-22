@@ -1687,8 +1687,10 @@ function CharacterContinuity(hook, incomingText) {
       s: player.agreement === "plural" ? "" : "s"
     };
     return textOf(value).replace(/{{\s*(player|Player|PLAYER)\.([a-zA-Z_]+)\s*}}/g, (match, owner, field) => {
-      const replacement = forms[keyOf(field).replace(/\s+/g, "_")];
-      if (replacement === undefined) return match;
+      const token = keyOf(field).replace(/\s+/g, "_");
+      if (!Object.prototype.hasOwnProperty.call(forms, token)) return match;
+      const replacement = forms[token];
+      if (typeof replacement !== "string") return match;
       if (owner === "PLAYER") return textOf(replacement).toUpperCase();
       if (owner === "Player") return replacement ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement;
       return replacement;
