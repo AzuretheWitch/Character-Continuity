@@ -49,6 +49,7 @@ const report = {
   library: scenario.libraryPath || require('./aid-sandbox').DEFAULT_LIBRARY,
   hooksRun: { input: 0, context: 0, contextAppend: 0, output: 0 },
   throws: [],
+  containedFailures: [],
   cacheViolations: [],
   stateLoss: [],
   turns: []
@@ -268,6 +269,8 @@ out('  serialised size: ' + finalBytes + ' bytes (' + (finalBytes / 1024).toFixe
 out('');
 out('=== problems ===');
 out('  hook throws        : ' + report.throws.length);
+out('  contained failures : ' + report.containedFailures.length);
+report.containedFailures.slice(0, 5).forEach(function (row) { out('    ' + row.slice(0, 150)); });
 report.throws.forEach((t) =>
   out('    turn ' + t.turn + ' ' + t.hook + ': ' + t.message + '\n' +
       String(t.stack).split('\n').slice(0, 8).map((l) => '      ' + l).join('\n'))
@@ -279,6 +282,15 @@ report.stateLoss.slice(0, 20).forEach((s) =>
   out('    turn ' + s.turn + ' after ' + s.after + ': ' +
       (s.error || s.lost.slice(0, 8).join(', ')))
 );
+
+// A contained failure is still a failure. The hook boundary stops a throw from
+// breaking the turn, which also means a permanently dead script reports "ok" on
+// every hook. Surface those so the suite can fail on them.
+sb.logs.forEach(function (row) {
+  if (String(row).indexOf('failed before it could report') !== -1) {
+    report.containedFailures.push(String(row));
+  }
+});
 
 if (sb.logs.length) {
   out('');
@@ -299,5 +311,6 @@ const allFour =
   report.hooksRun.output > 0 &&
   (report.hooksRun.context > 0 || report.hooksRun.contextAppend > 0);
 out('');
-out('RESULT: ' + (report.throws.length === 0 && allFour ? 'PASS' : 'FAIL'));
-process.exitCode = report.throws.length === 0 && allFour ? 0 : 1;
+const clean = report.throws.length === 0 && report.containedFailures.length === 0 && allFour;
+out('RESULT: ' + (clean ? 'PASS' : 'FAIL'));
+process.exitCode = clean ? 0 : 1;

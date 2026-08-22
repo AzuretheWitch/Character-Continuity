@@ -862,8 +862,8 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function capturePhysicalCardDeck() {
-    const idCounts = {};
-    const imageCounts = {};
+    const idCounts = Object.create(null);
+    const imageCounts = Object.create(null);
     return cards.map((card, index) => {
       const id = physicalCardId(card);
       const imageKey = exactCardImageKey(card);
@@ -920,7 +920,7 @@ function characterContinuityRun(hook, incomingText) {
       if (card) used.add(card);
       return { image, card };
     });
-    const unresolvedById = {};
+    const unresolvedById = Object.create(null);
     mapped.forEach(item => {
       if (item.card) return;
       const id = item.image.id;
@@ -1956,7 +1956,7 @@ function characterContinuityRun(hook, incomingText) {
         activeRosterDiagnostics.push("Unsupported active NPC slot N" + Number(match[1]) + " was ignored.");
       }
     });
-    const seen = {};
+    const seen = Object.create(null);
     slots.forEach(slot => {
       if (!slot.valid || !slot.name) return;
       const key = nameKeyOf(slot.name);
@@ -2330,7 +2330,7 @@ function characterContinuityRun(hook, incomingText) {
       const alias = aliasMatch ? line(aliasMatch[1], 160) : "";
       if (ONBOARDING_NAME_PLACEHOLDERS.some(value => sameNameForm(value, alias))) return;
       const labels = ["Alias", "Status", "Use", "Progress", "Reason"];
-      const values = {};
+      const values = Object.create(null);
       if (recordRows.length !== labels.length) {
         errors.push("Names Alias " + (alias || "record") + " must contain exactly five fields");
         return;
@@ -2416,7 +2416,7 @@ function characterContinuityRun(hook, incomingText) {
       || nonempty[nonempty.length - 1].value !== "}") {
       errors.push("Views wrapper or owner header is invalid");
     }
-    const grouped = {};
+    const grouped = Object.create(null);
     ONBOARDING_VIEW_CATEGORIES.forEach(category => { grouped[category] = []; });
     let current = "";
     const headings = [];
@@ -2552,7 +2552,7 @@ function characterContinuityRun(hook, incomingText) {
       const start = block.start;
       const recordRows = block.rows;
       const labels = ["About"].concat(ONBOARDING_RELATIONSHIP_FIELDS);
-      const values = {};
+      const values = Object.create(null);
       if (recordRows.length !== labels.length) {
         errors.push("Relationships record at line " + (start + 1)
           + " must contain exactly six fields");
@@ -2578,7 +2578,7 @@ function characterContinuityRun(hook, incomingText) {
       const targetKey = nameKeyOf(target);
       if (seenTargets.has(targetKey)) errors.push("Relationships repeats target " + target);
       seenTargets.add(targetKey);
-      const fields = {};
+      const fields = Object.create(null);
       ONBOARDING_RELATIONSHIP_FIELDS.forEach(field => {
         const parsed = onboardingCanonicalRelationshipField(field, values[field]);
         if (!parsed.ok) {
@@ -3779,7 +3779,7 @@ function characterContinuityRun(hook, incomingText) {
     const maximum = Math.max(1, Number(settings.MAX_PROVENANCE_RECORDS) || 1);
     if (normalized.length <= maximum) return normalized;
 
-    const byId = {};
+    const byId = Object.create(null);
     normalized.forEach(record => { byId[record.id] = record; });
     const selected = new Set();
     const candidates = normalized.map((record, index) => ({ record, index }))
@@ -3850,7 +3850,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function blankOwnerOperationState() {
-    const result = {};
+    const result = Object.create(null);
     OPERATION_KINDS.forEach(kind => { result[kind] = blankOperationMeter(); });
     return result;
   }
@@ -3899,7 +3899,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function blankOperationState() {
-    return { owners: {}, drains: [] };
+    return { owners: Object.create(null), drains: [] };
   }
 
   function effectiveOperationDrainValue(record, ownerOpportunity) {
@@ -3952,14 +3952,14 @@ function characterContinuityRun(hook, incomingText) {
 
   function normalizeOperationState(raw) {
     const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    const owners = {};
+    const owners = Object.create(null);
     const rawOwners = source.owners && typeof source.owners === "object" && !Array.isArray(source.owners)
       ? source.owners
       : {};
     Object.keys(rawOwners).forEach(ownerKey => {
       owners[ownerKey] = normalizeOwnerOperationState(rawOwners[ownerKey]);
     });
-    const drainsByKey = {};
+    const drainsByKey = Object.create(null);
     (Array.isArray(source.drains) ? source.drains : [])
       .map(normalizeOperationDrainRecord)
       .filter(Boolean)
@@ -4102,7 +4102,7 @@ function characterContinuityRun(hook, incomingText) {
     const fallback = blankMaintenanceState();
     const suppliedCache = source.statusCache && typeof source.statusCache === "object"
       && !Array.isArray(source.statusCache) ? source.statusCache : {};
-    const statusCache = {};
+    const statusCache = Object.create(null);
     Object.keys(fallback.statusCache).forEach(kind => {
       const supplied = suppliedCache[kind];
       statusCache[kind] = supplied && typeof supplied === "object" && !Array.isArray(supplied)
@@ -4364,8 +4364,8 @@ function characterContinuityRun(hook, incomingText) {
     rootState.characterContinuityStableV1 = CC;
   }
 
-  const legacyCharacterKeyMap = {};
-  const legacyCharacterGroups = {};
+  const legacyCharacterKeyMap = Object.create(null);
+  const legacyCharacterGroups = Object.create(null);
   characters.forEach(character => {
     if (!legacyCharacterGroups[character.legacyKey]) legacyCharacterGroups[character.legacyKey] = [];
     legacyCharacterGroups[character.legacyKey].push(character);
@@ -4398,7 +4398,7 @@ function characterContinuityRun(hook, incomingText) {
 
   function migratedKeyedObject(value, nestedMigration) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    const result = {};
+    const result = Object.create(null);
     const assign = originalKey => {
       const migratedKey = migratedCharacterKey(originalKey);
       const migratedValue = typeof nestedMigration === "function"
@@ -4493,7 +4493,7 @@ function characterContinuityRun(hook, incomingText) {
 
   function migrateRecoveringViewKeys(value) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    const result = {};
+    const result = Object.create(null);
     Object.keys(source).forEach(key => {
       const marker = source[key] && typeof source[key] === "object" && !Array.isArray(source[key])
         ? source[key]
@@ -4797,7 +4797,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function renderViewsPage(character, buried, page, records) {
-    const grouped = {};
+    const grouped = Object.create(null);
     VIEW_CATEGORIES.forEach(category => { grouped[category] = []; });
     (Array.isArray(records) ? records : []).forEach(record => {
       if (grouped[record.category]) grouped[record.category].push(record);
@@ -4949,7 +4949,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function markViewDuplicates(pages, diagnostics, collectionName) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.targetKey]) groups[record.targetKey] = [];
       groups[record.targetKey].push(record);
@@ -4974,7 +4974,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function markDuplicateViewPages(character, buried, pages, diagnostics) {
-    const counts = {};
+    const counts = Object.create(null);
     pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
     const duplicatePageNumbers = Object.keys(counts)
       .map(Number)
@@ -5120,7 +5120,7 @@ function characterContinuityRun(hook, incomingText) {
     let store = storeIsFresh("views", viewsStore) ? viewsStore : null;
     if (!store) {
       const writesAtStart = session ? session.writes : 0;
-      store = { owners: {}, diagnostics: [], pageStats: [] };
+      store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
       characters.filter(character => !character.onboardingPending).forEach(character => {
         ensureBaseViewsCard(character);
         const activeRefs = viewPageCards(character, false);
@@ -5214,8 +5214,16 @@ function characterContinuityRun(hook, incomingText) {
     return store;
   }
 
+  // Character keys come from player-authored card text, so a key like "constructor"
+  // would otherwise resolve through Object.prototype and hand back a function where
+  // owner data is expected. Own-property lookup also survives the JSON round-trip
+  // the platform performs on state between turns, which a null prototype does not.
+  function ownedEntry(map, key) {
+    return map && Object.prototype.hasOwnProperty.call(map, key) ? (map[key] || null) : null;
+  }
+
   function viewsForOwner(ownerKey) {
-    return viewsStore && viewsStore.owners ? viewsStore.owners[ownerKey] || null : null;
+    return viewsStore ? ownedEntry(viewsStore.owners, ownerKey) : null;
   }
 
   function canonicalManagedViewRecord(record) {
@@ -5327,8 +5335,8 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function captureOwnedManagedCards(records, ownerKeys) {
-    const titleCounts = {};
-    const idCounts = {};
+    const titleCounts = Object.create(null);
+    const idCounts = Object.create(null);
     const items = orderedUniqueOwnedCatalogRecords(records).map(record => {
       const card = record.card;
       const title = titleOf(card);
@@ -5372,7 +5380,7 @@ function characterContinuityRun(hook, incomingText) {
       : (Array.isArray(snapshot && snapshot.ownerKeys) ? snapshot.ownerKeys : [])
         .concat((Array.isArray(snapshot) ? snapshot : []).map(item => item && item.ownerKey));
     const ownerScope = new Set(scopeValues.map(value => line(value, 180)).filter(Boolean));
-    const pools = {};
+    const pools = Object.create(null);
     records.forEach(record => {
       const titleKey = line(record.ownerKey, 180) + "\u241f" + nameKeyOf(titleOf(record.card));
       if (!pools[titleKey]) pools[titleKey] = [];
@@ -5388,7 +5396,7 @@ function characterContinuityRun(hook, incomingText) {
         : null;
     }).filter(Boolean);
     const used = new Set();
-    const restoredCounts = {};
+    const restoredCounts = Object.create(null);
     let restored = true;
     if (eligible.length !== (Array.isArray(snapshot) ? snapshot.length : 0)) restored = false;
     eligible.forEach(({ item, ownerKey }) => {
@@ -5840,7 +5848,7 @@ function characterContinuityRun(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Alias record", oversize: false };
     }
     const labels = ["Alias", "Status", "Use", "Progress", "Reason"];
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index++) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -5951,7 +5959,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function markNameDuplicates(pages, diagnostics, identity) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.aliasKey]) groups[record.aliasKey] = [];
       groups[record.aliasKey].push(record);
@@ -5980,12 +5988,12 @@ function characterContinuityRun(hook, incomingText) {
     if (storeIsFresh("names", namesStore)) return namesStore;
     const session = storeSessionFor("names");
     const writesAtStart = session ? session.writes : 0;
-    const store = { identities: {}, diagnostics: [], pageStats: [] };
+    const store = { identities: Object.create(null), diagnostics: [], pageStats: [] };
     nameIdentities.forEach(identity => {
       ensureBaseNamesCard(identity);
       const refs = namePageCards(identity);
       const pages = refs.map(ref => parseNamesPage(identity, ref.card, ref.page));
-      const counts = {};
+      const counts = Object.create(null);
       pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
       pages.forEach(page => {
         if (textOf(page.card.type) !== settings.CARD_TYPE
@@ -6034,7 +6042,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function namesForIdentity(identityKey) {
-    return namesStore && namesStore.identities ? namesStore.identities[identityKey] || null : null;
+    return namesStore ? ownedEntry(namesStore.identities, identityKey) : null;
   }
 
   function managedNamesRecords() {
@@ -6496,7 +6504,7 @@ function characterContinuityRun(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Relationship record", oversize: false };
     }
     const labels = ["About"].concat(RELATIONSHIP_FIELDS);
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index++) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -6508,8 +6516,8 @@ function characterContinuityRun(hook, incomingText) {
     if (!target) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "invalid Relationship target", oversize: false };
     }
-    const parsedFields = {};
-    const fieldUnsafe = {};
+    const parsedFields = Object.create(null);
+    const fieldUnsafe = Object.create(null);
     RELATIONSHIP_FIELDS.forEach(field => {
       parsedFields[field] = parseRelationshipField(field, values[field]);
       if (!parsedFields[field].safe) fieldUnsafe[field] = parsedFields[field].reason || "unsafe field";
@@ -6629,7 +6637,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function markRelationshipDuplicates(pages, diagnostics) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.targetKey]) groups[record.targetKey] = [];
       groups[record.targetKey].push(record);
@@ -6659,12 +6667,12 @@ function characterContinuityRun(hook, incomingText) {
     if (storeIsFresh("relationships", relationshipsStore)) return relationshipsStore;
     const session = storeSessionFor("relationships");
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       ensureBaseRelationshipsCard(character);
       const refs = relationshipPageCards(character);
       const pages = refs.map(ref => parseRelationshipsPage(character, ref.card, ref.page));
-      const pageCounts = {};
+      const pageCounts = Object.create(null);
       pages.forEach(page => { pageCounts[page.page] = (pageCounts[page.page] || 0) + 1; });
       pages.forEach(page => {
         if (textOf(page.card.type) !== settings.CARD_TYPE
@@ -6722,9 +6730,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function relationshipsForOwner(ownerKey) {
-    return relationshipsStore && relationshipsStore.owners
-      ? relationshipsStore.owners[ownerKey] || null
-      : null;
+    return relationshipsStore ? ownedEntry(relationshipsStore.owners, ownerKey) : null;
   }
 
   function managedRelationshipsRecords() {
@@ -7286,7 +7292,7 @@ function characterContinuityRun(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Turning Point record", oversize: false };
     }
     const labels = hasBreakthrough ? requiredLabels.concat(["Breakthrough"]) : requiredLabels;
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index += 1) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -7420,7 +7426,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function markTurningPointDuplicates(pages, diagnostics) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.id]) groups[record.id] = [];
       groups[record.id].push(record);
@@ -7448,11 +7454,11 @@ function characterContinuityRun(hook, incomingText) {
     if (storeIsFresh("turningpoints", turningPointsStore)) return turningPointsStore;
     const session = storeSessionFor("turningpoints");
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [], stageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [], stageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       const refs = turningPointPageCards(character);
       const pages = refs.map(ref => parseTurningPointsPage(character, ref.card, ref.page));
-      const pageCounts = {};
+      const pageCounts = Object.create(null);
       pages.forEach(page => { pageCounts[page.page] = (pageCounts[page.page] || 0) + 1; });
       pages.forEach(page => {
         page.duplicatePage = pageCounts[page.page] > 1;
@@ -7515,9 +7521,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function turningPointsForOwner(ownerKey) {
-    return turningPointsStore && turningPointsStore.owners
-      ? turningPointsStore.owners[ownerKey] || null
-      : null;
+    return turningPointsStore ? ownedEntry(turningPointsStore.owners, ownerKey) : null;
   }
 
   function turningPointRecordFor(ownerKey, id) {
@@ -8196,7 +8200,7 @@ function characterContinuityRun(hook, incomingText) {
       return experiencesStore;
     }
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       store.owners[character.key] = { character, pages: [], records: [], contextRecords: [] };
     });
@@ -8207,7 +8211,7 @@ function characterContinuityRun(hook, incomingText) {
     });
     Object.values(store.owners).forEach(ownerData => {
       ownerData.pages.sort((left, right) => left.page - right.page || cardIndex(left.card) - cardIndex(right.card));
-      const counts = {};
+      const counts = Object.create(null);
       ownerData.pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
       const seen = new Set();
       ownerData.pages.forEach(page => {
@@ -8254,9 +8258,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function experiencesForOwner(ownerKey) {
-    return experiencesStore && experiencesStore.owners
-      ? experiencesStore.owners[ownerKey] || null
-      : null;
+    return experiencesStore ? ownedEntry(experiencesStore.owners, ownerKey) : null;
   }
 
   function managedExperienceRecords(ownerKeys) {
@@ -8628,7 +8630,7 @@ function characterContinuityRun(hook, incomingText) {
       .sort((left, right) => left.confirmation - right.confirmation
         || left.createdClock - right.createdClock
         || left.id.localeCompare(right.id));
-    const selectedByConfirmation = {};
+    const selectedByConfirmation = Object.create(null);
     matching.forEach(record => {
       if (!selectedByConfirmation[record.confirmation]) selectedByConfirmation[record.confirmation] = record;
     });
@@ -8964,7 +8966,7 @@ function characterContinuityRun(hook, incomingText) {
     const excerpt = evidenceExcerpt(value);
     if (!excerpt.text) return null;
     const number = CC.nextEvidenceNumber++;
-    const ownerBirth = {};
+    const ownerBirth = Object.create(null);
     characters.forEach(character => {
       ownerBirth[character.key] = Math.max(0, Number(CC.ownerOpportunities[character.key]) || 0);
     });
@@ -10548,8 +10550,8 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function relevantRecoveredBlocks(owner, activeSelections, buriedSelections) {
-    const activeByTarget = {};
-    const buriedByTarget = {};
+    const activeByTarget = Object.create(null);
+    const buriedByTarget = Object.create(null);
     activeSelections.forEach(item => { activeByTarget[item.record.targetKey] = item.record; });
     buriedSelections.forEach(item => { buriedByTarget[item.record.targetKey] = item.record; });
     return Object.keys(CC.recoveringViews).map(key => {
@@ -10700,11 +10702,11 @@ function characterContinuityRun(hook, incomingText) {
         result.push(target);
       }
     };
-    const activeByTarget = {};
+    const activeByTarget = Object.create(null);
     activeSelections.forEach(item => { activeByTarget[item.record.targetKey] = item.record; });
-    const buriedByTarget = {};
+    const buriedByTarget = Object.create(null);
     buriedSelections.forEach(item => { buriedByTarget[item.record.targetKey] = item.record; });
-    const relationshipByTarget = {};
+    const relationshipByTarget = Object.create(null);
     (Array.isArray(relationshipSelections) ? relationshipSelections : []).forEach(item => {
       relationshipByTarget[item.record.targetKey] = item.record;
     });
@@ -11071,7 +11073,7 @@ function characterContinuityRun(hook, incomingText) {
     const currentOpportunity = opportunityOverride === null
       ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0)
       : Math.max(0, Number(opportunityOverride) || 0);
-    const frozenById = {};
+    const frozenById = Object.create(null);
     const frozenOrder = [];
     (Array.isArray(frozenPacket) ? frozenPacket : []).forEach(source => {
       const id = provenanceId(source && source.id);
@@ -11120,7 +11122,7 @@ function characterContinuityRun(hook, incomingText) {
         ? frozen.allowedFields.filter(field => RELATIONSHIP_FIELDS.includes(field))
         : null;
       const allowedFields = (frozenFields || grounded).filter(field => grounded.includes(field));
-      const fieldUseSignatures = {};
+      const fieldUseSignatures = Object.create(null);
       allowedFields.forEach(field => {
         const recomputed = relationshipUseSignatureForRecord(record, owner.key, record.targetKey, field);
         const frozenSignature = frozen && frozen.useSignatures && frozen.useSignatures[field];
@@ -11329,7 +11331,7 @@ function characterContinuityRun(hook, incomingText) {
     const currentOpportunity = opportunityOverride === null
       ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0)
       : Math.max(0, Number(opportunityOverride) || 0);
-    const frozenById = {};
+    const frozenById = Object.create(null);
     const frozenOrder = [];
     (Array.isArray(frozenPacket) ? frozenPacket : []).forEach(source => {
       const id = provenanceId(source && source.id);
@@ -11388,7 +11390,7 @@ function characterContinuityRun(hook, incomingText) {
           && current.operationMode === item.operationMode && current.targetMode === item.targetMode)
       );
       const rawLineage = storyLineageForSources(record.sourceIds.concat(record.storyEvidenceIds || []));
-      const useSignatures = {};
+      const useSignatures = Object.create(null);
       const unusedInterpretations = [];
       allowedInterpretations.forEach(item => {
         const key = [item.destination, item.operationMode, item.targetMode || ""].join("|");
@@ -12186,7 +12188,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function operationCandidateGroups(owner, signals, currentInputId, recent, scoringOpportunity) {
-    const groups = {};
+    const groups = Object.create(null);
     (Array.isArray(signals) ? signals : []).forEach(entry => {
       const signal = entry && entry.signal;
       const sourceCandidate = entry && (entry.sourceCandidate || (entry.item ? { item: entry.item } : null));
@@ -12248,7 +12250,7 @@ function characterContinuityRun(hook, incomingText) {
       }
       const evidenceItems = contributing.map(entry => entry.item);
       const sourceCandidates = contributing.map(entry => entry.sourceCandidate);
-      const sourceMetadata = {};
+      const sourceMetadata = Object.create(null);
       sourceCandidates.forEach(source => {
         if (!source || !source.item) return;
         sourceMetadata[source.item.id] = {
@@ -12698,7 +12700,7 @@ function characterContinuityRun(hook, incomingText) {
           ? id.charAt(0) === "E"
           : ["S", "X"].includes(id.charAt(0));
       });
-    const byId = {};
+    const byId = Object.create(null);
     eligible.forEach(candidate => { byId[candidate.item.id] = candidate; });
     const requested = operationPacketSourceIds(kind, selectedCandidate, frozenIds);
     const ordered = [];
@@ -15220,7 +15222,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function frozenOperationEvidenceIds(plan, kind) {
-    const supplied = {};
+    const supplied = Object.create(null);
     (Array.isArray(plan && plan.sourcePacket) ? plan.sourcePacket : []).forEach(sourceItem => {
       const id = continuitySourceId(sourceItem && sourceItem.id);
       if (id) supplied[id] = sourceItem;
@@ -17034,7 +17036,7 @@ function characterContinuityRun(hook, incomingText) {
     const operationKind = keyOf(candidate && candidate.kind);
     const normalizedTarget = normalizedTargetKey(targetKey);
     const suppliedPacket = Array.isArray(plan.sourcePacket) ? plan.sourcePacket : [];
-    const suppliedById = {};
+    const suppliedById = Object.create(null);
     suppliedPacket.forEach(source => {
       const id = continuitySourceId(source && source.id);
       if (id) suppliedById[id] = source;
@@ -19729,7 +19731,7 @@ function characterContinuityRun(hook, incomingText) {
 
   function provenanceStatusSnapshot(validate = true) {
     if (validate) refreshProvenanceActivity();
-    const counts = {};
+    const counts = Object.create(null);
     Object.keys(PROVENANCE_KINDS).forEach(prefix => {
       const records = CC.provenance.records.filter(record => record.id.charAt(0) === prefix);
       counts[prefix] = {
