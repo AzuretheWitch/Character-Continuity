@@ -2,7 +2,7 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs the cache-compatible **v2.02-test-fm-instructions** release of Character Continuity in an AI Dungeon Scenario. Keep a recoverable copy of v2.01 while testing. For the cleanest first setup, use a duplicate, new, or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs the cache-compatible release of Character Continuity in an AI Dungeon Scenario. The current package is **v2.01**. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
 
 CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
 
@@ -45,7 +45,7 @@ Each connector must:
 1. pass the current `text` into `CharacterContinuity`, and
 2. return the replacement text that `CharacterContinuity` gives back.
 
-This is required for triggered Model Context card updates, temporary Front Memory control, State-card updates, opening suppression, and removal of hidden control records.
+This is required for context injection, State-card updates, opening suppression, and removal of hidden control records.
 
 ### Input
 
@@ -82,9 +82,9 @@ modifier(text);
 
 > **Critical:** Input must call `CharacterContinuity("input", text)`, cache-compatible Context must call `CharacterContinuity("contextAppend", text)`, and Output must call `CharacterContinuity("output", text)`. Keep the first-line Context directive, pass the second argument, and return CC's replacement text.
 
-On an eligible focused turn, CC appends a tagged `CC CURRENT ASSESSMENT — CONTEXT PACKET` to ordinary Context. That packet supplies fresh completed raw evidence without assigning its semantic operation meaning, along with legal targets, current card mechanics, and available CCO forms. CC places only a short mandatory-compliance instruction in the actual `state.memory.frontMemory` suffix. The model follows the appended packet, completes either one continuity operation or `K` for continuity unchanged as its first nonblank line, then writes the scene from the next line. The Output connector removes that control record before the player sees the story and clears CC's temporary Front Memory block.
+On an eligible focused turn, the newest appended context ends with `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX`. That final block supplies fresh completed raw evidence without assigning its semantic operation meaning, along with legal targets, current card mechanics, and the available CCO record forms. The model selects the relevant supplied evidence IDs and completes either one continuity operation or `K` for continuity unchanged as its first nonblank line, then writes the scene from the next line. The Output connector removes that control record before the player sees the story.
 
-CC wraps only its short temporary instruction in `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` and preserves Front Memory text outside those tags. Evidence, target maps, mechanics, and CCO templates remain in the appended `<CC_CONTEXT_PACKET>...</CC_CONTEXT_PACKET>`. An operation is marked delivered only when CC verifies both the complete Context packet and the Front Memory instruction in the returned context. A recovery turn receives a short recovery instruction; an ordinary story-only turn receives no CC Front Memory block.
+Optimized context may still display older assessment packets. The final current-response block is authoritative. If a cached record cites evidence outside the current supplied set or changes its supplied order, CC strips it as stale transport, preserves completed story prose, and carries the current assessment once. On a story-only or recovery turn, the newest block instead begins `CC CURRENT RESPONSE` and asks for ordinary story prose.
 
 Save all four script areas.
 
@@ -184,13 +184,11 @@ CC creates a six-card setup pack and keeps the NPC pending until the whole pack 
 
 ## 6. Leave managed triggers alone
 
-Do not create ordinary scene triggers for CC's source or storage cards. CC keeps those cards private and triggerless.
+You do not need to create ordinary scene triggers for CC-managed cards. CC's scripted relevance rules supply current continuity through the Context script.
 
 After activation, CC may place an internal-looking value in a managed card's trigger or key field so the script can preserve that card's identity across hooks. Leave that value in place.
 
-For each activated NPC, CC creates `CC — Model Context — Name`. This generated card is the exception: its normal keys contain the canonical name and unambiguous Active aliases so AI Dungeon can activate a compact portrayal only when relevant. A managed Emerging, Retired, or Rejected alias may be added transiently when that exact form is currently mentioned, allowing the card to explain its status. Do not edit this generated card or its keys; edit the NPC's source cards instead. Input and Output refresh it automatically.
-
-Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02-test-fm-instructions validates that key and copies only the current stage guidance into the NPC's generated Model Context card. Keeping ordinary triggers off every stage card prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
+Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.01 validates that key and directly supplies the current stage Entry through the Context script. Keeping ordinary triggers off every stage card also prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
 
 The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. When movement is currently legal, the assessment can list a compact Turning Point ID, progress, movement, comparison-stage, and condition reference for the model.
 
@@ -210,15 +208,14 @@ Look for:
 - `CC — Status`
 - `Player's Names`
 - `Name's State` for each activated NPC
-- `CC — Model Context — Name` for each activated NPC
 
 `CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: v2.02-test-fm-instructions
+Version: v2.01
 ```
 
-For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02-test-fm-instructions text permanently.
+For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.01 text permanently.
 
 An initial State card may be empty. Mere scene participation does not seed State; it fills only after CC accepts a supported, evidence-grounded State change or confirmation.
 
@@ -253,8 +250,6 @@ modifier(text);
 
 Use the integration order recommended by the other script. Test the combined setup in a duplicate Scenario before publishing it.
 
-Place CC last among Context functions that append or replace suffix text. At the moment CC runs, the current `state.memory.frontMemory` value must still be the actual end of `text`; otherwise CC safely withholds its task and reports a suffix-verification error.
-
 ## Installation checklist
 
 - [ ] The complete current `Library` file is in the Library script tab.
@@ -267,14 +262,12 @@ Place CC last among Context functions that append or replace suffix text. At the
 - [ ] No State cards were created manually.
 - [ ] A fresh Adventure was started after saving.
 - [ ] `CC — Status` reports the same version as the installed Library's `VERSION` value.
-- [ ] Each activated NPC has one generated `CC — Model Context — Name` card with name triggers.
-- [ ] On an assessment turn, Context contains one complete `<CC_CONTEXT_PACKET>` and `CC — Status` reports `Front Memory: operation | verified Yes`; after Output it reports `Front Memory: clear`.
 
 ## Quick installation troubleshooting
 
 If State cards stay empty while a line beginning with `(CCO|` appears in the visible story, first replace all three connectors with the exact two-argument, returned-text forms above and confirm that Context begins with `// @cache-compatible`. On assessment turns, the model places one completed CCO record on the first nonblank output line and begins story prose on the next line; the Output connector strips accepted, unchanged, stale, rejected, malformed, and cut-off control forms before returning the story. If raw CCO still appears with the exact connectors installed, preserve the generated output and `CC — Debug` contents for diagnosis.
 
-Seeing a populated private State block inside a triggered `CC — Model Context — Name` card in the **Context Viewer** is expected; that is how CC supplies bounded private continuity for portrayal. On assessment turns, a complete tagged Context packet and a short tagged Front Memory instruction are also expected. Neither the tags nor raw `(CCO|...)` data should appear in visible story.
+Seeing a populated private State block in AI Dungeon's **Context Viewer**, with `{` followed by `Name's current private State:` on the next line, is expected; that is how CC supplies private continuity for portrayal. A configured Turning Point may likewise add `CURRENT TP` and matching `TP STAGE ... BEGIN/END` controls around the current stage Entry. Under optimized context, older stage and assessment blocks can remain physically cached, but the newest CC portrayal and final current-response blocks select the current authority. None of these controls, and no raw `(CCO|...)` data, should appear in visible story.
 
 For additional diagnosis, see [Troubleshooting](CREATOR-PLAYER-GUIDE.md#troubleshooting).
 

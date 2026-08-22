@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.02-test-fm-instructions**.
+This reference describes **v2.01**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -12,8 +12,8 @@ Keep every setting on its own line. `true` and `false` are recommended for Boole
 
 | Setting | Default | Accepted values | What it does |
 | --- | ---: | --- | --- |
-| `Enabled` | `true` | `true` or `false` | Turns CC processing on or off without removing source or managed continuity cards. When off, CC clears its Front Memory block and removes its derived Model Context cards so their name triggers do not remain active. |
-| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Outer safety allowance for CC's appended operation packet, short Front Memory instruction, and available context capacity. Portrayal uses separately capped triggered Model Context cards, so raising this value does not enlarge them. |
+| `Enabled` | `true` | `true` or `false` | Turns CC processing on or off without removing its Library code or cards. |
+| `Continuity budget` | `2000` | Positive whole number; minimum `1800` | Sets the approximate token budget for CC's complete model-facing packet, including portrayal context and any assessment task. Values below 1,800 are raised to 1,800. A higher value may fit more relevant continuity but consumes more model context. |
 | `State lifetime` | `3` | Whole number from `1` to `12` | Sets how many completed AI responses a temporary State field may survive without new evidence refreshing it. |
 | `Maximum active NPCs` | `5` | Whole number from `1` to `5` | Limits how many scene-relevant registered NPCs CC may treat as active at once. The roster itself still has five stable slots. |
 | `Dynamic cast` | `true` | `true` or `false` | Allows Side NPCs to become Main and inactive Main NPCs to become Side. `false` freezes those statuses. |
@@ -55,19 +55,19 @@ If `Turning Point mode` is missing or invalid, CC falls back to `Growth-only` an
 
 ### Continuity budget
 
-In v2.02-test-fm-instructions, portrayal and control use different routes. Compact portrayal lives in generated, name-triggered `CC — Model Context — Name` Story Cards. A complete semantic-assessment or operation packet is appended to ordinary Context. Front Memory contains only a short mandatory-compliance instruction or prose-recovery instruction, and CC removes its tagged block when no such instruction is active.
+The budget controls CC's complete model-facing continuity packet, not the total amount of information saved in Story Cards. The packet includes portrayal rules, selected character continuity, and a semantic assessment task when one is delivered. CC's relevance rules include the records needed for the current scene rather than inserting every record on every turn.
 
-An assessment packet may use at most 700 tokens. This hard ceiling sits inside the configured Continuity budget and the smaller effective allowance left by `info.maxChars`. The operation is delivered only after CC verifies both the complete appended Context packet and the short instruction at the actual `state.memory.frontMemory` suffix. Text outside CC's own tags is preserved.
+An assessment task may use at most 1,200 tokens. This is a fixed ceiling inside the configured Continuity budget, not another budget added on top. At the default 2,000-token setting, the portrayal context and assessment task together still have to fit within 2,000 tokens and the smaller effective allowance available in the platform context that turn.
 
 When a task is delivered, CC supplies up to two fresh completed evidence rows, their eligible operation codes, the current legal target map, card mechanics, and the available CCO forms. The model selects a unique supplied evidence subset in supplied order and supplies the operation kind and details. It may instead complete `K` with the full supplied list when continuity remains unchanged. The Output connector validates structure and current mechanics, attempts any managed write transactionally, and strips the control record so only story prose remains visible. An omitted record receives one bounded retry.
 
-The appended `CC CURRENT ASSESSMENT — CONTEXT PACKET` inside `<CC_CONTEXT_PACKET>...</CC_CONTEXT_PACKET>` identifies the current supplied evidence and mechanics. The `<CC_FRONT_MEMORY>...</CC_FRONT_MEMORY>` block only requires the model to follow that packet and complete one offered record. Complete CCO records from older tasks are stale when they cite unavailable or reordered IDs: CC strips the record, preserves punctuated story prose, adds no operation drain, and carries the current assessment once. Recovery receives a short tagged Front Memory instruction. Ordinary story-only turns receive no CC Front Memory block.
+In optimized append-only context, the final `CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX` block identifies the current supplied evidence and mechanics. Complete CCO records from older cached tasks are stale when they cite unavailable or reordered IDs: CC strips the record, preserves punctuated story prose, adds no operation drain, and carries the current assessment once. Story-only and recovery turns receive their own final `CC CURRENT RESPONSE` block.
 
 The owner opportunity clock advances once for every eligible focused action, including a completed `K` assessment and a turn whose complete packet cannot fit. This clock governs durable evidence age and operation-drain decay. Status reports evidence as `available` and `unreviewed`; `pending` is no longer used for every merely age-eligible ledger item.
 
-`info.maxChars` is treated as a hard returned-text ceiling; CC does not assume the platform's internal overflow area is writable capacity. Under pressure, CC defers the operation rather than return a partial packet or an instruction without its packet. `CC — Status` reports generated Model Context cards, their stored token estimates, Front Memory mode and verification, and operation-packet budget use.
+`info.maxChars` is treated as a hard returned-text ceiling; CC does not assume the platform's internal overflow area is writable append capacity. Under pressure, CC tries complete full, compact, and emergency focused portrayal tiers inside the configured budget. It can remove optional projections to reserve a complete assessment packet and defers the assessment when that packet still cannot fit. `CC — Status` reports the portrayal tier, configured/effective/used/headroom totals, and any model omissions. The portrayal tier is a fitting strategy within the configured budget, not a separate cap.
 
-If context is crowded, keep Outer and Inner concise and remove redundant source prose. Each generated Model Context card is capped independently; optional State, development, Relationship, View, Name, and Experience blocks are added only while complete blocks fit.
+If context is crowded, first keep Outer and Inner concise and remove redundant prose. Raising the budget can expose more continuity, but also leaves less room for story history and other Scenario instructions.
 
 ### State lifetime
 
@@ -77,7 +77,7 @@ State stores at most three trigger codes. If the model supplies more than three 
 
 ### Maximum active NPCs
 
-The roster always provides `N1` through `N5`, but this setting limits how many currently relevant NPCs CC treats as active for focus and update routing. Native Story Card matching can still activate more than one generated Model Context card when several registered names are explicitly present. The setting does not delete NPCs or change their stable roster slots.
+The roster always provides `N1` through `N5`, but this setting can limit how many currently relevant NPCs are model-facing. Lower values reduce context use in large casts. They do not delete NPCs or change their stable roster slots.
 
 ### Dynamic cast
 
@@ -101,15 +101,13 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Imported Experience field | `5,000` characters before safe splitting |
 | Stored Experience record | `650` characters |
 | Model-facing Experience copy | `320` characters |
-| Generated Model Context card | `4,400` characters per NPC |
-| Generated Model Context triggers | `12` unambiguous canonical/Active forms plus currently mentioned managed forms per NPC |
 | Individual State value | `120` characters |
 | State triggers | `3` |
 | Confirmations required for Experience promotion | `3` |
-| Appended assessment/operation packet ceiling | `700` tokens inside the configured Continuity budget |
+| Assessment task ceiling | `1,200` tokens inside the configured Continuity budget |
 | Turning Point Explanation requested from the model | `150` characters |
 | Stored Turning Point Explanation after safe word-boundary compaction | `180` characters |
-| CC Front Memory on an ordinary no-task turn | `0` tokens |
+| Complete continuity packet | Bounded by both the configured Continuity budget and the effective context allowance for that turn |
 
 When a managed collection outgrows one page, CC can create numbered pages where supported. An oversized imported Experience can be divided at word boundaries into valid stored records before paging.
 

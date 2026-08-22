@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.02-test-fm-instructions",
+  VERSION: "v2.01-frontmemory-instructions",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -16,13 +16,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_TITLE: "CC — Debug",
   CARD_TYPE: "Continuity",
   CARD_KEY_PREFIX: "__CC_STABLE_CARD__:",
-  MODEL_CARD_TYPE: "Continuity",
-  MODEL_CARD_TITLE_PREFIX: "CC — Model Context — ",
-  MODEL_CARD_KEY_PREFIX: "__CC_MODEL_CARD__:",
   FRONT_MEMORY_BEGIN: "<CC_FRONT_MEMORY>",
   FRONT_MEMORY_END: "</CC_FRONT_MEMORY>",
-  CONTEXT_PACKET_BEGIN: "<CC_CONTEXT_PACKET>",
-  CONTEXT_PACKET_END: "</CC_CONTEXT_PACKET>",
   SCRIPT_CARD_TITLE: "Script Story Card",
 
   DEFAULT_ENABLED: true,
@@ -58,9 +53,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_PROVENANCE_RECORDS: 160,
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
-  MAX_OPERATION_TASK_TOKENS: 700,
-  MAX_MODEL_CARD_CHARS: 4400,
-  MAX_MODEL_CARD_TRIGGERS: 12,
+  MAX_OPERATION_TASK_TOKENS: 1200,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   MODEL_STATE_VALUE_CHARS: 100,
@@ -87,7 +80,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 4,
+  MAINTENANCE_SCHEMA_VERSION: 3,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -141,6 +134,7 @@ function CharacterContinuity(hook, incomingText) {
     recorded: false
   };
   let cardCatalog = null;
+  let frontMemoryContextVerified = false;
 
   function finish(value) {
     return typeof value === "string" && value.length ? value : " ";
@@ -154,151 +148,6 @@ function CharacterContinuity(hook, incomingText) {
 
   function textOf(value) {
     return value === null || value === undefined ? "" : String(value);
-  }
-
-  function frontMemoryStore() {
-    if (!rootState.memory || typeof rootState.memory !== "object" || Array.isArray(rootState.memory)) {
-      rootState.memory = {};
-    }
-    return rootState.memory;
-  }
-
-  function currentFrontMemory() {
-    return textOf(frontMemoryStore().frontMemory);
-  }
-
-  function stripOwnedFrontMemory(value) {
-    const begin = escapeRegExp(settings.FRONT_MEMORY_BEGIN);
-    const end = escapeRegExp(settings.FRONT_MEMORY_END);
-    return textOf(value)
-      .replace(new RegExp(begin + "[\\s\\S]*?" + end, "g"), "");
-  }
-
-  function ownedFrontMemoryBlock(taskText) {
-    const task = textOf(taskText).replace(/\r/g, "").trim();
-    return task
-      ? [settings.FRONT_MEMORY_BEGIN, task, settings.FRONT_MEMORY_END].join("\n")
-      : "";
-  }
-
-  function ownedContextPacketBlock(packetText) {
-    const packet = textOf(packetText).replace(/\r/g, "").trim();
-    return packet
-      ? [settings.CONTEXT_PACKET_BEGIN, packet, settings.CONTEXT_PACKET_END].join("\n")
-      : "";
-  }
-
-  function stripOwnedContextPacket(value) {
-    const begin = escapeRegExp(settings.CONTEXT_PACKET_BEGIN);
-    const end = escapeRegExp(settings.CONTEXT_PACKET_END);
-    return textOf(value).replace(new RegExp("(?:\\r?\\n\\s*)?" + begin
-      + "[\\s\\S]*?" + end + "(?:\\s*\\r?\\n)?", "g"), "");
-  }
-
-  function composedFrontMemory(externalMemory, taskText) {
-    const external = textOf(externalMemory);
-    const block = ownedFrontMemoryBlock(taskText);
-    if (!block) return external;
-    if (!external) return block;
-    return external + (/\r?\n$/.test(external) ? "" : "\n\n") + block;
-  }
-
-  function stableFrontMemoryTracking() {
-    const stable = rootState.characterContinuityStableV1;
-    return stable && typeof stable === "object" && !Array.isArray(stable) ? stable : null;
-  }
-
-  function trackedExternalFrontMemory(currentValue) {
-    const current = textOf(currentValue);
-    const stable = stableFrontMemoryTracking();
-    if (!stable || stable.frontMemoryOwnsBlock !== true
-      || typeof stable.frontMemoryExternal !== "string") return stripOwnedFrontMemory(current);
-    const external = stable.frontMemoryExternal;
-    const prefix = external + (external && !/\r?\n$/.test(external) ? "\n\n" : "");
-    const remainder = current.slice(prefix.length);
-    return current.startsWith(prefix)
-      && remainder.startsWith(settings.FRONT_MEMORY_BEGIN)
-      && remainder.trimEnd().endsWith(settings.FRONT_MEMORY_END)
-      ? external
-      : stripOwnedFrontMemory(current);
-  }
-
-  function rememberFrontMemory(externalMemory, ownsBlock) {
-    const stable = stableFrontMemoryTracking();
-    if (!stable) return;
-    stable.frontMemoryExternal = textOf(externalMemory);
-    stable.frontMemoryOwnsBlock = ownsBlock === true;
-  }
-
-  function replaceFrontMemorySuffix(contextValue, oldFrontMemory, nextFrontMemory) {
-    const context = textOf(contextValue);
-    const oldFront = textOf(oldFrontMemory);
-    const nextFront = textOf(nextFrontMemory);
-    if (!oldFront) {
-      if (!nextFront) return { ok: true, text: context };
-      const separator = context && !/\n\s*$/.test(context) ? "\n\n" : "";
-      return { ok: true, text: context + separator + nextFront };
-    }
-    const index = context.lastIndexOf(oldFront);
-    if (index < 0 || context.slice(index + oldFront.length).trim()) {
-      return { ok: false, text: context };
-    }
-    return {
-      ok: true,
-      text: context.slice(0, index) + nextFront + context.slice(index + oldFront.length)
-    };
-  }
-
-  function clearOwnedFrontMemoryState() {
-    const memory = frontMemoryStore();
-    const current = textOf(memory.frontMemory);
-    const external = trackedExternalFrontMemory(current);
-    if (external === current) {
-      rememberFrontMemory(external, false);
-      return false;
-    }
-    memory.frontMemory = external;
-    const cleared = textOf(memory.frontMemory) === external;
-    if (cleared) rememberFrontMemory(external, false);
-    return cleared;
-  }
-
-  function beginFrontMemoryContext(contextValue) {
-    const oldFrontMemory = currentFrontMemory();
-    const externalFrontMemory = trackedExternalFrontMemory(oldFrontMemory);
-    const cleared = replaceFrontMemorySuffix(contextValue, oldFrontMemory, "");
-    const baseText = cleared.ok ? stripOwnedContextPacket(cleared.text) : textOf(contextValue);
-    return {
-      ok: cleared.ok,
-      originalText: textOf(contextValue),
-      baseText,
-      externalFrontMemory,
-      commit(taskText, preparedContext = baseText) {
-        if (!cleared.ok) return { ok: false, delivered: false, text: textOf(contextValue), frontMemory: oldFrontMemory };
-        const nextFrontMemory = composedFrontMemory(externalFrontMemory, taskText);
-        const prepared = textOf(preparedContext);
-        const alreadyEndsWithFrontMemory = !!nextFrontMemory
-          && prepared.trimEnd().endsWith(nextFrontMemory.trimEnd());
-        const separator = nextFrontMemory && prepared && !/\n\s*$/.test(prepared) ? "\n\n" : "";
-        const returnedText = alreadyEndsWithFrontMemory
-          ? prepared
-          : prepared + separator + nextFrontMemory;
-        const memory = frontMemoryStore();
-        memory.frontMemory = nextFrontMemory;
-        const stateMatches = textOf(memory.frontMemory) === nextFrontMemory;
-        const returnedSuffixMatches = nextFrontMemory
-          ? returnedText.trimEnd().endsWith(nextFrontMemory.trimEnd())
-          : returnedText === prepared;
-        const ok = stateMatches && returnedSuffixMatches;
-        if (ok) rememberFrontMemory(externalFrontMemory, !!textOf(taskText).trim());
-        return {
-          ok,
-          delivered: ok && !!textOf(taskText).trim(),
-          text: ok ? returnedText : textOf(contextValue),
-          frontMemory: ok ? nextFrontMemory : oldFrontMemory
-        };
-      }
-    };
   }
 
   function platformActionCount() {
@@ -409,6 +258,139 @@ function CharacterContinuity(hook, incomingText) {
 
   function escapeRegExp(value) {
     return textOf(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function frontMemoryStore() {
+    if (!rootState.memory || typeof rootState.memory !== "object" || Array.isArray(rootState.memory)) {
+      rootState.memory = {};
+    }
+    return rootState.memory;
+  }
+
+  function currentFrontMemory() {
+    return textOf(frontMemoryStore().frontMemory);
+  }
+
+  function stripOwnedFrontMemory(value) {
+    const begin = escapeRegExp(settings.FRONT_MEMORY_BEGIN);
+    const end = escapeRegExp(settings.FRONT_MEMORY_END);
+    return textOf(value).replace(new RegExp(begin + "[\\s\\S]*?" + end, "g"), "");
+  }
+
+  function ownedFrontMemoryBlock(instructionText) {
+    const instruction = textOf(instructionText).replace(/\r/g, "").trim();
+    return instruction
+      ? [settings.FRONT_MEMORY_BEGIN, instruction, settings.FRONT_MEMORY_END].join("\n")
+      : "";
+  }
+
+  function composedFrontMemory(externalMemory, instructionText) {
+    const external = textOf(externalMemory);
+    const block = ownedFrontMemoryBlock(instructionText);
+    if (!block) return external;
+    if (!external) return block;
+    return external + (/\r?\n$/.test(external) ? "" : "\n\n") + block;
+  }
+
+  function stableFrontMemoryTracking() {
+    const stable = rootState.characterContinuityStableV1;
+    return stable && typeof stable === "object" && !Array.isArray(stable) ? stable : null;
+  }
+
+  function trackedExternalFrontMemory(currentValue) {
+    const current = textOf(currentValue);
+    const stable = stableFrontMemoryTracking();
+    if (!stable || stable.frontMemoryOwnsBlock !== true
+      || typeof stable.frontMemoryExternal !== "string") return stripOwnedFrontMemory(current);
+    const external = stable.frontMemoryExternal;
+    const prefix = external + (external && !/\r?\n$/.test(external) ? "\n\n" : "");
+    const remainder = current.slice(prefix.length);
+    return current.startsWith(prefix)
+      && remainder.startsWith(settings.FRONT_MEMORY_BEGIN)
+      && remainder.trimEnd().endsWith(settings.FRONT_MEMORY_END)
+      ? external
+      : stripOwnedFrontMemory(current);
+  }
+
+  function rememberFrontMemory(externalMemory, ownsBlock) {
+    const stable = stableFrontMemoryTracking();
+    if (!stable) return;
+    stable.frontMemoryExternal = textOf(externalMemory);
+    stable.frontMemoryOwnsBlock = ownsBlock === true;
+  }
+
+  function replaceFrontMemorySuffix(contextValue, oldFrontMemory, nextFrontMemory) {
+    const context = textOf(contextValue);
+    const oldFront = textOf(oldFrontMemory);
+    const nextFront = textOf(nextFrontMemory);
+    if (!oldFront) {
+      if (!nextFront) return { ok: true, text: context };
+      const separator = context && !/\n\s*$/.test(context) ? "\n\n" : "";
+      return { ok: true, text: context + separator + nextFront };
+    }
+    const index = context.lastIndexOf(oldFront);
+    if (index < 0 || context.slice(index + oldFront.length).trim()) {
+      return { ok: false, text: context };
+    }
+    return {
+      ok: true,
+      text: context.slice(0, index) + nextFront + context.slice(index + oldFront.length)
+    };
+  }
+
+  function clearOwnedFrontMemoryState() {
+    const memory = frontMemoryStore();
+    const current = textOf(memory.frontMemory);
+    const external = trackedExternalFrontMemory(current);
+    if (external === current) {
+      rememberFrontMemory(external, false);
+      return false;
+    }
+    memory.frontMemory = external;
+    const cleared = textOf(memory.frontMemory) === external;
+    if (cleared) rememberFrontMemory(external, false);
+    return cleared;
+  }
+
+  function beginFrontMemoryContext(contextValue) {
+    const oldFrontMemory = currentFrontMemory();
+    const externalFrontMemory = trackedExternalFrontMemory(oldFrontMemory);
+    const cleared = replaceFrontMemorySuffix(contextValue, oldFrontMemory, "");
+    const baseText = cleared.ok ? cleared.text : textOf(contextValue);
+    return {
+      ok: cleared.ok,
+      baseText,
+      externalFrontMemory,
+      commit(instructionText, preparedContext = baseText) {
+        if (!cleared.ok) {
+          return { ok: false, delivered: false, text: textOf(contextValue), frontMemory: oldFrontMemory };
+        }
+        const nextFrontMemory = composedFrontMemory(externalFrontMemory, instructionText);
+        const prepared = textOf(preparedContext);
+        const alreadyEndsWithFrontMemory = !!nextFrontMemory
+          && prepared.trimEnd().endsWith(nextFrontMemory.trimEnd());
+        const separator = nextFrontMemory && prepared && !/\n\s*$/.test(prepared) ? "\n\n" : "";
+        const returnedText = alreadyEndsWithFrontMemory
+          ? prepared
+          : prepared + separator + nextFrontMemory;
+        const memory = frontMemoryStore();
+        memory.frontMemory = nextFrontMemory;
+        const stateMatches = textOf(memory.frontMemory) === nextFrontMemory;
+        const returnedSuffixMatches = nextFrontMemory
+          ? returnedText.trimEnd().endsWith(nextFrontMemory.trimEnd())
+          : returnedText === prepared;
+        const appendPrefixMatches = !appendOnlyContext || returnedText.startsWith(baseText);
+        const ok = stateMatches && returnedSuffixMatches && appendPrefixMatches;
+        frontMemoryContextVerified = ok;
+        if (ok) rememberFrontMemory(externalFrontMemory, !!textOf(instructionText).trim());
+        return {
+          ok,
+          delivered: ok && !!textOf(instructionText).trim(),
+          text: ok ? returnedText : textOf(contextValue),
+          frontMemory: ok ? nextFrontMemory : oldFrontMemory
+        };
+      }
+    };
   }
 
   function clone(value) {
@@ -1797,15 +1779,6 @@ function CharacterContinuity(hook, incomingText) {
 
   const runtime = readRuntime();
   if (!runtime.enabled) {
-    currentCardCatalog().records.filter(record => !!modelProjectionMarkerFromCard(record.card))
-      .map(record => record.card)
-      .sort((left, right) => cardIndex(right) - cardIndex(left))
-      .forEach(removeCard);
-    if (contextHook) {
-      const frontMemory = beginFrontMemoryContext(originalText);
-      const cleared = frontMemory.commit("");
-      return finish(cleared.ok ? cleared.text : originalText);
-    }
     clearOwnedFrontMemoryState();
     return finish(originalText);
   }
@@ -4444,7 +4417,6 @@ function CharacterContinuity(hook, incomingText) {
       lastGenuineOperation: blankLastGenuineOperation(),
       pendingOperationRetry: blankPendingOperationRetry(),
       focusLastServed: {}, sceneLastSeen: {}, recoveryPending: false,
-      frontMemoryExternal: "", frontMemoryOwnsBlock: false,
       evidence: [], nextEvidenceNumber: 1, ownerOpportunities: {}, recoveringViews: {},
       provenance: blankProvenanceLedger(), operationState: blankOperationState(),
       viewRepairDiagnostics: [], viewTransactionDiagnostics: [],
@@ -4454,6 +4426,7 @@ function CharacterContinuity(hook, incomingText) {
       lastTimeJumpEvidenceId: "",
       maintenance: blankMaintenanceState(),
       cardHashes: {}, cardsInitialized: false,
+      frontMemoryExternal: "", frontMemoryOwnsBlock: false,
       last: {
         context: "Not built", output: "No output yet", warning: "", error: "",
         outputRawChars: 0, outputStoryChars: 0, outputRecordChars: 0, outputRecordPosition: "none",
@@ -4463,8 +4436,6 @@ function CharacterContinuity(hook, incomingText) {
         contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
         cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
         portrayalTier: "none",
-        frontMemoryMode: "clear", frontMemoryVerified: false,
-        projectionCards: [], projectionTokens: 0,
         task: "none", owner: "", candidate: "not requested", update: "None",
         protocol: "None", cast: "None", retry: false, continue: false, gracefulFallback: false,
         timeJumpReset: false, selectedNames: [], omittedNames: [],
@@ -4801,10 +4772,10 @@ function CharacterContinuity(hook, incomingText) {
   if (typeof CC.lastTimeJumpEvidenceId !== "string") CC.lastTimeJumpEvidenceId = "";
   if (typeof CC.openingEvidenceId !== "string") CC.openingEvidenceId = "";
   if (typeof CC.lastInputSignature !== "string") CC.lastInputSignature = "";
-  if (typeof CC.frontMemoryExternal !== "string") CC.frontMemoryExternal = "";
-  if (typeof CC.frontMemoryOwnsBlock !== "boolean") CC.frontMemoryOwnsBlock = false;
   CC.maintenance = normalizeMaintenanceState(CC.maintenance);
   if (!CC.cardHashes || typeof CC.cardHashes !== "object" || Array.isArray(CC.cardHashes)) CC.cardHashes = {};
+  if (typeof CC.frontMemoryExternal !== "string") CC.frontMemoryExternal = "";
+  if (typeof CC.frontMemoryOwnsBlock !== "boolean") CC.frontMemoryOwnsBlock = false;
   if (!CC.last || typeof CC.last !== "object" || Array.isArray(CC.last)) CC.last = initialStableState().last;
   else CC.last = { ...initialStableState().last, ...CC.last };
   if (!Array.isArray(CC.last.provenanceDiagnostics)) CC.last.provenanceDiagnostics = [];
@@ -13405,53 +13376,51 @@ function CharacterContinuity(hook, incomingText) {
     if (turningChoices.length) {
       forms.push("T Turning Point: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
     }
-    const targetRows = targets.length ? ["Targets (S=State,N=Name,R=Relationship,V=View): "
-      + targets.map(target => {
-        const capabilities = [
-          stateTargets.includes(target) ? "S" : "",
-          nameTargets.includes(target) ? "N" : "",
-          relationshipTargets.includes(target) ? "R" : "",
-          viewTargets.includes(target) ? "V" : ""
-        ].filter(Boolean).join("");
-        const mode = target.mode === "buried" ? ";buried" : (target.mode === "recovering" ? ";recovering" : "");
-        return target.code + "=" + target.name + "[" + capabilities + mode + "]";
-      }).join(", ")] : [];
+    const targetRows = [
+      stateTargets.length ? "State About codes: " + stateTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      nameTargets.length ? "Name Subject and Use codes: " + nameTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      relationshipTargets.length ? "Relationship targets: " + relationshipTargets.map(target => target.code + "=" + target.name).join(", ") : "",
+      viewTargets.length ? "View targets: " + viewTargets.map(target => target.code + "=" + target.name
+        + (target.mode === "buried" ? "[buried]" : (target.mode === "recovering" ? "[recovering]" : ""))).join(", ") : ""
+    ].filter(Boolean);
     const relationshipDestinations = RELATIONSHIP_FIELDS.map(field => field + "="
       + relationshipOperationDestinations(field, null).join("/")).join("; ");
-    const turningRows = turningChoices.map(choice => "TP " + choice.id + " " + choice.title
+    const turningRows = turningChoices.map(choice => "TP " + choice.id
+      + (choice.handle ? " [portrayal handle " + choice.handle + "]" : "") + " " + choice.title
       + " | current " + choice.progress + " | movements " + choice.modes.join("/")
       + " | " + choice.references.join("; "));
     const rules = [
-      "CC CURRENT ASSESSMENT — CONTEXT PACKET",
-      "Assess only the supplied completed evidence for " + owner.name + ". Choose its continuity meaning; fill every field.",
-      "Use one or more supplied IDs in supplied order. K copies all supplied IDs and means assessed with no continuity change.",
+      "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
+      "Use this final CC CURRENT ASSESSMENT block as the complete output task for this response.",
+      "Assess the supplied completed evidence for " + owner.name + ". Select the continuity meaning and supply every operation detail.",
+      "Each raw Evidence row can support any available operation form. Select one or more supplied IDs for an operation and preserve their supplied order. K copies the complete supplied ID list and records a completed assessment with continuity unchanged.",
       "Evidence:",
       ...rows,
       ...targetRows,
-      "State: choose 1-3 triggers from " + TRIGGER_CODES.join(",")
-        + "; Situation is a concise completed event; Thought is direct first-person private thought.",
-      "Name Transition: Observed/Adopted/Retired/Rejected/Reactivated/Replace=OldAlias. Use: General/None/or comma-separated Name codes.",
-      "Relationship D means a completed direct event. Fields/destinations: " + relationshipDestinations + ".",
-      "View destination: " + VIEW_CATEGORIES.join("/")
-        + "/Buried(active known view)/Recovered(buried view). Mode O=direct durable judgment; M=bounded movement.",
+      "State TriggerList selects 1-3 codes: " + TRIGGER_CODES.join(",") + ". Situation is a concise completed event; Thought is direct first-person inner speech.",
+      "Name Transition: Observed, Adopted, Retired, Rejected, Reactivated, or Replace=OldAlias. Use: General, None, or comma-separated Name codes.",
+      "Relationship fields and destinations: " + relationshipDestinations + ". D records a completed direct event.",
+      "View destinations: " + VIEW_CATEGORIES.join("/") + ", plus Buried for an active known view or Recovered for a buried view. Mode O records a directly established durable judgment; M records bounded movement toward the destination.",
       ...turningRows,
-      turningRows.length ? "For T, StableID is the ID after TP." : "",
-      "Explanation: one grounded plain-text clause. Keep | separators distinct.",
+      turningRows.length
+        ? "Turning Point StableID is the ID immediately after TP; its bracketed portrayal handle resolves to the same listed development."
+        : "",
+      "Explanation is one concise plain-text clause grounded in the cited evidence. Complete descriptive fields with plain text that keeps the record separators distinct.",
       "Available record forms:",
       ...forms,
       "Output order:",
-      "1. Complete exactly one available CCO record as the first nonblank line.",
-      "2. Write complete story prose from the next line."
+      "1. Complete exactly one available CCO record as the first nonblank output line.",
+      "2. Continue with complete story prose from the next line."
     ];
     return ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
   }
 
   function operationTaskUsesForcedContract(value) {
     const source = textOf(value);
-    const assessmentContract = /(?:^|\n)CC CURRENT ASSESSMENT — (?:CONTEXT PACKET|FINAL RESPONSE SUFFIX)\b/i.test(source)
+    const assessmentContract = /(?:^|\n)CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX\b/i.test(source)
       && /K unchanged:\s*\(CCO\|K\|S\|[^\n]+\|Explanation\)/i.test(source)
       && /Available record forms:\s*[\s\S]*\(CCO\|[KSNRVT]\|/i.test(source)
-      && /(?:Retry )?Output order:\s*\n1\. Complete exactly one available CCO record as the first nonblank(?: output)? line\.\s*\n2\. (?:Continue with|Write) complete story prose from the next line\./i.test(source);
+      && /Output order:\s*\n1\. Complete exactly one available CCO record as the first nonblank output line\.\s*\n2\. Continue with complete story prose from the next line\./i.test(source);
     if (assessmentContract) return true;
     const legacyCompletionContract = source.includes(
       "Complete this scheduled continuity operation by replacing every capitalized placeholder with a concise completed value;"
@@ -13521,15 +13490,25 @@ function CharacterContinuity(hook, incomingText) {
       "A Character Continuity operation is mandatory this response.",
       "Follow the final CC CURRENT ASSESSMENT/OPERATION block in Context.",
       "Output exactly one completed CCO record as the first nonblank line, then story prose.",
-      "If the packet offers K and no change is supported, use K. Do not omit or refuse the record.",
+      "If the Context block offers K and no change is supported, use K.",
+      "Do not omit or refuse the record.",
+      "</SYSTEM>"
+    ].join("\n");
+  }
+
+  function currentStoryResponseTask() {
+    return [
+      "<SYSTEM>",
+      "CC CURRENT RESPONSE — STORY",
+      "Use this final CC CURRENT RESPONSE block as the output task for this response. Continue with complete story prose.",
       "</SYSTEM>"
     ].join("\n");
   }
 
   function currentOperationAuthorityLines() {
     return [
-      "CC CURRENT OPERATION — CONTEXT PACKET",
-      "Use this CC CURRENT OPERATION packet as the complete operation data for this response. Its Evidence rows, Output order, and Record template are the current supplied contract."
+      "CC CURRENT OPERATION — FINAL RESPONSE SUFFIX",
+      "Use this final CC CURRENT OPERATION block as the complete output task for this response. Its Evidence rows, Output order, and Record template are the current supplied contract."
     ];
   }
 
@@ -13624,11 +13603,9 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function assembleContext(base, active, focus, currentInput, recent, plan, controlOnly = false,
-    externalFrontMemory = "") {
+  function assembleContext(base, active, focus, currentInput, recent, plan, externalFrontMemory = "") {
     const components = [];
-    let tail = "";
-    let frontInstruction = CC.recoveryPending ? recoveryTask() : "";
+    let tail = CC.recoveryPending ? recoveryTask() : currentStoryResponseTask();
     const selectedNames = [];
     const omittedNames = [];
     const selectedRelationships = [];
@@ -13650,7 +13627,7 @@ function CharacterContinuity(hook, incomingText) {
     let compactPortrayalFallbackUsed = false;
     let emergencyPortrayalFallbackUsed = false;
     let cacheLimitedPortrayal = false;
-    let portrayalTier = controlOnly ? "story-card" : "full";
+    let portrayalTier = "full";
     const operationCandidateReady = !!(
       plan && plan.opportunity && !CC.recoveryPending
       && TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
@@ -13661,16 +13638,17 @@ function CharacterContinuity(hook, incomingText) {
     const continuityTurnBudget = configuredBudget;
     const continuityEffectiveBudget = Math.min(effectiveBudget, continuityTurnBudget);
 
-    const composition = (candidateComponents = components, candidateTail = tail, materialize = false,
-      candidateFrontInstruction = frontInstruction) => {
-      const prefix = controlOnly ? "" : renderPortrayalComponents(candidateComponents);
-      const contextPacket = ownedContextPacketBlock(candidateTail);
-      const frontMemory = composedFrontMemory(externalFrontMemory, candidateFrontInstruction);
-      const fittedTail = [contextPacket, frontMemory].filter(Boolean).join("\n\n");
+    const composition = (candidateComponents = components, candidateTail = tail, materialize = false) => {
+      const prefix = renderPortrayalComponents(candidateComponents);
+      const frontInstruction = operationTaskUsesForcedContract(candidateTail)
+        ? operationFrontMemoryInstruction()
+        : "";
+      const frontMemory = composedFrontMemory(externalFrontMemory, frontInstruction);
+      const fittedTail = [candidateTail, frontMemory].filter(Boolean).join("\n\n");
       const tokens = estimateTokens([
         prefix,
-        contextPacket,
-        ownedFrontMemoryBlock(candidateFrontInstruction)
+        candidateTail,
+        ownedFrontMemoryBlock(frontInstruction)
       ].filter(Boolean).join("\n"));
       if (tokens > continuityTurnBudget) return { ok: false, reason: "continuity turn budget" };
       if (tokens > continuityEffectiveBudget) return { ok: false, reason: "effective context allowance" };
@@ -14054,9 +14032,8 @@ function CharacterContinuity(hook, incomingText) {
       );
 
     const fitOperationByEvictingOptionalContext = proposedTail => {
-      const proposedFrontInstruction = operationFrontMemoryInstruction();
       let working = components.slice();
-      let fit = composition(working, proposedTail, false, proposedFrontInstruction);
+      let fit = composition(working, proposedTail);
       if (fit.ok) return fit;
       const groups = [];
       const grouped = new Set();
@@ -14189,7 +14166,7 @@ function CharacterContinuity(hook, incomingText) {
       for (const group of groups) {
         const removable = new Set(group);
         working = working.filter(component => !removable.has(component));
-        fit = composition(working, proposedTail, false, proposedFrontInstruction);
+        fit = composition(working, proposedTail);
         if (!fit.ok) continue;
         commitWorking(working, "");
         return fit;
@@ -14204,7 +14181,7 @@ function CharacterContinuity(hook, incomingText) {
           component.ownerKey === focus.key && ["outer", "inner"].includes(component.type)
         )).concat(compactPair);
         fit = compactPair.length === 2
-          ? composition(compactWorking, proposedTail, false, proposedFrontInstruction)
+          ? composition(compactWorking, proposedTail)
           : { ok: false, reason: "complete compact Outer/Inner pair" };
         if (fit.ok) {
           commitWorking(compactWorking, "compact");
@@ -14224,7 +14201,7 @@ function CharacterContinuity(hook, incomingText) {
           ...emergencyPair
         );
         fit = emergencyPair.length === 2
-          ? composition(emergencyWorking, proposedTail, false, proposedFrontInstruction)
+          ? composition(emergencyWorking, proposedTail)
           : { ok: false, reason: "complete emergency Outer/Inner pair" };
         if (fit.ok) {
           commitWorking(emergencyWorking, "emergency");
@@ -14312,8 +14289,6 @@ function CharacterContinuity(hook, incomingText) {
     } else if (plan.opportunity && !CC.recoveryPending) {
       taskDeferredReason = "No eligible completed evidence was available for the frozen operation kind.";
     }
-
-    if (taskDelivered) frontInstruction = operationFrontMemoryInstruction();
 
     modelActive.filter(character => character.key !== focus.key).forEach(character => {
       const stateBlock = temporaryStateLine(character);
@@ -14455,15 +14430,15 @@ function CharacterContinuity(hook, incomingText) {
       selectedExperiences,
       omittedExperiences,
       tokens: final.tokens,
-      rulesTokens: controlOnly ? 0 : byType("rules"),
-      outerTokens: controlOnly ? 0 : byType("outer"),
-      namesTokens: controlOnly ? 0 : byType("names"),
-      innerTokens: controlOnly ? 0 : byType("inner"),
-      stateTokens: controlOnly ? 0 : byType("state"),
-      relationshipsTokens: controlOnly ? 0 : byType("relationships"),
-      turningPointsTokens: controlOnly ? 0 : byType("turningPoints") + byType("turningPointAuthority"),
-      viewsTokens: controlOnly ? 0 : byType("views"),
-      experiencesTokens: controlOnly ? 0 : byType("experiences"),
+      rulesTokens: byType("rules"),
+      outerTokens: byType("outer"),
+      namesTokens: byType("names"),
+      innerTokens: byType("inner"),
+      stateTokens: byType("state"),
+      relationshipsTokens: byType("relationships"),
+      turningPointsTokens: byType("turningPoints") + byType("turningPointAuthority"),
+      viewsTokens: byType("views"),
+      experiencesTokens: byType("experiences"),
       evidenceTokens: taskDelivered ? estimateTokens(
         selectedOperationKind === ASSESSMENT_OPERATION_KIND
           ? selectedEvidence.map(candidate => candidate.item.id + "["
@@ -14476,7 +14451,7 @@ function CharacterContinuity(hook, incomingText) {
       ) : 0,
       taskTokens: estimateTokens(tail),
       taskText: taskDelivered ? tail : "",
-      frontTaskText: frontInstruction,
+      frontTaskText: taskDelivered ? operationFrontMemoryInstruction() : "",
       taskKind: taskDelivered ? selectedOperationKind : "",
       operationEvidenceSignature: taskDelivered && plan.selectedCandidate
         ? operationEvidenceSignature(plan.selectedCandidate, selectedEvidence.map(candidate => candidate.item))
@@ -14486,224 +14461,6 @@ function CharacterContinuity(hook, incomingText) {
       headroom: Math.max(0, continuityEffectiveBudget - final.tokens),
       recentChars: final.fitted.recentChars
     };
-  }
-
-  function modelProjectionTitle(character) {
-    return settings.MODEL_CARD_TITLE_PREFIX + character.name;
-  }
-
-  function modelProjectionMarker(character) {
-    return settings.MODEL_CARD_KEY_PREFIX
-      + hashString("model-projection\u241f" + character.key).padStart(8, "0").toUpperCase();
-  }
-
-  function modelProjectionMarkerFromCard(card) {
-    return textOf(card && card.keys).split(",").map(value => value.trim())
-      .find(value => value.startsWith(settings.MODEL_CARD_KEY_PREFIX)) || "";
-  }
-
-  function modelProjectionTriggers(character, currentInput, recent) {
-    const identity = nameIdentityForKey("npc:" + character.key);
-    if (!identity) return [character.name];
-    const identityData = namesForIdentity(identity.key);
-    const records = identityData && identityData.contextRecords || [];
-    const activeAliases = records
-      .filter(record => record.status === "Active"
-        && (record.use && record.use.permissions || []).some(permission => permission.key !== "none"))
-      .map(record => record.alias);
-    const mentionedManagedForms = records.filter(record =>
-      aliasMentioned([currentInput, recent].filter(Boolean).join("\n"), record.alias)
-    ).map(record => record.alias);
-    const forms = uniqueNameForms(
-      [character.name].concat(mentionedManagedForms, activeAliases),
-      160
-    ).filter(form => {
-      if (!form || form.includes(",")) return false;
-      const matches = identityReferenceMatches(form, false);
-      return matches.length === 1 && matches[0].key === identity.key;
-    });
-    return unique(forms, 160)
-      .filter(form => form && !form.includes(","))
-      .slice(0, settings.MAX_MODEL_CARD_TRIGGERS);
-  }
-
-  function projectionNameSelections(character, currentInput, recent, active) {
-    const identity = nameIdentityForKey("npc:" + character.key);
-    const identityData = identity ? namesForIdentity(identity.key) : null;
-    if (!identity || !identityData) return { identity, selections: [] };
-    const ranked = relevantNameRecords(identity, currentInput, recent, active);
-    const fallbackPriority = { Rejected: 0, Emerging: 1, Active: 2, Retired: 3 };
-    const fallback = identityData.contextRecords.slice().sort((left, right) =>
-      (fallbackPriority[left.status] ?? 9) - (fallbackPriority[right.status] ?? 9)
-        || left.page - right.page || left.line - right.line
-    ).map(record => ({ record, score: 0 }));
-    const selections = [];
-    ranked.concat(fallback).forEach(selection => {
-      if (!selection || !selection.record || selections.length >= 3) return;
-      if (!selections.some(item => item.record.aliasKey === selection.record.aliasKey)) selections.push(selection);
-    });
-    return { identity, selections };
-  }
-
-  function projectionRelationshipSelections(character, currentInput, recent, active) {
-    const ownerData = relationshipsForOwner(character.key);
-    const ranked = relevantRelationshipRecords(character, active, currentInput, recent);
-    const fallback = (ownerData && ownerData.contextRecords || []).map(record => ({
-      record,
-      fields: modelRelationshipFields(record),
-      score: record.targetKey === "player" ? 1 : 0
-    })).filter(selection => selection.fields.length)
-      .sort((left, right) => right.score - left.score || left.record.page - right.record.page
-        || left.record.line - right.record.line);
-    const selections = [];
-    ranked.concat(fallback).forEach(selection => {
-      if (!selection || !selection.record || selections.length >= 2) return;
-      if (!selections.some(item => item.record.targetKey === selection.record.targetKey)) selections.push(selection);
-    });
-    return selections;
-  }
-
-  function projectionViewSelections(character, currentInput, recent, active) {
-    const ownerData = viewsForOwner(character.key);
-    const ranked = relevantViewRecords(character, active, currentInput, recent, [], false);
-    const fallback = (ownerData && ownerData.activeRecords || []).slice()
-      .sort((left, right) => Number(right.targetKey === "player") - Number(left.targetKey === "player")
-        || left.page - right.page || left.line - right.line)
-      .map(record => ({ record, score: 0 }));
-    const selections = [];
-    ranked.concat(fallback).forEach(selection => {
-      if (!selection || !selection.record || selections.length >= 2) return;
-      if (!selections.some(item => item.record.targetKey === selection.record.targetKey)) selections.push(selection);
-    });
-    return selections;
-  }
-
-  function projectionExperienceSelection(character, currentInput, recent) {
-    const ownerData = experiencesForOwner(character.key);
-    const ranked = relevantExperienceRecords(character, currentInput, recent, []);
-    if (ranked.length) return ranked[0];
-    const fallback = (ownerData && ownerData.contextRecords || []).slice()
-      .sort((left, right) => right.page - left.page || right.line - left.line)[0] || null;
-    return fallback ? { record: fallback, score: 0 } : null;
-  }
-
-  function projectionTurningPointBlocks(character) {
-    const ownerData = turningPointsForOwner(character.key);
-    return (ownerData && ownerData.contextRecords || []).map(record => {
-      const resolution = turningPointStageCardResolution(record, character, record.progress.stageRecord);
-      if (!resolution.ok) return "";
-      const guidance = shortenProfileValue(
-        extractLine(resolution.entry, "Entry") || resolution.entry.replace(/[{}]/g, " "),
-        560
-      );
-      if (!guidance) return "";
-      return [
-        "{",
-        character.name + "'s current Development:",
-        "Arc: " + record.title,
-        "Stage: " + record.progress.normalized,
-        "Guidance: " + guidance,
-        "}"
-      ].join("\n");
-    }).filter(Boolean).slice(0, 2);
-  }
-
-  function modelProjectionEntry(character, currentInput, recent, active) {
-    const header = [
-      "Character continuity reference for " + character.name + ".",
-      "Use it only when " + character.name + " is already present or relevant; this card is not a reason to introduce the character.",
-      "Portray an independent perspective and keep private thoughts private unless the character chooses to reveal them. The player alone controls the player's actions, speech, inner life, identity, consent, boundaries, and commitments."
-    ].join("\n");
-    let anchors = [compactOperationOuterAnchor(character), compactOperationInnerAnchor(character)].filter(Boolean);
-    const compactCore = [header].concat(anchors).join("\n\n");
-    if (compactCore.length > settings.MAX_MODEL_CARD_CHARS) {
-      anchors = [emergencyPortrayalOuterAnchor(character), emergencyPortrayalInnerAnchor(character)].filter(Boolean);
-    }
-    const blocks = [header].concat(anchors);
-    const optional = [];
-    const stateBlock = temporaryStateLine(character);
-    if (stateBlock) optional.push(stateBlock);
-    optional.push(...projectionTurningPointBlocks(character));
-    const relationships = projectionRelationshipSelections(character, currentInput, recent, active);
-    const relationshipBlock = renderRelevantRelationshipsBlock(character, relationships);
-    if (relationshipBlock) optional.push(relationshipBlock);
-    const views = projectionViewSelections(character, currentInput, recent, active);
-    const viewsBlock = renderRelevantViewsBlock(character, views);
-    if (viewsBlock) optional.push(viewsBlock);
-    const names = projectionNameSelections(character, currentInput, recent, active);
-    const namesBlock = names.identity ? renderRelevantNamesBlock(names.identity, names.selections) : "";
-    if (namesBlock) optional.push(namesBlock);
-    const experience = projectionExperienceSelection(character, currentInput, recent);
-    const experienceBlock = experience ? renderRelevantExperienceBlock(character, experience) : "";
-    if (experienceBlock) optional.push(experienceBlock);
-    optional.forEach(block => {
-      const candidate = blocks.concat(block).join("\n\n");
-      if (candidate.length <= settings.MAX_MODEL_CARD_CHARS) blocks.push(block);
-    });
-    return blocks.join("\n\n");
-  }
-
-  function writeModelProjectionCard(character, currentInput, recent, active) {
-    const title = modelProjectionTitle(character);
-    const marker = modelProjectionMarker(character);
-    const triggers = modelProjectionTriggers(character, currentInput, recent);
-    const keys = [marker].concat(triggers).join(", ");
-    const entry = modelProjectionEntry(character, currentInput, recent, active);
-    const markerMatches = currentCardCatalog().records
-      .filter(record => modelProjectionMarkerFromCard(record.card) === marker)
-      .map(record => record.card);
-    const titleConflicts = catalogRecordsByTitle(title)
-      .map(record => record.card)
-      .filter(card => modelProjectionMarkerFromCard(card) !== marker);
-    if (markerMatches.length !== 1 && markerMatches.length !== 0) {
-      return { ok: false, label: character.name + " (duplicate generated cards)" };
-    }
-    if (titleConflicts.length) return { ok: false, label: character.name + " (title conflict)" };
-    const current = markerMatches[0] || null;
-    const saved = current
-      ? updateCardAt(cardIndex(current), keys, entry, settings.MODEL_CARD_TYPE, title, true)
-      : addCardExact(title, keys, entry, settings.MODEL_CARD_TYPE);
-    if (!saved || !exactCardFieldsMatch(saved, keys, entry, settings.MODEL_CARD_TYPE, title)) {
-      return { ok: false, label: character.name + " (write failed)" };
-    }
-    CC.cardHashes[title] = hashString(entry + "\u241f" + keys);
-    return {
-      ok: true,
-      label: character.name + " " + estimateTokens(entry) + "t / " + triggers.length + " trigger"
-        + (triggers.length === 1 ? "" : "s"),
-      tokens: estimateTokens(entry)
-    };
-  }
-
-  function refreshModelProjectionCards(currentInput = "", recent = "") {
-    refreshViewsStore(false);
-    refreshNamesStore();
-    applyManagedNameForms();
-    refreshRelationshipsStore();
-    refreshTurningPointsStore();
-    refreshExperiencesStore(false);
-    const eligible = characters.filter(character => !character.onboardingPending);
-    const desiredMarkers = new Set(eligible.map(modelProjectionMarker));
-    currentCardCatalog().records.filter(record => {
-      const marker = modelProjectionMarkerFromCard(record.card);
-      return marker && !desiredMarkers.has(marker);
-    }).map(record => record.card).sort((left, right) => cardIndex(right) - cardIndex(left))
-      .forEach(removeCard);
-    const active = (CC.activeKeys || []).map(key => characters.find(character => character.key === key))
-      .filter(Boolean);
-    const relevanceCast = active.length ? active : eligible.slice(0, runtime.maxActive);
-    const results = eligible.map(character =>
-      writeModelProjectionCard(character, currentInput, recent, relevanceCast)
-    );
-    CC.last.projectionCards = results.map(result => result.label);
-    CC.last.projectionTokens = results.reduce((total, result) => total + (result.tokens || 0), 0);
-    CC.last.portrayalTier = eligible.length ? "story-card" : "none";
-    const failed = results.filter(result => !result.ok).map(result => result.label);
-    if (failed.length) {
-      CC.last.warning = [CC.last.warning, "Model Context card warning: " + failed.join("; ") + "."]
-        .filter(Boolean).join(" ");
-    }
-    return results.every(result => result.ok);
   }
 
   function controlPresentationText(value) {
@@ -14941,9 +14698,6 @@ function CharacterContinuity(hook, incomingText) {
       packets.push(portrayalRules());
     }
     if (plan && plan.task === "recovery") packets.push(recoveryTask());
-    if (plan && plan.task === "operation" && plan.taskDelivered === true) {
-      packets.push(operationFrontMemoryInstruction());
-    }
     if (plan && textOf(plan.operationTaskText).trim()) packets.push(plan.operationTaskText);
     return unique(packets.flatMap(packet => textOf(packet).split("\n"))
       .map(controlPresentationText)
@@ -15127,14 +14881,6 @@ function CharacterContinuity(hook, incomingText) {
       source = source.slice(0, unmatched);
     }
     source = source.replace(new RegExp(closeTag, "gi"), tag => {
-      removed.push(line(tag, 220));
-      return "";
-    });
-    const frontTag = new RegExp(
-      "<\\s*\\/?\\s*CC_(?:FRONT_MEMORY|CONTEXT_PACKET)\\s*>",
-      "gi"
-    );
-    source = source.replace(frontTag, tag => {
       removed.push(line(tag, 220));
       return "";
     });
@@ -18935,8 +18681,6 @@ function CharacterContinuity(hook, incomingText) {
       contextBaseChars: 0, contextMaxChars: 0, cacheOverflowActive: false,
       cacheOverflowUsedTokens: 0, cacheOverflowRemainingTokens: 0,
       portrayalTier: "none",
-      frontMemoryMode: "clear", frontMemoryVerified: false,
-      projectionCards: [], projectionTokens: 0,
       task: "none", owner: "", candidate: "not requested", update: "None",
       protocol: "None", cast: "None", timeJumpReset: false, gracefulFallback: false,
       selectedNames: [], omittedNames: [], selectedRelationships: [], omittedRelationships: [],
@@ -18952,13 +18696,8 @@ function CharacterContinuity(hook, incomingText) {
   function buildContext() {
     resetLastForContext();
     const frontMemory = beginFrontMemoryContext(originalText);
-    const commitFrontMemory = (taskText, preparedContext = frontMemory.baseText) => {
-      const committed = frontMemory.commit(taskText, preparedContext);
-      CC.last.frontMemoryVerified = committed.ok;
-      CC.last.frontMemoryMode = committed.delivered
-        ? (/STORY RECOVERY/i.test(textOf(taskText)) ? "recovery" : "operation")
-        : "clear";
-      return committed;
+    const commitFrontMemory = (instructionText, preparedContext = frontMemory.baseText) => {
+      return frontMemory.commit(instructionText, preparedContext);
     };
     if (!frontMemory.ok) {
       CC.last.context = "Front Memory suffix could not be identified safely; Character Continuity made no context change.";
@@ -19102,7 +18841,6 @@ function CharacterContinuity(hook, incomingText) {
       currentInput,
       recent,
       plan,
-      true,
       frontMemory.externalFrontMemory
     );
     if (!attempt.ok) {
@@ -19116,8 +18854,8 @@ function CharacterContinuity(hook, incomingText) {
       CC.last.cacheOverflowRemainingTokens = Math.max(0, Number(attempt.cacheOverflowRemainingTokens) || 0);
       if (appendOnlyContext) {
         CC.last.gracefulFallback = true;
-        CC.last.context = "Available Context capacity could not hold both the complete operation packet and its Front Memory instruction; delivery was skipped this turn.";
-        CC.last.warning = "Combined Context and Front Memory capacity was exhausted safely: " + attempt.reason;
+        CC.last.context = "Cache-compatible append capacity could not hold a complete continuity packet; injection was skipped this turn.";
+        CC.last.warning = "Cache-compatible append capacity was exhausted safely: " + attempt.reason;
         CC.last.error = "";
       } else {
         CC.last.context = "Distinct portrayal could not fit safely: " + attempt.reason;
@@ -19148,8 +18886,8 @@ function CharacterContinuity(hook, incomingText) {
       return commitFrontMemory("").text;
     }
 
-    const requestedFrontTask = textOf(attempt.frontTaskText);
-    const committedFrontMemory = commitFrontMemory(requestedFrontTask, attempt.text);
+    const requestedFrontInstruction = textOf(attempt.frontTaskText);
+    const committedFrontMemory = commitFrontMemory(requestedFrontInstruction, attempt.text);
     if (!committedFrontMemory.ok) {
       plan.task = "none";
       plan.taskDelivered = false;
@@ -19161,34 +18899,28 @@ function CharacterContinuity(hook, incomingText) {
       recordGenuineContextPlan(plan, "Front Memory instruction verification failed");
       return originalText;
     }
-    const expectedContextPacket = attempt.taskDelivered
-      ? ownedContextPacketBlock(attempt.taskText)
-      : "";
     const returnedBeforeFrontMemory = committedFrontMemory.frontMemory
       ? committedFrontMemory.text.slice(0, committedFrontMemory.text.lastIndexOf(committedFrontMemory.frontMemory))
       : committedFrontMemory.text;
-    const contextPacketVerified = !expectedContextPacket
-      || returnedBeforeFrontMemory.trimEnd().endsWith(expectedContextPacket.trimEnd());
+    const operationPacketVerified = !attempt.taskDelivered
+      || returnedBeforeFrontMemory.trimEnd().endsWith(textOf(attempt.taskText).trimEnd());
     attempt.taskDelivered = attempt.taskDelivered
       && committedFrontMemory.delivered
-      && contextPacketVerified;
-    if (expectedContextPacket && !contextPacketVerified) {
+      && operationPacketVerified;
+    if (requestedFrontInstruction && !attempt.taskDelivered) {
       const restored = commitFrontMemory("", frontMemory.baseText);
       plan.task = "none";
       plan.taskDelivered = false;
       plan.operationTaskText = "";
       plan.operationTaskKind = "";
       plan.operationTaskTokens = 0;
-      CC.last.frontMemoryVerified = false;
-      CC.last.context = "The operation was withheld because the appended Context packet could not be verified.";
-      CC.last.error = "Context packet verification failed; no operation was marked delivered.";
-      recordGenuineContextPlan(plan, "Context packet verification failed");
+      CC.last.context = "The operation was withheld because its ordinary Context packet and Front Memory instruction were not both verified.";
+      CC.last.error = "Operation delivery verification failed; no operation was marked delivered.";
+      recordGenuineContextPlan(plan, "operation delivery verification failed");
       return restored.ok ? restored.text : originalText;
     }
 
-    plan.task = attempt.taskDelivered
-      ? "operation"
-      : (CC.recoveryPending && committedFrontMemory.delivered ? "recovery" : "none");
+    plan.task = attempt.taskDelivered ? "operation" : (CC.recoveryPending ? "recovery" : "none");
     plan.taskDelivered = attempt.taskDelivered;
     plan.ownerKey = focus.key;
     plan.focusKey = focus.key;
@@ -19334,12 +19066,12 @@ function CharacterContinuity(hook, incomingText) {
         "Operation deferred: " + (attempt.taskDeferredReason || "the complete packet was unavailable")
       ].filter(Boolean).join(" ");
     }
-    CC.last.context = "Triggered Model Context cards carry portrayal for "
-      + attempt.modelActive.map(character => character.name).join(", ")
+    CC.last.context = "Scene-relevant " + active.map(character => character.name).join(", ")
+      + "; model-facing " + attempt.modelActive.map(character => character.name).join(", ")
       + "; focus " + focus.name + (attempt.taskDelivered
         ? "; one " + operationKindLabel(attempt.taskKind)
-          + " CCO packet verified in Context with mandatory instructions in Front Memory."
-        : (plan.task === "recovery" ? "; prose recovery verified in Front Memory." : "; Front Memory clear."));
+          + " CCO task delivered with its mandatory instruction in Front Memory."
+        : ".");
     recordGenuineContextPlan(plan, attempt.taskDelivered ? "" : attempt.taskDeferredReason);
     return committedFrontMemory.text;
   }
@@ -20594,12 +20326,9 @@ function CharacterContinuity(hook, incomingText) {
       "Current candidate / update: " + CC.last.candidate + " / " + CC.last.update,
       "Last cast progress: " + CC.last.cast,
       "Continuity budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
-      "Portrayal route: " + (CC.last.portrayalTier || "none")
-        + " | Model Context cards " + ((CC.last.projectionCards || []).join("; ") || "None"),
-      "Front Memory: " + (CC.last.frontMemoryMode || "clear")
-        + " | verified " + (CC.last.frontMemoryVerified ? "Yes" : "No"),
-      "Context capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
-        + " | returned context remains capped at max chars",
+      "Portrayal packet: " + (CC.last.portrayalTier || "none"),
+      "Append capacity base/max chars: " + CC.last.contextBaseChars + "/" + CC.last.contextMaxChars
+        + " | context-modifier overflow unavailable; returned text is capped at max chars",
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
       "Recent Story retained: " + CC.last.recentStoryChars + " characters",
@@ -20726,12 +20455,8 @@ function CharacterContinuity(hook, incomingText) {
       "Time-jump reset: " + (CC.last.timeJumpReset ? "Yes" : "No"),
       "CCO parse: " + CC.last.protocol,
       "Components: rules " + CC.last.rulesTokens + ", Outer " + CC.last.outerTokens + ", Names " + CC.last.namesTokens + ", Inner " + CC.last.innerTokens + ", State " + CC.last.stateTokens + ", Relationships " + CC.last.relationshipsTokens + ", Turning Points " + CC.last.turningPointsTokens + ", Views " + CC.last.viewsTokens + ", Experiences " + CC.last.experiencesTokens + ", evidence " + CC.last.evidenceTokens + ", source packet " + CC.last.sourcePacketTokens + ", task " + CC.last.taskTokens,
-      "Model Context cards / stored tokens: " + ((CC.last.projectionCards || []).join("; ") || "None")
-        + " / " + (CC.last.projectionTokens || 0),
-      "Front Memory mode / verified: " + (CC.last.frontMemoryMode || "clear")
-        + " / " + (CC.last.frontMemoryVerified ? "Yes" : "No"),
       "Operation task ceiling: " + settings.MAX_OPERATION_TASK_TOKENS
-        + " tokens | outer control allowance: configured continuity budget",
+        + " tokens | total turn limit: configured continuity budget",
       "Budget configured / effective / used / headroom: " + runtime.continuityBudget + " / " + CC.last.effectiveBudget + " / " + CC.last.injectedTokens + " / " + CC.last.headroomTokens,
       "Maintenance " + hook + ": " + maintenanceSessionSummary(),
       "Store session " + hook + " parses/writes: " + storeSessionSummary(),
@@ -20768,34 +20493,28 @@ function CharacterContinuity(hook, incomingText) {
   if (hook === "input") {
     clearOwnedFrontMemoryState();
     beginInput(originalText);
-    CC.last.frontMemoryMode = "clear";
-    CC.last.frontMemoryVerified = !currentFrontMemory().includes(settings.FRONT_MEMORY_BEGIN);
     writeAllStateCards();
-    refreshModelProjectionCards(CC.lastInput, recentStoryFromContext(""));
     writeStatusCard();
     return finish(originalText);
   }
 
   if (hook === "context" || hook === "contextAppend") {
     let result = buildContext();
-    if (appendOnlyContext && result !== originalText && CC.last.frontMemoryVerified !== true) {
-      CC.last.context = "Front Memory mutation guard preserved the original platform context.";
-      CC.last.error = "The context result was not a verified Front Memory suffix replacement, so it was withheld.";
+    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))
+      && !frontMemoryContextVerified) {
+      CC.last.context = "Cache-compatible append guard preserved the original platform context.";
+      CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
       result = originalText;
     }
     writeAllStateCards();
-    refreshModelProjectionCards(CC.lastInput, recentStoryFromContext(result));
     writeStatusCard();
     return finish(result);
   }
 
   if (hook === "output") {
-    const result = processOutput(originalText);
     clearOwnedFrontMemoryState();
-    CC.last.frontMemoryMode = "clear";
-    CC.last.frontMemoryVerified = !currentFrontMemory().includes(settings.FRONT_MEMORY_BEGIN);
+    const result = processOutput(originalText);
     writeAllStateCards();
-    refreshModelProjectionCards(CC.lastInput, [recentStoryFromContext(""), result].filter(Boolean).join("\n"));
     writeStatusCard();
     return finish(result);
   }
