@@ -599,8 +599,12 @@ function characterContinuityRun(hook, incomingText) {
   // lost but whose body is still one CC authored.
   function cardOwnedByContinuity(card) {
     if (!card) return false;
+    // A managed key is proof CC minted the card, and a recognisable CC entry
+    // wrapper is proof CC authored its body -- which also covers a CC card whose
+    // key a player cleared. The card TYPE is deliberately not proof: "Continuity"
+    // is free text a player can set on their own card, and trusting it let a
+    // player-authored "Sarah's State" be seized and have its triggers rewritten.
     if (managedTitleFromKey(card.keys)) return true;
-    if (keyOf(card.type) === keyOf(settings.CARD_TYPE)) return true;
     return !!managedTitleFromEntry(card);
   }
 
@@ -10311,12 +10315,15 @@ function characterContinuityRun(hook, incomingText) {
     // below the mark, clearlyNewAction stayed false for N turns, and every one of
     // them was misread as a retry of an action the player had already erased --
     // replaying a stale snapshot and going inert. Resync instead.
-    if (observedActionCount !== null && observedActionCount < CC.lastCompletedActionCount - 1) {
+    if (observedActionCount !== null && observedActionCount < CC.lastCompletedActionCount) {
       const undone = CC.lastCompletedActionCount - observedActionCount;
       CC.lastCompletedActionCount = observedActionCount;
+      // Drop what the erased actions left behind -- the snapshot, the output anchor
+      // and any pending retry all describe generations the player has thrown away.
+      // CC.currentPlan is deliberately NOT cleared: beginInput built it for the turn
+      // now in progress, and discarding it downgrades this turn to a preview.
       CC.preGenerationSnapshot = null;
       CC.lastVisibleOutputAnchor = "";
-      CC.currentPlan = null;
       cancelPendingOperationRetry(null);
       CC.last.warning = "Detected " + undone + " undone action"
         + (undone === 1 ? "" : "s") + "; continuity resynchronised to the current action.";
@@ -14798,16 +14805,26 @@ function characterContinuityRun(hook, incomingText) {
           }
         }
       }
-      // An unbalanced record must not swallow the rest of the reply. A genuinely
-      // truncated record is the last thing in the output -- that is the case
-      // terminalProtocolCutoff models. If real content follows the opener's own
-      // line, the record is merely malformed, so bound the damage to that line
-      // and keep scanning; otherwise one stray "(" blanks the player's whole turn.
+      // An unbalanced record must not swallow the rest of the reply, and must not
+      // leave its own tail visible either. A genuinely truncated record is the last
+      // thing in the output -- the case terminalProtocolCutoff models. Otherwise the
+      // record is merely malformed: consume its continuation lines, stopping at the
+      // first blank line or the first line that reads as finished story prose, so a
+      // multiline record goes entirely while the story is untouched.
       let bounded = false;
       if (!complete) {
         const lineEnd = source.indexOf("\n", start);
         if (lineEnd !== -1 && source.slice(lineEnd + 1).trim()) {
-          end = lineEnd;
+          let cursor = lineEnd;
+          for (let guard = 0; guard < 16; guard += 1) {
+            const nextBreak = source.indexOf("\n", cursor + 1);
+            const nextLine = source.slice(cursor + 1, nextBreak === -1 ? source.length : nextBreak);
+            if (!nextLine.trim()) break;
+            if (hasTerminallyPunctuatedStory(nextLine)) break;
+            cursor = nextBreak === -1 ? source.length : nextBreak;
+            if (nextBreak === -1) break;
+          }
+          end = cursor;
           bounded = true;
         }
       }
@@ -15060,6 +15077,25 @@ function characterContinuityRun(hook, incomingText) {
     ].some(pattern => pattern.test(normalized));
   }
 
+  // The exact instruction lines CC emits inside its own <SYSTEM> blocks. Derived
+  // from the emitters so the two cannot drift apart.
+  let ccAuthoredSystemLineSet = null;
+
+  function ccAuthoredSystemLine(value) {
+    if (!ccAuthoredSystemLineSet) {
+      ccAuthoredSystemLineSet = new Set([
+        recoveryTask(),
+        operationFrontMemoryInstruction(),
+        currentStoryResponseTask(),
+        currentOperationAuthorityLines().join("\n")
+      ].flatMap(block => textOf(block).split("\n"))
+        .map(controlPresentationText)
+        .map(row => keyOf(row))
+        .filter(row => row && !/^\s*<?\/?system>?\s*$/i.test(row)));
+    }
+    return ccAuthoredSystemLineSet.has(keyOf(controlPresentationText(value)));
+  }
+
   function stripSystemControlBlocks(value) {
     let source = textOf(value).replace(/\r/g, "");
     const removed = [];
@@ -15080,7 +15116,17 @@ function characterContinuityRun(hook, incomingText) {
       const after = source.slice(unmatched.index + unmatched[0].length);
       if (hasTerminallyPunctuatedStory(after)) {
         removed.push(line(unmatched[0], 220));
-        source = source.slice(0, unmatched.index) + after;
+        // Dropping the tag alone leaves the instructions it was wrapping visible.
+        // Those lines are CC's own text, so an exact match against what CC emits is
+        // safe: story prose cannot match, and only the wrapped block is removed.
+        const rest = after.split("\n");
+        let head = 0;
+        if (rest.length && !rest[0].trim()) head = 1;
+        while (head < rest.length && rest[head].trim() && ccAuthoredSystemLine(rest[head])) {
+          removed.push(line(rest[head], 220));
+          head += 1;
+        }
+        source = source.slice(0, unmatched.index) + rest.slice(head).join("\n");
       } else {
         removed.push(line(source.slice(unmatched.index), 220));
         source = source.slice(0, unmatched.index);

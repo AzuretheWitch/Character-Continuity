@@ -10,12 +10,12 @@
  * N below the mark, so `clearlyNewAction` stayed false for N turns and each was
  * misread as a RETRY of an action the player had already erased.
  *
- * NOTE ON EVIDENCE: this is a REGRESSION GUARD, not a reproduction. Measured by
- * context injection it passes with and without the resync, so the "inert for N
- * turns" symptom is not demonstrated here -- the misclassification is visible in
- * the plan kind, not in whether continuity is injected. What this does guarantee
- * is that rewinding the action count never throws, never trips the hook boundary,
- * and never stops continuity -- including with the resync in place.
+ * The assertion is the invariant itself: the high-water mark must never sit ahead
+ * of the platform's action count. Without the resync an undo of 5 leaves the mark
+ * at 10 while the count is 7, 8, 9 -- and that gap is exactly what makes
+ * `clearlyNewAction` false and the turn read as a retry. The probe also requires
+ * that no post-undo turn is classified `retry` or downgraded to `preview`, and
+ * that continuity keeps being injected.
  *
  * Uses the `undo: N` turn field, which rewinds the action count and trims history
  * exactly as the platform does.
@@ -53,6 +53,11 @@ function run(label, undoBy) {
     injected: report.turns.map(function (t) {
       return (t.hooks && t.hooks.context && t.hooks.context.added) || 0;
     }),
+    planKinds: report.turns.map(function (t) { return t.planKind || ''; }),
+    // The high-water mark against the platform's real action count, per turn.
+    marks: report.turns.map(function (t) {
+      return { mark: t.lastCompletedActionCount, count: t.actionCount };
+    }),
     throws: report.throws || [],
     contained: report.containedFailures || [],
   };
@@ -61,13 +66,31 @@ function run(label, undoBy) {
 function check(label, undoBy) {
   const r = run(label, undoBy);
   if (r.error) { failures++; console.log('  FAIL  ' + label + ': ' + r.error); return; }
+
   const after = r.injected.slice(UNDO_AT);
   const live = after.filter(function (n) { return n > 0; }).length;
-  const ok = live === after.length && r.throws.length === 0 && r.contained.length === 0;
+
+  // 1. The high-water mark must never sit ahead of the platform's action count.
+  //    This is the defect itself: after an N-action undo the mark stayed N ahead,
+  //    so `clearlyNewAction` was false and the turn was read as a retry.
+  const ahead = r.marks.slice(UNDO_AT).filter(function (m) {
+    return typeof m.mark === 'number' && typeof m.count === 'number' && m.mark > m.count;
+  });
+
+  // 2. No turn after the undo may be classified as a retry or downgraded to a
+  //    preview -- the player took a real new action.
+  const misread = r.planKinds.slice(UNDO_AT).filter(function (k) {
+    return k === 'retry' || k === 'preview';
+  });
+
+  const ok = live === after.length && ahead.length === 0 && misread.length === 0
+    && r.throws.length === 0 && r.contained.length === 0;
   if (!ok) failures++;
-  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + label + ': '
-    + live + '/' + after.length + ' turns after the undo point injected continuity');
-  console.log('        added chars: [' + after.join(', ') + ']');
+  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + label);
+  console.log('        continuity: ' + live + '/' + after.length + ' turns injected');
+  console.log('        action mark ahead of count on ' + ahead.length + ' turn(s)'
+    + (ahead.length ? '  <-- ' + JSON.stringify(ahead[0]) : ''));
+  console.log('        plan kinds: ' + r.planKinds.slice(UNDO_AT).join(', '));
 }
 
 console.log('--- continuity survives an undo ---');
