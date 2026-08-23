@@ -194,6 +194,10 @@ CC is designed for **predetermined or deliberately onboarded NPCs**. It does not
 
 CC focuses on character continuity. General world lore, exact time/place/occasion tracking, inventory systems, and full plot-memory systems are outside this script's current scope.
 
+## Contributors
+
+- **mahesvara.1337** (Discord ID)
+
 ## AI Dungeon references
 
 - [What are Scripts and how do you install them?](https://help.aidungeon.com/what-are-scripts-and-how-do-you-install-them)
