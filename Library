@@ -5632,17 +5632,18 @@ function characterContinuityRun(hook, incomingText) {
       { buried: true, planned: buriedPages, actual: ownerData.buriedPages }
     ];
     return sets.every(set => {
-      if (set.actual.length !== set.planned.length) return false;
-      return set.planned.every(plan => {
-        const matching = set.actual.filter(page => page.page === plan.page);
+      // A duplicate physical page is deliberately tolerated by markDuplicateViewPages,
+      // which marks it unsafe so nothing is written to it. Counting it here made every
+      // Views transaction for that character fail forever, including ones that never
+      // touched the duplicated page. Verify what this transaction actually wrote.
+      const touched = set.planned.filter(plan => plan.dirty || plan.created);
+      const usable = set.actual.filter(page => page.safe && !page.duplicatePage);
+      if (usable.length < touched.length) return false;
+      return touched.every(plan => {
+        const matching = set.actual.filter(page => page.page === plan.page
+          && page.safe && !page.duplicatePage);
         if (matching.length !== 1) return false;
         const page = matching[0];
-        if (!plan.dirty && !plan.created) {
-          return entryOf(page.card) === plan.priorEntry
-            && textOf(page.card.keys) === plan.priorKeys
-            && textOf(page.card.type) === plan.priorType
-            && rawVisibleTitleOf(page.card) === plan.priorVisibleTitle;
-        }
         const expectedEntry = renderViewsPage(
           character, set.buried, plan.page, plan.records
         );
@@ -6636,9 +6637,17 @@ function characterContinuityRun(hook, incomingText) {
       : addCard(relationshipPageTitle(character, 1), emptyRelationshipsEntry(character, 1));
   }
 
+  // Hash the canonical parse, not the raw card text. parseRelationshipField already
+  // normalises case and clamps out-of-range scores, so two records that resolve to
+  // byte-identical managed values could still produce different raw signatures --
+  // and markRelationshipDuplicates then took the `conflict` branch and froze BOTH
+  // copies instead of collapsing the later one as a duplicate.
   function relationshipRecordSignature(record) {
-    return RELATIONSHIP_FIELDS.map(field => textOf(record && record.values && record.values[field])
-      .replace(/\s+/g, " ").trim()).join("\u241f");
+    return RELATIONSHIP_FIELDS.map(field => {
+      const parsed = record && record.parsedFields && record.parsedFields[field];
+      if (parsed && parsed.safe) return textOf(parsed.normalized).replace(/\s+/g, " ").trim();
+      return textOf(record && record.values && record.values[field]).replace(/\s+/g, " ").trim();
+    }).join("\u241f");
   }
 
   function markRelationshipDuplicates(pages, diagnostics) {

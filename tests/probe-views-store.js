@@ -101,6 +101,35 @@ console.log('\n--- a legal-but-non-canonical page (plain hyphen) ---');
     + r.records.length + ' canonical record(s), no throws');
 })();
 
+
+// --- 4. a duplicate physical Views page must not block unrelated writes -----
+// markDuplicateViewPages deliberately tolerates two cards claiming one page and
+// marks them unsafe. Counting them during verification failed every transaction
+// for that character, including ones that never touched the duplicated page.
+console.log('\n--- a duplicate physical Views page ---');
+(function () {
+  const DUP = {
+    title: "Mira Vale's Views",
+    keys: "__CC_STABLE_CARD__:Mira Vale's Views",
+    type: 'Continuity',
+    entry: ['{', "Mira Vale's Views:", 'Loves:', 'Likes:', 'Neutrals:',
+      'Dislikes:', 'Hates:', '}'].join('\n')
+  };
+  const r = runScenario('views-control', function (scenario) {
+    scenario.cards = (scenario.cards || []).concat([DUP, Object.assign({}, DUP)]);
+  });
+  if (r.error) { failures++; console.log('  FAIL  ' + r.error); return; }
+  if (r.throws.length) {
+    failures++;
+    console.log('  FAIL  ' + r.throws.length + ' hook throw(s)');
+    return;
+  }
+  const ok = r.records.length > 0;
+  if (!ok) failures++;
+  console.log('  ' + (ok ? 'PASS' : 'FAIL') + '  ' + r.records.length
+    + ' View record(s) still persisted alongside the duplicate page');
+})();
+
 try { fs.rmSync(TMP, { recursive: true, force: true }); } catch (e) { /* best effort */ }
 
 console.log('\n' + (failures === 0
