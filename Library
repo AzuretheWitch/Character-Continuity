@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v2.01",
+  VERSION: "v2.01-frontmemory-instructions",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -16,6 +16,8 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_TITLE: "CC — Debug",
   CARD_TYPE: "Continuity",
   CARD_KEY_PREFIX: "__CC_STABLE_CARD__:",
+  FRONT_MEMORY_BEGIN: "<CC_FRONT_MEMORY>",
+  FRONT_MEMORY_END: "</CC_FRONT_MEMORY>",
   SCRIPT_CARD_TITLE: "Script Story Card",
 
   DEFAULT_ENABLED: true,
@@ -132,6 +134,7 @@ function CharacterContinuity(hook, incomingText) {
     recorded: false
   };
   let cardCatalog = null;
+  let frontMemoryContextVerified = false;
 
   function finish(value) {
     return typeof value === "string" && value.length ? value : " ";
@@ -255,6 +258,139 @@ function CharacterContinuity(hook, incomingText) {
 
   function escapeRegExp(value) {
     return textOf(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+
+  function frontMemoryStore() {
+    if (!rootState.memory || typeof rootState.memory !== "object" || Array.isArray(rootState.memory)) {
+      rootState.memory = {};
+    }
+    return rootState.memory;
+  }
+
+  function currentFrontMemory() {
+    return textOf(frontMemoryStore().frontMemory);
+  }
+
+  function stripOwnedFrontMemory(value) {
+    const begin = escapeRegExp(settings.FRONT_MEMORY_BEGIN);
+    const end = escapeRegExp(settings.FRONT_MEMORY_END);
+    return textOf(value).replace(new RegExp(begin + "[\\s\\S]*?" + end, "g"), "");
+  }
+
+  function ownedFrontMemoryBlock(instructionText) {
+    const instruction = textOf(instructionText).replace(/\r/g, "").trim();
+    return instruction
+      ? [settings.FRONT_MEMORY_BEGIN, instruction, settings.FRONT_MEMORY_END].join("\n")
+      : "";
+  }
+
+  function composedFrontMemory(externalMemory, instructionText) {
+    const external = textOf(externalMemory);
+    const block = ownedFrontMemoryBlock(instructionText);
+    if (!block) return external;
+    if (!external) return block;
+    return external + (/\r?\n$/.test(external) ? "" : "\n\n") + block;
+  }
+
+  function stableFrontMemoryTracking() {
+    const stable = rootState.characterContinuityStableV1;
+    return stable && typeof stable === "object" && !Array.isArray(stable) ? stable : null;
+  }
+
+  function trackedExternalFrontMemory(currentValue) {
+    const current = textOf(currentValue);
+    const stable = stableFrontMemoryTracking();
+    if (!stable || stable.frontMemoryOwnsBlock !== true
+      || typeof stable.frontMemoryExternal !== "string") return stripOwnedFrontMemory(current);
+    const external = stable.frontMemoryExternal;
+    const prefix = external + (external && !/\r?\n$/.test(external) ? "\n\n" : "");
+    const remainder = current.slice(prefix.length);
+    return current.startsWith(prefix)
+      && remainder.startsWith(settings.FRONT_MEMORY_BEGIN)
+      && remainder.trimEnd().endsWith(settings.FRONT_MEMORY_END)
+      ? external
+      : stripOwnedFrontMemory(current);
+  }
+
+  function rememberFrontMemory(externalMemory, ownsBlock) {
+    const stable = stableFrontMemoryTracking();
+    if (!stable) return;
+    stable.frontMemoryExternal = textOf(externalMemory);
+    stable.frontMemoryOwnsBlock = ownsBlock === true;
+  }
+
+  function replaceFrontMemorySuffix(contextValue, oldFrontMemory, nextFrontMemory) {
+    const context = textOf(contextValue);
+    const oldFront = textOf(oldFrontMemory);
+    const nextFront = textOf(nextFrontMemory);
+    if (!oldFront) {
+      if (!nextFront) return { ok: true, text: context };
+      const separator = context && !/\n\s*$/.test(context) ? "\n\n" : "";
+      return { ok: true, text: context + separator + nextFront };
+    }
+    const index = context.lastIndexOf(oldFront);
+    if (index < 0 || context.slice(index + oldFront.length).trim()) {
+      return { ok: false, text: context };
+    }
+    return {
+      ok: true,
+      text: context.slice(0, index) + nextFront + context.slice(index + oldFront.length)
+    };
+  }
+
+  function clearOwnedFrontMemoryState() {
+    const memory = frontMemoryStore();
+    const current = textOf(memory.frontMemory);
+    const external = trackedExternalFrontMemory(current);
+    if (external === current) {
+      rememberFrontMemory(external, false);
+      return false;
+    }
+    memory.frontMemory = external;
+    const cleared = textOf(memory.frontMemory) === external;
+    if (cleared) rememberFrontMemory(external, false);
+    return cleared;
+  }
+
+  function beginFrontMemoryContext(contextValue) {
+    const oldFrontMemory = currentFrontMemory();
+    const externalFrontMemory = trackedExternalFrontMemory(oldFrontMemory);
+    const cleared = replaceFrontMemorySuffix(contextValue, oldFrontMemory, "");
+    const baseText = cleared.ok ? cleared.text : textOf(contextValue);
+    return {
+      ok: cleared.ok,
+      baseText,
+      externalFrontMemory,
+      commit(instructionText, preparedContext = baseText) {
+        if (!cleared.ok) {
+          return { ok: false, delivered: false, text: textOf(contextValue), frontMemory: oldFrontMemory };
+        }
+        const nextFrontMemory = composedFrontMemory(externalFrontMemory, instructionText);
+        const prepared = textOf(preparedContext);
+        const alreadyEndsWithFrontMemory = !!nextFrontMemory
+          && prepared.trimEnd().endsWith(nextFrontMemory.trimEnd());
+        const separator = nextFrontMemory && prepared && !/\n\s*$/.test(prepared) ? "\n\n" : "";
+        const returnedText = alreadyEndsWithFrontMemory
+          ? prepared
+          : prepared + separator + nextFrontMemory;
+        const memory = frontMemoryStore();
+        memory.frontMemory = nextFrontMemory;
+        const stateMatches = textOf(memory.frontMemory) === nextFrontMemory;
+        const returnedSuffixMatches = nextFrontMemory
+          ? returnedText.trimEnd().endsWith(nextFrontMemory.trimEnd())
+          : returnedText === prepared;
+        const appendPrefixMatches = !appendOnlyContext || returnedText.startsWith(baseText);
+        const ok = stateMatches && returnedSuffixMatches && appendPrefixMatches;
+        frontMemoryContextVerified = ok;
+        if (ok) rememberFrontMemory(externalFrontMemory, !!textOf(instructionText).trim());
+        return {
+          ok,
+          delivered: ok && !!textOf(instructionText).trim(),
+          text: ok ? returnedText : textOf(contextValue),
+          frontMemory: ok ? nextFrontMemory : oldFrontMemory
+        };
+      }
+    };
   }
 
   function clone(value) {
@@ -1642,7 +1778,10 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   const runtime = readRuntime();
-  if (!runtime.enabled) return finish(originalText);
+  if (!runtime.enabled) {
+    clearOwnedFrontMemoryState();
+    return finish(originalText);
+  }
 
   function playerProfile() {
     let card = findCard(settings.PLAYER_TITLE);
@@ -4287,6 +4426,7 @@ function CharacterContinuity(hook, incomingText) {
       lastTimeJumpEvidenceId: "",
       maintenance: blankMaintenanceState(),
       cardHashes: {}, cardsInitialized: false,
+      frontMemoryExternal: "", frontMemoryOwnsBlock: false,
       last: {
         context: "Not built", output: "No output yet", warning: "", error: "",
         outputRawChars: 0, outputStoryChars: 0, outputRecordChars: 0, outputRecordPosition: "none",
@@ -4634,6 +4774,8 @@ function CharacterContinuity(hook, incomingText) {
   if (typeof CC.lastInputSignature !== "string") CC.lastInputSignature = "";
   CC.maintenance = normalizeMaintenanceState(CC.maintenance);
   if (!CC.cardHashes || typeof CC.cardHashes !== "object" || Array.isArray(CC.cardHashes)) CC.cardHashes = {};
+  if (typeof CC.frontMemoryExternal !== "string") CC.frontMemoryExternal = "";
+  if (typeof CC.frontMemoryOwnsBlock !== "boolean") CC.frontMemoryOwnsBlock = false;
   if (!CC.last || typeof CC.last !== "object" || Array.isArray(CC.last)) CC.last = initialStableState().last;
   else CC.last = { ...initialStableState().last, ...CC.last };
   if (!Array.isArray(CC.last.provenanceDiagnostics)) CC.last.provenanceDiagnostics = [];
@@ -13342,6 +13484,18 @@ function CharacterContinuity(hook, incomingText) {
     ].join("\n");
   }
 
+  function operationFrontMemoryInstruction() {
+    return [
+      "<SYSTEM>",
+      "A Character Continuity operation is mandatory this response.",
+      "Follow the final CC CURRENT ASSESSMENT/OPERATION block in Context.",
+      "Output exactly one completed CCO record as the first nonblank line, then story prose.",
+      "If the Context block offers K and no change is supported, use K.",
+      "Do not omit or refuse the record.",
+      "</SYSTEM>"
+    ].join("\n");
+  }
+
   function currentStoryResponseTask() {
     return [
       "<SYSTEM>",
@@ -13449,7 +13603,7 @@ function CharacterContinuity(hook, incomingText) {
     };
   }
 
-  function assembleContext(base, active, focus, currentInput, recent, plan) {
+  function assembleContext(base, active, focus, currentInput, recent, plan, externalFrontMemory = "") {
     const components = [];
     let tail = CC.recoveryPending ? recoveryTask() : currentStoryResponseTask();
     const selectedNames = [];
@@ -13486,11 +13640,20 @@ function CharacterContinuity(hook, incomingText) {
 
     const composition = (candidateComponents = components, candidateTail = tail, materialize = false) => {
       const prefix = renderPortrayalComponents(candidateComponents);
-      const tokens = estimateTokens([prefix, candidateTail].filter(Boolean).join("\n"));
+      const frontInstruction = operationTaskUsesForcedContract(candidateTail)
+        ? operationFrontMemoryInstruction()
+        : "";
+      const frontMemory = composedFrontMemory(externalFrontMemory, frontInstruction);
+      const fittedTail = [candidateTail, frontMemory].filter(Boolean).join("\n\n");
+      const tokens = estimateTokens([
+        prefix,
+        candidateTail,
+        ownedFrontMemoryBlock(frontInstruction)
+      ].filter(Boolean).join("\n"));
       if (tokens > continuityTurnBudget) return { ok: false, reason: "continuity turn budget" };
       if (tokens > continuityEffectiveBudget) return { ok: false, reason: "effective context allowance" };
       const fitted = fitWithoutTrimming(
-        base, prefix, candidateTail, maxChars, recentChars, materialize, capacity
+        base, prefix, fittedTail, maxChars, recentChars, materialize, capacity
       );
       return fitted.ok ? { ok: true, tokens, fitted } : { ok: false, reason: fitted.reason };
     };
@@ -14288,6 +14451,7 @@ function CharacterContinuity(hook, incomingText) {
       ) : 0,
       taskTokens: estimateTokens(tail),
       taskText: taskDelivered ? tail : "",
+      frontTaskText: taskDelivered ? operationFrontMemoryInstruction() : "",
       taskKind: taskDelivered ? selectedOperationKind : "",
       operationEvidenceSignature: taskDelivered && plan.selectedCandidate
         ? operationEvidenceSignature(plan.selectedCandidate, selectedEvidence.map(candidate => candidate.item))
@@ -18531,6 +18695,15 @@ function CharacterContinuity(hook, incomingText) {
 
   function buildContext() {
     resetLastForContext();
+    const frontMemory = beginFrontMemoryContext(originalText);
+    const commitFrontMemory = (instructionText, preparedContext = frontMemory.baseText) => {
+      return frontMemory.commit(instructionText, preparedContext);
+    };
+    if (!frontMemory.ok) {
+      CC.last.context = "Front Memory suffix could not be identified safely; Character Continuity made no context change.";
+      CC.last.error = "The current state.memory.frontMemory value was not found as the actual context suffix.";
+      return originalText;
+    }
     refreshViewsStore(false);
     refreshNamesStore();
     applyManagedNameForms();
@@ -18553,7 +18726,7 @@ function CharacterContinuity(hook, incomingText) {
       plan.taskDelivered = false;
       plan.activeKeys = [];
       CC.last.context = "Opening prompt retained; only its immediate automatic output will be suppressed.";
-      return originalText;
+      return commitFrontMemory("").text;
     }
     expireTemporaryState(CC.stateClock);
     if (!plan.retry && plan.inputEvidenceId && plan.inputEvidenceId !== CC.lastTimeJumpEvidenceId && TIME_JUMP.test(currentInput)) {
@@ -18599,7 +18772,7 @@ function CharacterContinuity(hook, incomingText) {
       plan.taskDelivered = false;
       CC.last.context = "No predetermined active NPC was detected.";
       recordGenuineContextPlan(plan, "no predetermined active NPC was detected");
-      return originalText;
+      return commitFrontMemory("").text;
     }
     CC.activeKeys = active.map(character => character.key);
     CC.focusKey = focus.key;
@@ -18661,12 +18834,20 @@ function CharacterContinuity(hook, incomingText) {
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
     }
 
-    const attempt = assembleContext(originalText, active, focus, currentInput, recent, plan);
+    const attempt = assembleContext(
+      frontMemory.baseText,
+      active,
+      focus,
+      currentInput,
+      recent,
+      plan,
+      frontMemory.externalFrontMemory
+    );
     if (!attempt.ok) {
       CC.last.effectiveBudget = Math.max(0, Number(attempt.effectiveBudget) || 0);
       CC.last.headroomTokens = CC.last.effectiveBudget;
       CC.last.recentStoryChars = Math.max(0, Number(attempt.recentChars) || 0);
-      CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(originalText).length);
+      CC.last.contextBaseChars = Math.max(0, Number(attempt.baseChars) || textOf(frontMemory.baseText).length);
       CC.last.contextMaxChars = Math.max(0, Number(attempt.maxChars) || 0);
       CC.last.cacheOverflowActive = attempt.cacheOverflowActive === true;
       CC.last.cacheOverflowUsedTokens = Math.max(0, Number(attempt.cacheOverflowUsedTokens) || 0);
@@ -18702,7 +18883,41 @@ function CharacterContinuity(hook, incomingText) {
       plan.sourcePacketTokens = 0;
       CC.modelActiveKeys = [];
       recordGenuineContextPlan(plan, attempt.reason || "the continuity packet could not fit safely");
+      return commitFrontMemory("").text;
+    }
+
+    const requestedFrontInstruction = textOf(attempt.frontTaskText);
+    const committedFrontMemory = commitFrontMemory(requestedFrontInstruction, attempt.text);
+    if (!committedFrontMemory.ok) {
+      plan.task = "none";
+      plan.taskDelivered = false;
+      plan.operationTaskText = "";
+      plan.operationTaskKind = "";
+      plan.operationTaskTokens = 0;
+      CC.last.context = "The operation was withheld because its Front Memory instruction could not be verified.";
+      CC.last.error = "Front Memory instruction verification failed; no operation was marked delivered.";
+      recordGenuineContextPlan(plan, "Front Memory instruction verification failed");
       return originalText;
+    }
+    const returnedBeforeFrontMemory = committedFrontMemory.frontMemory
+      ? committedFrontMemory.text.slice(0, committedFrontMemory.text.lastIndexOf(committedFrontMemory.frontMemory))
+      : committedFrontMemory.text;
+    const operationPacketVerified = !attempt.taskDelivered
+      || returnedBeforeFrontMemory.trimEnd().endsWith(textOf(attempt.taskText).trimEnd());
+    attempt.taskDelivered = attempt.taskDelivered
+      && committedFrontMemory.delivered
+      && operationPacketVerified;
+    if (requestedFrontInstruction && !attempt.taskDelivered) {
+      const restored = commitFrontMemory("", frontMemory.baseText);
+      plan.task = "none";
+      plan.taskDelivered = false;
+      plan.operationTaskText = "";
+      plan.operationTaskKind = "";
+      plan.operationTaskTokens = 0;
+      CC.last.context = "The operation was withheld because its ordinary Context packet and Front Memory instruction were not both verified.";
+      CC.last.error = "Operation delivery verification failed; no operation was marked delivered.";
+      recordGenuineContextPlan(plan, "operation delivery verification failed");
+      return restored.ok ? restored.text : originalText;
     }
 
     plan.task = attempt.taskDelivered ? "operation" : (CC.recoveryPending ? "recovery" : "none");
@@ -18854,10 +19069,11 @@ function CharacterContinuity(hook, incomingText) {
     CC.last.context = "Scene-relevant " + active.map(character => character.name).join(", ")
       + "; model-facing " + attempt.modelActive.map(character => character.name).join(", ")
       + "; focus " + focus.name + (attempt.taskDelivered
-        ? "; one " + operationKindLabel(attempt.taskKind) + " CCO task delivered."
+        ? "; one " + operationKindLabel(attempt.taskKind)
+          + " CCO task delivered with its mandatory instruction in Front Memory."
         : ".");
     recordGenuineContextPlan(plan, attempt.taskDelivered ? "" : attempt.taskDeferredReason);
-    return attempt.text;
+    return committedFrontMemory.text;
   }
 
   function candidateSourceLabel(sourceIds) {
@@ -20275,6 +20491,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   if (hook === "input") {
+    clearOwnedFrontMemoryState();
     beginInput(originalText);
     writeAllStateCards();
     writeStatusCard();
@@ -20283,7 +20500,8 @@ function CharacterContinuity(hook, incomingText) {
 
   if (hook === "context" || hook === "contextAppend") {
     let result = buildContext();
-    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))) {
+    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))
+      && !frontMemoryContextVerified) {
       CC.last.context = "Cache-compatible append guard preserved the original platform context.";
       CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
       result = originalText;
@@ -20294,6 +20512,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   if (hook === "output") {
+    clearOwnedFrontMemoryState();
     const result = processOutput(originalText);
     writeAllStateCards();
     writeStatusCard();
