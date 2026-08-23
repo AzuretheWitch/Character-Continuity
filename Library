@@ -16399,6 +16399,20 @@ function characterContinuityRun(hook, incomingText) {
         : "");
   }
 
+  // An over-length Explanation is trimmed to a clause boundary rather than
+  // discarding the whole record, which is a deliberate change from the earlier
+  // hard rejection. Report when the trim happened so it is visible on the Status
+  // card instead of silently altering what the model wrote.
+  function compactedExplanation(value, maximum) {
+    const supplied = wholeLine(value, 0);
+    const compacted = compactLineAtBoundary(value, maximum);
+    return {
+      value: compacted,
+      shortened: !!supplied && !!compacted && compacted !== supplied,
+      note: " The Explanation exceeded " + maximum + " characters and was shortened to fit."
+    };
+  }
+
   function exactStateFieldValue(value, label) {
     const source = textOf(value).trim();
     const normalized = source.replace(new RegExp("^" + escapeRegExp(label) + "\\s*:\\s*", "i"), "").trim();
@@ -16807,11 +16821,12 @@ function characterContinuityRun(hook, incomingText) {
       const replacedAlias = line(replacedAliasSource, 160);
       const useField = wholeLine(parts[6], 0);
       const explanationField = exactStateFieldValue(parts[7], "Explanation");
-      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanationResult = compactedExplanation(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanation = explanationResult.value;
       if (!subjectCode || !alias || alias !== aliasSource || replacedAlias !== replacedAliasSource
         || !transition || !useField || !explanation
         || /[{}\[\]|()\r\n]/.test(alias + useField + explanation + replacedAlias)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Name CCO record used an invalid subject, alias, transition, permission, overlong explanation, or reserved character.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Name CCO record used an invalid subject, alias, transition, permission, or reserved character.", raw: line(raw, 300) };
       }
       if (keyOf(explanation) === "explanation") {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Name CCO record retained its uncompleted Explanation placeholder.", raw: line(raw, 300) };
@@ -16819,7 +16834,8 @@ function characterContinuityRun(hook, incomingText) {
       return {
         story, malformed: false, hadProtocol: true,
         reason: parsedCcoReason("CCO Name record parsed.", routing) + protocolPresentationNote
-          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : ""),
+          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
+          + (explanationResult.shortened ? explanationResult.note : ""),
         raw: reportedRaw,
         candidate: { kind: "name", subjectCode, evidenceIds, alias, transition, replacedAlias, useField, explanation }
       };
@@ -16834,12 +16850,13 @@ function characterContinuityRun(hook, incomingText) {
       const destinationSource = textOf(parts[6]).trim();
       const destination = field ? relationshipDestination(field, destinationSource) : null;
       const explanationField = exactStateFieldValue(parts[7], "Explanation");
-      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
+      const explanationResult = compactedExplanation(explanationField.value, settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
+      const explanation = explanationResult.value;
       if (!targetCode || !field || !["A", "D"].includes(eventKind) || !destination) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship CCO record used an invalid target, field, A/D flag, or destination.", raw: line(raw, 300) };
       }
       if (!explanation || /[{}\[\]|()\r\n]/.test(explanation)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship explanation was empty, over " + settings.MAX_RELATIONSHIP_EXPLANATION_CHARS + " characters, or used reserved record characters.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship explanation was empty or used reserved record characters.", raw: line(raw, 300) };
       }
       if (keyOf(explanation) === "explanation") {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship CCO record retained its uncompleted Explanation placeholder.", raw: line(raw, 300) };
@@ -16847,7 +16864,8 @@ function characterContinuityRun(hook, incomingText) {
       return {
         story, malformed: false, hadProtocol: true,
         reason: parsedCcoReason("CCO Relationship record parsed.", routing) + protocolPresentationNote
-          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : ""),
+          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
+          + (explanationResult.shortened ? explanationResult.note : ""),
         raw: reportedRaw,
         candidate: {
           kind: "relationship", targetCode, evidenceIds, field, eventKind,
@@ -16867,12 +16885,13 @@ function characterContinuityRun(hook, incomingText) {
           : "");
       const severity = textOf(parts[5]).trim().toUpperCase();
       const explanationField = exactStateFieldValue(parts[6], "Explanation");
-      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanationResult = compactedExplanation(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanation = explanationResult.value;
       if (!targetField || !destination || !["O", "M"].includes(severity)) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View CCO record used an invalid target, destination, or O/M flag.", raw: line(raw, 300) };
       }
       if (!explanation || /[{}|\r\n]/.test(explanation)) {
-        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View explanation was empty, over " + settings.MAX_OPERATION_EXPLANATION_CHARS + " characters, or used reserved wrapper characters.", raw: line(raw, 300) };
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View explanation was empty or used reserved wrapper characters.", raw: line(raw, 300) };
       }
       if (keyOf(explanation) === "explanation") {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View CCO record retained its uncompleted Explanation placeholder.", raw: line(raw, 300) };
@@ -16880,7 +16899,8 @@ function characterContinuityRun(hook, incomingText) {
       return {
         story, malformed: false, hadProtocol: true,
         reason: parsedCcoReason("CCO View record parsed.", routing) + protocolPresentationNote
-          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : ""),
+          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
+          + (explanationResult.shortened ? explanationResult.note : ""),
         raw: reportedRaw,
         candidate: { kind: "view", targetField, evidenceIds, destination, severity, explanation }
       };
