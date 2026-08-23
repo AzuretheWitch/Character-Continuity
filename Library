@@ -14792,6 +14792,11 @@ function characterContinuityRun(hook, incomingText) {
       : "";
   }
 
+  // Pipe-separated field count per CCO record kind, matching the length checks in
+  // parseTerminalCandidate. Keep the two in step: an undercount here leaves part of
+  // a malformed record visible to the player.
+  const CCO_RECORD_FIELD_COUNTS = { K: 5, S: 7, V: 7, T: 7, N: 8, R: 8 };
+
   function ccoProtocolSpans(value) {
     const source = textOf(value).replace(/\r/g, "");
     const opener = /\(\s*(?:CCO\b|[SNRVT]\s*\|)/gi;
@@ -14831,7 +14836,14 @@ function characterContinuityRun(hook, incomingText) {
           // record visible is bad; deleting the player's turn is worse.
           const openerLine = source.slice(start, lineEnd);
           const kindMatch = /^\(\s*(?:CCO\s*\|\s*)?([SNRVTK])\b/i.exec(openerLine);
-          const expectedFields = kindMatch && kindMatch[1].toUpperCase() === "K" ? 5 : 7;
+          const kindLetter = kindMatch ? kindMatch[1].toUpperCase() : "";
+          // Field counts are per kind and must match the parser's own checks:
+          // K 5, S 7, V 7, T 7, N 8, R 8. Assuming 7 for everything undercounted
+          // N and R, so a Name or Relationship record whose Explanation wrapped
+          // onto the next line was judged already complete and left that line
+          // visible. Default to the largest count when the kind is unreadable,
+          // since the "never remove the last remaining line" rule still applies.
+          const expectedFields = CCO_RECORD_FIELD_COUNTS[kindLetter] || 8;
           let cursor = lineEnd;
           let prosePulled = 0;
           for (let guard = 0; guard < 16; guard += 1) {

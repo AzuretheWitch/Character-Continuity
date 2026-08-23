@@ -167,6 +167,32 @@ check('story truncated mid-word after an unmatched <SYSTEM>',
     return shown(text) + (text.trim() ? '' : '   <-- STORY DESTROYED');
   });
 
+// Field counts differ per record kind: K 5, S/V/T 7, N/R 8. Getting that wrong for
+// one kind leaves its wrapped Explanation visible, so every kind is checked.
+[
+  { kind: 'N', opener: '(CCO|N|S|%E%|Mira|Adopted|General',
+    wrapped: 'She supplied the short form herself.' },
+  { kind: 'R', opener: '(CCO|R|P|%E%|Trust|A|Unproven',
+    wrapped: 'Trust grew after she stayed.' },
+  { kind: 'V', opener: '(CCO|V|P|%E%|Likes|M',
+    wrapped: 'She warmed to him.' },
+  { kind: 'T', opener: '(CCO|T|S|%E%|tp_one|Support',
+    wrapped: 'She took the step deliberately.' },
+  { kind: 'S', opener: '(CCO|S|S|%E%|reconnect|seated across the table',
+    wrapped: 'She is really here.' },
+].forEach(function (record) {
+  check('a wrapped Explanation on a ' + record.kind + ' record is stripped',
+    { modelOutput: record.wrapped + '\nMira sets down the cup...', cco: record.opener },
+    function (text) {
+      return text.indexOf('Mira sets down the cup') !== -1
+        && text.indexOf(record.wrapped) === -1 && !leaked(text);
+    },
+    function (text) {
+      return shown(text) + (text.indexOf(record.wrapped) !== -1
+        ? '   <-- ' + record.kind + ' continuation left visible' : '');
+    });
+});
+
 check('a multi-paragraph reply is never eaten past the record',
   { modelOutput: 'Line one of the story.\nLine two of the story.\nLine three of the story.',
     cco: '' },
