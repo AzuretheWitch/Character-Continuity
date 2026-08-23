@@ -4,7 +4,7 @@
 
 The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.01**.
+This reference describes **v2.02**.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -101,12 +101,15 @@ These limits in the current cache-compatible build are not editable through `CC 
 | Imported Experience field | `5,000` characters before safe splitting |
 | Stored Experience record | `650` characters |
 | Model-facing Experience copy | `320` characters |
-| Individual State value | `120` characters |
 | State triggers | `3` |
 | Confirmations required for Experience promotion | `3` |
 | Assessment task ceiling | `1,200` tokens inside the configured Continuity budget |
-| Turning Point Explanation requested from the model | `150` characters |
-| Stored Turning Point Explanation after safe word-boundary compaction | `180` characters |
+| Situation requested from the model | `100` characters |
+| Individual stored State value | `120` characters |
+| Name, View and Turning Point Explanation requested from the model | `150` characters |
+| Stored Name, View and Turning Point Explanation after safe word-boundary compaction | `180` characters |
+| Relationship Explanation requested from the model | `90` characters |
+| Stored Relationship Explanation after safe word-boundary compaction | `120` characters |
 | Complete continuity packet | Bounded by both the configured Continuity budget and the effective context allowance for that turn |
 
 When a managed collection outgrows one page, CC can create numbered pages where supported. An oversized imported Experience can be divided at word boundaries into valid stored records before paging.
