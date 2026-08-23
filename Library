@@ -7918,9 +7918,38 @@ function characterContinuityRun(hook, incomingText) {
       : { card, source, changed: false };
   }
 
+  const stateCardDiagnostics = [];
+
+  // Exact duplicates are collapsed the way discoverCharacters collapses duplicate
+  // Outer cards; conflicting ones are reported and left alone. Returns the cards
+  // still claiming this character's State after the collapse.
+  function stateCardsFor(character) {
+    const matching = namedCards(character.name, settings.STATE_LABEL);
+    if (matching.length < 2) return matching;
+    const signatures = new Set(matching.map(duplicateCardEntrySignature));
+    if (signatures.size === 1) {
+      const extras = matching.slice(1);
+      removeCards(extras);
+      stateCardDiagnostics.push(
+        character.name + " had " + matching.length + " exact State cards; kept the first and removed "
+          + extras.length + " duplicate" + (extras.length === 1 ? "" : "s") + "."
+      );
+      return [matching[0]];
+    }
+    stateCardDiagnostics.push(
+      character.name + " has " + matching.length
+        + " conflicting State cards; its State is frozen until only one remains."
+    );
+    return matching;
+  }
+
   function syncStateCard(character) {
     const title = stateTitle(character);
-    let card = namedCard(character.name, settings.STATE_LABEL);
+    const matching = stateCardsFor(character);
+    // Never re-parse in-memory State from an arbitrary copy: namedCard returns the
+    // first card, and with conflicting duplicates that choice is meaningless.
+    if (matching.length > 1) return;
+    let card = matching[0] || null;
     if (!card) return;
     let source = entryOf(card);
     const currentHash = hashString(source);
@@ -7942,7 +7971,10 @@ function characterContinuityRun(hook, incomingText) {
     if (!npc) return;
     const title = stateTitle(character);
     const entry = stateEntry(character, npc);
-    const matching = namedCards(character.name, settings.STATE_LABEL);
+    const matching = stateCardsFor(character);
+    // Conflicting duplicates: writing to either copy would pick one arbitrarily,
+    // and the reason is now reported through stateCardDiagnostics rather than
+    // being silently swallowed here.
     if (matching.length > 1) return null;
     const card = matching[0] || null;
     const saved = card ? saveCard(card, entry) : addCard(title, entry);
@@ -20197,6 +20229,7 @@ function characterContinuityRun(hook, incomingText) {
       ...wrapperMigrationDiagnostics,
       ...activeRosterDiagnostics,
       ...characterDiscoveryDiagnostics,
+      ...stateCardDiagnostics,
       ...storeSessionWarnings(),
       CC.last.warning,
       CC.last.error
@@ -20310,6 +20343,7 @@ function characterContinuityRun(hook, incomingText) {
       "Card title migration: " + (titleMigrationDiagnostics.join("; ") || "None"),
       "Card wrapper migration: " + (wrapperMigrationDiagnostics.join("; ") || "None"),
       "Identity discovery: " + (characterDiscoveryDiagnostics.join("; ") || "None"),
+      "State cards: " + (stateCardDiagnostics.join("; ") || "None"),
       "Outer: " + (characters.map(outerStatus).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),
       "Names pages: " + ((namesStore && namesStore.pageStats || []).join("; ") || "None"),
