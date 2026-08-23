@@ -1,0 +1,79 @@
+{
+  "name": "smoke: player identity + full NPC onboarding + play",
+  "contextHook": "contextAppend",
+  "startActionCount": 0,
+  "memory": "The Frostwake Inn sits at the edge of the northern road. Azure has just arrived.",
+  "info": { "maxChars": 12000 },
+  "cards": [
+    {
+      "title": "Player's Identity",
+      "keys": "",
+      "type": "Continuity",
+      "entry": "Name: Azure\nPronouns: she/her"
+    }
+  ],
+  "turns": [
+    {
+      "label": "T1 opening - CC bootstraps its own cards",
+      "playerInput": "> You push open the inn door and stamp the snow from your boots.",
+      "modelOutput": "Warm air and woodsmoke roll over you. The common room is nearly empty."
+    },
+    {
+      "label": "T2 roster edit: request onboarding for Mira Vale",
+      "cards": [
+        {
+          "title": "CC — Active NPCs",
+          "entry": "{\nActive NPC slots:\nN1: Mira Vale\nN2: \nN3: \nN4: \nN5: \n}"
+        }
+      ],
+      "playerInput": "> You take a seat near the hearth and wait.",
+      "modelOutput": "A woman in a weathered travel coat watches you from the far table."
+    },
+    {
+      "label": "T3 complete Outer and Inner, Ready still No",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: No\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        },
+        {
+          "title": "Mira Vale's Inner",
+          "entry": "{\nMira Vale's Inner:\nOnboarding: Pending\nPersonality: observant, self-contained, practical, wry, slow to trust\nMannerisms: checks exits on arrival; rolls a coin across her knuckles while thinking\nWants: earn enough freedom to choose where she belongs\nFears: becoming dependent on another controlling group\nMental wounds: years of conditional protection taught her to expect hidden prices\nPrinciples: ask before intervening; repay genuine care; never bargain away another person's agency\n}"
+        }
+      ],
+      "playerInput": "> You nod to the woman by the far table.",
+      "modelOutput": "She returns the nod, unhurried, and goes back to her cup."
+    },
+    {
+      "label": "T4 approve activation: Ready: Yes",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: Yes\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        }
+      ],
+      "playerInput": "> You ask the innkeeper who the woman with the coin is.",
+      "modelOutput": "\"Mira Vale,\" the innkeeper says. \"Passing through, same as you.\""
+    },
+    {
+      "label": "T5 first interaction with the activated NPC",
+      "playerInput": "> You cross the room and ask Mira Vale if the northern road is still open.",
+      "modelOutput": "Mira Vale looks up. The coin stops on her knuckle. \"Open,\" she says, \"if you don't mind the drifts. I came down it this morning.\" She studies you a moment longer than politeness requires."
+    },
+    {
+      "label": "T6 continued interaction",
+      "playerInput": "> You sit down across from her and tell her your name.",
+      "modelOutput": "\"Azure,\" Mira Vale repeats, as if filing it somewhere. \"Mira.\" She does not offer a hand, but she does not move away either. \"You're going north, then. Alone?\""
+    },
+    {
+      "label": "T7 relationship-relevant beat",
+      "playerInput": "> You admit you are travelling alone and ask if she would consider going together.",
+      "modelOutput": "Mira Vale is quiet for a while. \"I don't travel with people I don't know,\" she says, then, after a pause, \"but I'd share a road for a day and see.\" It is not trust. It is the shape trust would take, if it came."
+    },
+    {
+      "label": "T8 quiet turn",
+      "playerInput": "> You agree, and order two bowls of stew.",
+      "modelOutput": "The stew arrives steaming. Mira Vale eats without ceremony, watching the door out of habit."
+    }
+  ]
+}

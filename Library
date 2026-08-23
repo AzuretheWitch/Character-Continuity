@@ -56,9 +56,6 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_OPERATION_TASK_TOKENS: 1200,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
-  MODEL_STATE_VALUE_CHARS: 100,
-  MODEL_OPERATION_EXPLANATION_CHARS: 150,
-  MODEL_RELATIONSHIP_EXPLANATION_CHARS: 90,
   MAX_OPERATION_EXPLANATION_CHARS: 180,
   MAX_RELATIONSHIP_EXPLANATION_CHARS: 120,
   MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS: 120,
@@ -92,7 +89,26 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   DEBUG_LOGS: false
 };
 
+// Outermost safety net. The hook body below sets up ~60 top-level statements
+// (player profile, runtime settings, store sessions) before dispatch is reached,
+// so a failure there cannot be reported through the Status card -- but it must
+// still not break the player's turn. Returning the platform's own text is a valid
+// result for every hook, and is trivially append-only for contextAppend.
 function CharacterContinuity(hook, incomingText) {
+  try {
+    return characterContinuityRun(hook, incomingText);
+  } catch (error) {
+    try {
+      log("[Character Continuity Stable] The " + hook + " hook failed before it could report: "
+        + (error && error.message ? error.message : error));
+    } catch (ignored) {
+      // log() is a platform global and may be absent; the pass-through below still holds.
+    }
+    return typeof incomingText === "string" && incomingText.length ? incomingText : " ";
+  }
+}
+
+function characterContinuityRun(hook, incomingText) {
   const settings = CHARACTER_CONTINUITY_STABLE_SETTINGS;
   const originalText = incomingText;
   const appendOnlyContext = hook === "contextAppend";
@@ -100,8 +116,10 @@ function CharacterContinuity(hook, incomingText) {
   const contextHook = hook === "context" || hook === "contextAppend";
   const outputHook = hook === "output";
   const rootState = state;
-  const historyList = history;
-  const cards = storyCards;
+  // The platform normally supplies these, but a missing or malformed global must
+  // not take the turn down before the hook body can degrade gracefully.
+  const historyList = Array.isArray(history) ? history : [];
+  const cards = Array.isArray(storyCards) ? storyCards : [];
   const STORE_KINDS = ["names", "views", "relationships", "turningpoints", "experiences"];
   const storeSession = STORE_KINDS.reduce((result, kind) => {
     result[kind] = {
@@ -575,6 +593,17 @@ function CharacterContinuity(hook, incomingText) {
     return decodedManagedTitle(source.slice(settings.CARD_KEY_PREFIX.length));
   }
 
+  // Evidence that CC created this card, rather than a player card whose title
+  // merely matches the owned-title shape. A managed key or the Continuity type is
+  // proof CC wrote it; a recognisable CC entry wrapper covers cards whose key was
+  // lost but whose body is still one CC authored.
+  function cardOwnedByContinuity(card) {
+    if (!card) return false;
+    if (managedTitleFromKey(card.keys)) return true;
+    if (keyOf(card.type) === keyOf(settings.CARD_TYPE)) return true;
+    return !!managedTitleFromEntry(card);
+  }
+
   function defaultScriptCardTitle(value) {
     return keyOf(value) === keyOf(settings.SCRIPT_CARD_TITLE);
   }
@@ -966,8 +995,8 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function capturePhysicalCardDeck() {
-    const idCounts = {};
-    const imageCounts = {};
+    const idCounts = Object.create(null);
+    const imageCounts = Object.create(null);
     return cards.map((card, index) => {
       const id = physicalCardId(card);
       const imageKey = exactCardImageKey(card);
@@ -1024,7 +1053,7 @@ function CharacterContinuity(hook, incomingText) {
       if (card) used.add(card);
       return { image, card };
     });
-    const unresolvedById = {};
+    const unresolvedById = Object.create(null);
     mapped.forEach(item => {
       if (item.card) return;
       const id = item.image.id;
@@ -1164,8 +1193,6 @@ function CharacterContinuity(hook, incomingText) {
   function updateCardAt(index, keys, entry, type, intendedTitle, preserveExactFields = false) {
     if (!Number.isInteger(index) || index < 0 || index >= cards.length) return null;
     const current = cards[index];
-    const priorDeck = capturePhysicalCardDeck();
-    const targetImage = priorDeck[index];
     const priorTitle = line(titleOf(current), 220);
     const logicalTitle = line(intendedTitle || priorTitle, 220);
     const nextKeys = preserveExactFields
@@ -1189,6 +1216,13 @@ function CharacterContinuity(hook, incomingText) {
         ? unchanged
         : null;
     }
+    // Captured only once a write will actually be attempted. capturePhysicalCardDeck
+    // JSON-stringifies every card entry in the deck, and the no-op branch above is
+    // the common case: readRuntime, the title/wrapper migrations and every store
+    // parser re-save unchanged cards to assert identity. Capturing before that
+    // check paid a full-deck serialisation per identity re-assert.
+    const priorDeck = capturePhysicalCardDeck();
+    const targetImage = priorDeck[index];
     const restorePrior = () => restorePhysicalCardDeck(priorDeck);
     const verifiedUpdatedCard = () => {
       if (cards.length !== priorDeck.length) return null;
@@ -1485,6 +1519,11 @@ function CharacterContinuity(hook, incomingText) {
       // converting them into ordinary non-triggered CC cards.
       if (intendedParts && keyOf(intendedParts.label) === keyOf(settings.TURNING_POINTS_LABEL)) return;
       if (!intended || managedCardIdentityMatches(card, intended)) return;
+      // Only migrate cards CC provably owns. A player is free to write their own
+      // lore card called "Sarah's State"; rewriting its keys strips the triggers
+      // it fires on and hands the card to CC to overwrite, with no notice beyond
+      // a Debug counter that is off by default.
+      if (!cardOwnedByContinuity(card)) return;
       const saved = saveCard(card, entryOf(card), intended);
       if (saved && managedCardIdentityMatches(saved, intended)) migrated += 1;
       else failed += 1;
@@ -1518,6 +1557,9 @@ function CharacterContinuity(hook, incomingText) {
       if (!headerLabel) return;
       const normalized = canonicalOwnedEntryWrapper(entryOf(card), parts.owner, headerLabel);
       if (!normalized.valid || !normalized.changed) return;
+      // saveCard rewrites keys and type as well as the entry, so the same
+      // ownership rule as migrateOwnedCardTitles applies here.
+      if (!cardOwnedByContinuity(card)) return;
       const saved = saveCard(card, normalized.entry, parts.title);
       if (saved && entryOf(saved) === normalized.entry) migrated += 1;
       else failed += 1;
@@ -1826,8 +1868,10 @@ function CharacterContinuity(hook, incomingText) {
       s: player.agreement === "plural" ? "" : "s"
     };
     return textOf(value).replace(/{{\s*(player|Player|PLAYER)\.([a-zA-Z_]+)\s*}}/g, (match, owner, field) => {
-      const replacement = forms[keyOf(field).replace(/\s+/g, "_")];
-      if (replacement === undefined) return match;
+      const token = keyOf(field).replace(/\s+/g, "_");
+      if (!Object.prototype.hasOwnProperty.call(forms, token)) return match;
+      const replacement = forms[token];
+      if (typeof replacement !== "string") return match;
       if (owner === "PLAYER") return textOf(replacement).toUpperCase();
       if (owner === "Player") return replacement ? replacement.charAt(0).toUpperCase() + replacement.slice(1) : replacement;
       return replacement;
@@ -1844,16 +1888,12 @@ function CharacterContinuity(hook, incomingText) {
     const parts = textOf(extractLine(source, "Name, age, gender, pronouns"))
       .split(",")
       .map(value => value.trim());
-    let pronouns = "";
-    if (parts.length >= 4) {
-      pronouns = line(parts.pop(), 120);
-    } else {
-      parts.shift();
-      parts.shift();
-      parts.shift();
-      pronouns = line(parts.join(","), 120);
-    }
-    return pronouns;
+    // The field is "Name, age, gender, pronouns", so the pronouns are the fourth
+    // value and everything after it belongs to them. Taking the LAST value instead
+    // meant any trailing note -- "Snow, 31, woman, she/her, tall" -- was read as the
+    // pronouns, and an unrecognised value silently falls back to they/them, so the
+    // character was misgendered for the rest of the story.
+    return line(parts.slice(3).join(", "), 120);
   }
 
   function shortenProfileValue(value, maximum) {
@@ -2047,12 +2087,12 @@ function CharacterContinuity(hook, incomingText) {
       slot.name = name;
     });
     rows.forEach(row => {
-      const match = row.match(/^[ \\t]*N(\d+)[ \\t]*:/i);
+      const match = row.match(/^[ \t]*N(\d+)[ \t]*:/i);
       if (match && !activeNpcSlotCode(Number(match[1]))) {
         activeRosterDiagnostics.push("Unsupported active NPC slot N" + Number(match[1]) + " was ignored.");
       }
     });
-    const seen = {};
+    const seen = Object.create(null);
     slots.forEach(slot => {
       if (!slot.valid || !slot.name) return;
       const key = nameKeyOf(slot.name);
@@ -2065,7 +2105,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function onboardingMarkerPresent(source) {
-    return /^[ \\t]*Onboarding[ \\t]*:[ \\t]*Pending[ \\t]*$/im.test(textOf(source));
+    return /^[ \t]*Onboarding[ \t]*:[ \t]*Pending[ \t]*$/im.test(textOf(source));
   }
 
   const ONBOARDING_VIEW_CATEGORIES = ["Loves", "Likes", "Neutrals", "Dislikes", "Hates"];
@@ -2426,7 +2466,7 @@ function CharacterContinuity(hook, incomingText) {
       const alias = aliasMatch ? line(aliasMatch[1], 160) : "";
       if (ONBOARDING_NAME_PLACEHOLDERS.some(value => sameNameForm(value, alias))) return;
       const labels = ["Alias", "Status", "Use", "Progress", "Reason"];
-      const values = {};
+      const values = Object.create(null);
       if (recordRows.length !== labels.length) {
         errors.push("Names Alias " + (alias || "record") + " must contain exactly five fields");
         return;
@@ -2512,7 +2552,7 @@ function CharacterContinuity(hook, incomingText) {
       || nonempty[nonempty.length - 1].value !== "}") {
       errors.push("Views wrapper or owner header is invalid");
     }
-    const grouped = {};
+    const grouped = Object.create(null);
     ONBOARDING_VIEW_CATEGORIES.forEach(category => { grouped[category] = []; });
     let current = "";
     const headings = [];
@@ -2648,7 +2688,7 @@ function CharacterContinuity(hook, incomingText) {
       const start = block.start;
       const recordRows = block.rows;
       const labels = ["About"].concat(ONBOARDING_RELATIONSHIP_FIELDS);
-      const values = {};
+      const values = Object.create(null);
       if (recordRows.length !== labels.length) {
         errors.push("Relationships record at line " + (start + 1)
           + " must contain exactly six fields");
@@ -2674,7 +2714,7 @@ function CharacterContinuity(hook, incomingText) {
       const targetKey = nameKeyOf(target);
       if (seenTargets.has(targetKey)) errors.push("Relationships repeats target " + target);
       seenTargets.add(targetKey);
-      const fields = {};
+      const fields = Object.create(null);
       ONBOARDING_RELATIONSHIP_FIELDS.forEach(field => {
         const parsed = onboardingCanonicalRelationshipField(field, values[field]);
         if (!parsed.ok) {
@@ -2875,7 +2915,7 @@ function CharacterContinuity(hook, incomingText) {
         .some(outer => onboardingMarkerPresent(entryOf(outer)));
       const aliases = textOf(entryOf(card)).replace(/\r/g, "").split("\n")
         .map(row => {
-          const match = row.match(/^[ \\t]*Alias[ \\t]*:[ \\t]*(.*?)[ \\t]*$/i);
+          const match = row.match(/^[ \t]*Alias[ \t]*:[ \t]*(.*?)[ \t]*$/i);
           return match ? line(match[1], 160) : "";
         })
         .filter(value => value && !(pendingOwner
@@ -3391,6 +3431,16 @@ function CharacterContinuity(hook, incomingText) {
     return RELATIONSHIP_FIELDS.find(field => keyOf(field) === keyOf(value)) || "";
   }
 
+  // A use signature must survive JSON.parse or the exactly-once guard it backs is
+  // dead. Cap generously -- the parts are individually bounded, so this only rejects
+  // a genuinely pathological payload -- and return "" rather than a truncated string.
+  const MAX_USE_SIGNATURE_CHARS = 2000;
+
+  function boundedUseSignature(value) {
+    const source = textOf(value);
+    return source.length > MAX_USE_SIGNATURE_CHARS ? "" : source;
+  }
+
   function canonicalRelationshipUseSignature(ownerKey, targetKey, sourceId, sourceIdentity, field) {
     const canonicalField = canonicalRelationshipFieldName(field);
     const canonicalSourceId = provenanceId(sourceId);
@@ -3399,14 +3449,19 @@ function CharacterContinuity(hook, incomingText) {
     const normalizedIdentity = line(sourceIdentity, 500);
     if (!normalizedOwner || !normalizedTarget || !/^[SX]\d+$/.test(canonicalSourceId)
       || !normalizedIdentity || !canonicalField) return "";
-    return line(JSON.stringify([
+    // Never truncate the serialized form: the inverse reads it with JSON.parse, and
+    // normalizedIdentity alone may be 500 characters before JSON escaping, so a
+    // 500-char cap routinely cut the array mid-string and produced a signature that
+    // could never be parsed back -- deadlocking the exactly-once guard it exists to
+    // provide. Refuse outright past a generous bound instead of emitting a corrupt one.
+    return boundedUseSignature(JSON.stringify([
       "relationship",
       normalizedOwner,
       normalizedTarget,
       canonicalSourceId,
       normalizedIdentity,
       canonicalField
-    ]), 500);
+    ]));
   }
 
   function parseRelationshipUseSignature(value) {
@@ -3456,7 +3511,7 @@ function CharacterContinuity(hook, incomingText) {
     const canonicalMode = canonicalViewOperationMode(operationMode);
     if (!normalizedOwner || !normalizedTarget || !/^[RX]\d+$/.test(canonicalSourceId)
       || !normalizedIdentity || !canonicalDestination) return "";
-    return line(JSON.stringify([
+    return boundedUseSignature(JSON.stringify([
       "view",
       normalizedOwner,
       normalizedTarget,
@@ -3464,7 +3519,7 @@ function CharacterContinuity(hook, incomingText) {
       normalizedIdentity,
       canonicalDestination,
       canonicalMode
-    ]), 500);
+    ]));
   }
 
   function parseViewUseSignature(value) {
@@ -3875,7 +3930,7 @@ function CharacterContinuity(hook, incomingText) {
     const maximum = Math.max(1, Number(settings.MAX_PROVENANCE_RECORDS) || 1);
     if (normalized.length <= maximum) return normalized;
 
-    const byId = {};
+    const byId = Object.create(null);
     normalized.forEach(record => { byId[record.id] = record; });
     const selected = new Set();
     const candidates = normalized.map((record, index) => ({ record, index }))
@@ -3946,7 +4001,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function blankOwnerOperationState() {
-    const result = {};
+    const result = Object.create(null);
     OPERATION_KINDS.forEach(kind => { result[kind] = blankOperationMeter(); });
     return result;
   }
@@ -3995,7 +4050,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function blankOperationState() {
-    return { owners: {}, drains: [] };
+    return { owners: Object.create(null), drains: [] };
   }
 
   function effectiveOperationDrainValue(record, ownerOpportunity) {
@@ -4048,14 +4103,14 @@ function CharacterContinuity(hook, incomingText) {
 
   function normalizeOperationState(raw) {
     const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
-    const owners = {};
+    const owners = Object.create(null);
     const rawOwners = source.owners && typeof source.owners === "object" && !Array.isArray(source.owners)
       ? source.owners
       : {};
     Object.keys(rawOwners).forEach(ownerKey => {
       owners[ownerKey] = normalizeOwnerOperationState(rawOwners[ownerKey]);
     });
-    const drainsByKey = {};
+    const drainsByKey = Object.create(null);
     (Array.isArray(source.drains) ? source.drains : [])
       .map(normalizeOperationDrainRecord)
       .filter(Boolean)
@@ -4198,7 +4253,7 @@ function CharacterContinuity(hook, incomingText) {
     const fallback = blankMaintenanceState();
     const suppliedCache = source.statusCache && typeof source.statusCache === "object"
       && !Array.isArray(source.statusCache) ? source.statusCache : {};
-    const statusCache = {};
+    const statusCache = Object.create(null);
     Object.keys(fallback.statusCache).forEach(kind => {
       const supplied = suppliedCache[kind];
       statusCache[kind] = supplied && typeof supplied === "object" && !Array.isArray(supplied)
@@ -4461,8 +4516,8 @@ function CharacterContinuity(hook, incomingText) {
     rootState.characterContinuityStableV1 = CC;
   }
 
-  const legacyCharacterKeyMap = {};
-  const legacyCharacterGroups = {};
+  const legacyCharacterKeyMap = Object.create(null);
+  const legacyCharacterGroups = Object.create(null);
   characters.forEach(character => {
     if (!legacyCharacterGroups[character.legacyKey]) legacyCharacterGroups[character.legacyKey] = [];
     legacyCharacterGroups[character.legacyKey].push(character);
@@ -4495,7 +4550,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function migratedKeyedObject(value, nestedMigration) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    const result = {};
+    const result = Object.create(null);
     const assign = originalKey => {
       const migratedKey = migratedCharacterKey(originalKey);
       const migratedValue = typeof nestedMigration === "function"
@@ -4590,7 +4645,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function migrateRecoveringViewKeys(value) {
     const source = value && typeof value === "object" && !Array.isArray(value) ? value : {};
-    const result = {};
+    const result = Object.create(null);
     Object.keys(source).forEach(key => {
       const marker = source[key] && typeof source[key] === "object" && !Array.isArray(source[key])
         ? source[key]
@@ -4896,7 +4951,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function renderViewsPage(character, buried, page, records) {
-    const grouped = {};
+    const grouped = Object.create(null);
     VIEW_CATEGORIES.forEach(category => { grouped[category] = []; });
     (Array.isArray(records) ? records : []).forEach(record => {
       if (grouped[record.category]) grouped[record.category].push(record);
@@ -5048,7 +5103,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function markViewDuplicates(pages, diagnostics, collectionName) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.targetKey]) groups[record.targetKey] = [];
       groups[record.targetKey].push(record);
@@ -5073,7 +5128,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function markDuplicateViewPages(character, buried, pages, diagnostics) {
-    const counts = {};
+    const counts = Object.create(null);
     pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
     const duplicatePageNumbers = Object.keys(counts)
       .map(Number)
@@ -5185,7 +5240,12 @@ function CharacterContinuity(hook, incomingText) {
       const verifiedPages = verifiedOwner
         ? (buried ? verifiedOwner.buriedPages : verifiedOwner.activePages)
         : [];
-      for (const page of repairablePages) {
+      // Verify only what was actually written. parseViewsPage is deliberately lenient
+      // (it accepts -, – and —, trims rows, and matches headings case-insensitively),
+      // so an untouched page written in any non-canonical but legal form never equals
+      // its canonical render -- which failed the whole repair, including the duplicate
+      // removal that triggered it. verifyPlannedViews already gets this right.
+      for (const page of repairablePages.filter(item => item.dirty)) {
         const expected = renderViewsPage(character, buried, page.page, page.records);
         const matching = verifiedPages.filter(item => item.page === page.page
           && entryOf(item.card) === expected && item.safe && !item.duplicatePage);
@@ -5214,7 +5274,7 @@ function CharacterContinuity(hook, incomingText) {
     let store = storeIsFresh("views", viewsStore) ? viewsStore : null;
     if (!store) {
       const writesAtStart = session ? session.writes : 0;
-      store = { owners: {}, diagnostics: [], pageStats: [] };
+      store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
       characters.filter(character => !character.onboardingPending).forEach(character => {
         ensureBaseViewsCard(character);
         const activeRefs = viewPageCards(character, false);
@@ -5308,8 +5368,16 @@ function CharacterContinuity(hook, incomingText) {
     return store;
   }
 
+  // Character keys come from player-authored card text, so a key like "constructor"
+  // would otherwise resolve through Object.prototype and hand back a function where
+  // owner data is expected. Own-property lookup also survives the JSON round-trip
+  // the platform performs on state between turns, which a null prototype does not.
+  function ownedEntry(map, key) {
+    return map && Object.prototype.hasOwnProperty.call(map, key) ? (map[key] || null) : null;
+  }
+
   function viewsForOwner(ownerKey) {
-    return viewsStore && viewsStore.owners ? viewsStore.owners[ownerKey] || null : null;
+    return viewsStore ? ownedEntry(viewsStore.owners, ownerKey) : null;
   }
 
   function canonicalManagedViewRecord(record) {
@@ -5421,8 +5489,8 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function captureOwnedManagedCards(records, ownerKeys) {
-    const titleCounts = {};
-    const idCounts = {};
+    const titleCounts = Object.create(null);
+    const idCounts = Object.create(null);
     const items = orderedUniqueOwnedCatalogRecords(records).map(record => {
       const card = record.card;
       const title = titleOf(card);
@@ -5466,7 +5534,7 @@ function CharacterContinuity(hook, incomingText) {
       : (Array.isArray(snapshot && snapshot.ownerKeys) ? snapshot.ownerKeys : [])
         .concat((Array.isArray(snapshot) ? snapshot : []).map(item => item && item.ownerKey));
     const ownerScope = new Set(scopeValues.map(value => line(value, 180)).filter(Boolean));
-    const pools = {};
+    const pools = Object.create(null);
     records.forEach(record => {
       const titleKey = line(record.ownerKey, 180) + "\u241f" + nameKeyOf(titleOf(record.card));
       if (!pools[titleKey]) pools[titleKey] = [];
@@ -5482,7 +5550,7 @@ function CharacterContinuity(hook, incomingText) {
         : null;
     }).filter(Boolean);
     const used = new Set();
-    const restoredCounts = {};
+    const restoredCounts = Object.create(null);
     let restored = true;
     if (eligible.length !== (Array.isArray(snapshot) ? snapshot.length : 0)) restored = false;
     eligible.forEach(({ item, ownerKey }) => {
@@ -5718,25 +5786,32 @@ function CharacterContinuity(hook, incomingText) {
       { buried: true, planned: buriedPages, actual: ownerData.buriedPages }
     ];
     return sets.every(set => {
-      if (set.actual.length !== set.planned.length) return false;
-      return set.planned.every(plan => {
-        const matching = set.actual.filter(page => page.page === plan.page);
+      // A duplicate physical page is deliberately tolerated by markDuplicateViewPages,
+      // which marks it unsafe so nothing is written to it. Counting it here made every
+      // Views transaction for that character fail forever, including ones that never
+      // touched the duplicated page. Verify what this transaction actually wrote.
+      const touched = set.planned.filter(plan => plan.dirty || plan.created);
+      const usable = set.actual.filter(page => page.safe && !page.duplicatePage);
+      if (usable.length < touched.length) return false;
+      return touched.every(plan => {
+        const matching = set.actual.filter(page => page.page === plan.page
+          && page.safe && !page.duplicatePage);
         if (matching.length !== 1) return false;
         const page = matching[0];
-        if (!plan.dirty && !plan.created) {
-          return entryOf(page.card) === plan.priorEntry
-            && textOf(page.card.keys) === plan.priorKeys
-            && textOf(page.card.type) === plan.priorType
-            && rawVisibleTitleOf(page.card) === plan.priorVisibleTitle;
-        }
         const expectedEntry = renderViewsPage(
           character, set.buried, plan.page, plan.records
         );
+        // Compare as multisets, not positionally. renderViewsPage groups records by
+        // VIEW_CATEGORIES, so the reparsed page comes back in category order while
+        // plan.records is in insertion order -- placePlannedRecord appends. Any
+        // insert into a non-final category diverged and rolled the transaction back.
+        // entryOf === expectedEntry above is what actually proves the page is right.
+        const plannedSignatures = plan.records.map(plannedViewRecordSignature).sort();
+        const actualSignatures = page.records.map(plannedViewRecordSignature).sort();
         return page.safe && !page.duplicatePage
           && entryOf(page.card) === expectedEntry
           && page.records.length === plan.records.length
-          && page.records.every((record, index) =>
-            plannedViewRecordSignature(record) === plannedViewRecordSignature(plan.records[index]));
+          && actualSignatures.every((signature, index) => signature === plannedSignatures[index]);
       });
     });
   }
@@ -5849,7 +5924,15 @@ function CharacterContinuity(hook, incomingText) {
     if (nameKeyOf(player.name) === normalized) matches.push({ key: "player", name: "Player" });
     characters.filter(character => nameKeyOf(character.name) === normalized)
       .forEach(character => matches.push({ key: "npc:" + character.key, name: character.name }));
-    return matches.length === 1 ? matches[0] : null;
+    if (matches.length === 1) return matches[0];
+    // Ambiguous stays a hard error. A name that matches nothing usually means the
+    // NPC rotated out of the five active roster slots, which discoverCharacters
+    // treats as not existing -- invalidating the whole Use field for that would
+    // freeze every other character's alias record that merely mentions them.
+    // Carry it unresolved instead: it grants nothing while they are away, the card
+    // text round-trips unchanged, and it resolves again when they come back.
+    if (matches.length > 1) return null;
+    return { key: "unresolved:" + normalized, name: supplied, unresolved: true };
   }
 
   function parseNameUse(value) {
@@ -5928,7 +6011,7 @@ function CharacterContinuity(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Alias record", oversize: false };
     }
     const labels = ["Alias", "Status", "Use", "Progress", "Reason"];
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index++) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -6039,7 +6122,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function markNameDuplicates(pages, diagnostics, identity) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.aliasKey]) groups[record.aliasKey] = [];
       groups[record.aliasKey].push(record);
@@ -6068,12 +6151,12 @@ function CharacterContinuity(hook, incomingText) {
     if (storeIsFresh("names", namesStore)) return namesStore;
     const session = storeSessionFor("names");
     const writesAtStart = session ? session.writes : 0;
-    const store = { identities: {}, diagnostics: [], pageStats: [] };
+    const store = { identities: Object.create(null), diagnostics: [], pageStats: [] };
     nameIdentities.forEach(identity => {
       ensureBaseNamesCard(identity);
       const refs = namePageCards(identity);
       const pages = refs.map(ref => parseNamesPage(identity, ref.card, ref.page));
-      const counts = {};
+      const counts = Object.create(null);
       pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
       pages.forEach(page => {
         if (textOf(page.card.type) !== settings.CARD_TYPE
@@ -6122,7 +6205,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function namesForIdentity(identityKey) {
-    return namesStore && namesStore.identities ? namesStore.identities[identityKey] || null : null;
+    return namesStore ? ownedEntry(namesStore.identities, identityKey) : null;
   }
 
   function managedNamesRecords() {
@@ -6393,7 +6476,12 @@ function CharacterContinuity(hook, incomingText) {
     nameIdentities.forEach(identity => {
       const identityData = namesForIdentity(identity.key);
       const records = identityData ? identityData.contextRecords : [];
-      const resolving = records.map(record => record.alias);
+      // Established forms only. Including Emerging records here put them inside
+      // `aliases`, and since every includeEmerging:false call site computes
+      // aliases.concat(includeEmerging ? emergingAliases : []), the false branch
+      // removed nothing -- the whole flag was inert and unconfirmed aliases were
+      // treated as established everywhere.
+      const resolving = records.filter(record => record.status !== "Emerging").map(record => record.alias);
       const emerging = records.filter(record => record.status === "Emerging").map(record => record.alias);
       const forms = uniqueNameForms([identity.canonical].concat(resolving), 160);
       if (identity.player) {
@@ -6584,7 +6672,7 @@ function CharacterContinuity(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Relationship record", oversize: false };
     }
     const labels = ["About"].concat(RELATIONSHIP_FIELDS);
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index++) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -6596,8 +6684,8 @@ function CharacterContinuity(hook, incomingText) {
     if (!target) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "invalid Relationship target", oversize: false };
     }
-    const parsedFields = {};
-    const fieldUnsafe = {};
+    const parsedFields = Object.create(null);
+    const fieldUnsafe = Object.create(null);
     RELATIONSHIP_FIELDS.forEach(field => {
       parsedFields[field] = parseRelationshipField(field, values[field]);
       if (!parsedFields[field].safe) fieldUnsafe[field] = parsedFields[field].reason || "unsafe field";
@@ -6711,13 +6799,21 @@ function CharacterContinuity(hook, incomingText) {
       : addCard(relationshipPageTitle(character, 1), emptyRelationshipsEntry(character, 1));
   }
 
+  // Hash the canonical parse, not the raw card text. parseRelationshipField already
+  // normalises case and clamps out-of-range scores, so two records that resolve to
+  // byte-identical managed values could still produce different raw signatures --
+  // and markRelationshipDuplicates then took the `conflict` branch and froze BOTH
+  // copies instead of collapsing the later one as a duplicate.
   function relationshipRecordSignature(record) {
-    return RELATIONSHIP_FIELDS.map(field => textOf(record && record.values && record.values[field])
-      .replace(/\s+/g, " ").trim()).join("\u241f");
+    return RELATIONSHIP_FIELDS.map(field => {
+      const parsed = record && record.parsedFields && record.parsedFields[field];
+      if (parsed && parsed.safe) return textOf(parsed.normalized).replace(/\s+/g, " ").trim();
+      return textOf(record && record.values && record.values[field]).replace(/\s+/g, " ").trim();
+    }).join("\u241f");
   }
 
   function markRelationshipDuplicates(pages, diagnostics) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.targetKey]) groups[record.targetKey] = [];
       groups[record.targetKey].push(record);
@@ -6747,12 +6843,12 @@ function CharacterContinuity(hook, incomingText) {
     if (storeIsFresh("relationships", relationshipsStore)) return relationshipsStore;
     const session = storeSessionFor("relationships");
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       ensureBaseRelationshipsCard(character);
       const refs = relationshipPageCards(character);
       const pages = refs.map(ref => parseRelationshipsPage(character, ref.card, ref.page));
-      const pageCounts = {};
+      const pageCounts = Object.create(null);
       pages.forEach(page => { pageCounts[page.page] = (pageCounts[page.page] || 0) + 1; });
       pages.forEach(page => {
         if (textOf(page.card.type) !== settings.CARD_TYPE
@@ -6810,9 +6906,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function relationshipsForOwner(ownerKey) {
-    return relationshipsStore && relationshipsStore.owners
-      ? relationshipsStore.owners[ownerKey] || null
-      : null;
+    return relationshipsStore ? ownedEntry(relationshipsStore.owners, ownerKey) : null;
   }
 
   function managedRelationshipsRecords() {
@@ -7374,7 +7468,7 @@ function CharacterContinuity(hook, incomingText) {
       return { kind: "raw", raw, page, card, line: startLine, reason: "malformed fixed Turning Point record", oversize: false };
     }
     const labels = hasBreakthrough ? requiredLabels.concat(["Breakthrough"]) : requiredLabels;
-    const values = {};
+    const values = Object.create(null);
     for (let index = 0; index < labels.length; index += 1) {
       const match = rows[index].match(new RegExp("^\\s*" + escapeRegExp(labels[index]) + "\\s*:\\s*(.*?)\\s*$", "i"));
       if (!match) {
@@ -7508,7 +7602,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function markTurningPointDuplicates(pages, diagnostics) {
-    const groups = {};
+    const groups = Object.create(null);
     pages.forEach(page => page.records.forEach(record => {
       if (!groups[record.id]) groups[record.id] = [];
       groups[record.id].push(record);
@@ -7536,11 +7630,11 @@ function CharacterContinuity(hook, incomingText) {
     if (storeIsFresh("turningpoints", turningPointsStore)) return turningPointsStore;
     const session = storeSessionFor("turningpoints");
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [], stageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [], stageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       const refs = turningPointPageCards(character);
       const pages = refs.map(ref => parseTurningPointsPage(character, ref.card, ref.page));
-      const pageCounts = {};
+      const pageCounts = Object.create(null);
       pages.forEach(page => { pageCounts[page.page] = (pageCounts[page.page] || 0) + 1; });
       pages.forEach(page => {
         page.duplicatePage = pageCounts[page.page] > 1;
@@ -7603,9 +7697,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function turningPointsForOwner(ownerKey) {
-    return turningPointsStore && turningPointsStore.owners
-      ? turningPointsStore.owners[ownerKey] || null
-      : null;
+    return turningPointsStore ? ownedEntry(turningPointsStore.owners, ownerKey) : null;
   }
 
   function turningPointRecordFor(ownerKey, id) {
@@ -7997,9 +8089,38 @@ function CharacterContinuity(hook, incomingText) {
       : { card, source, changed: false };
   }
 
+  const stateCardDiagnostics = [];
+
+  // Exact duplicates are collapsed the way discoverCharacters collapses duplicate
+  // Outer cards; conflicting ones are reported and left alone. Returns the cards
+  // still claiming this character's State after the collapse.
+  function stateCardsFor(character) {
+    const matching = namedCards(character.name, settings.STATE_LABEL);
+    if (matching.length < 2) return matching;
+    const signatures = new Set(matching.map(duplicateCardEntrySignature));
+    if (signatures.size === 1) {
+      const extras = matching.slice(1);
+      removeCards(extras);
+      stateCardDiagnostics.push(
+        character.name + " had " + matching.length + " exact State cards; kept the first and removed "
+          + extras.length + " duplicate" + (extras.length === 1 ? "" : "s") + "."
+      );
+      return [matching[0]];
+    }
+    stateCardDiagnostics.push(
+      character.name + " has " + matching.length
+        + " conflicting State cards; its State is frozen until only one remains."
+    );
+    return matching;
+  }
+
   function syncStateCard(character) {
     const title = stateTitle(character);
-    let card = namedCard(character.name, settings.STATE_LABEL);
+    const matching = stateCardsFor(character);
+    // Never re-parse in-memory State from an arbitrary copy: namedCard returns the
+    // first card, and with conflicting duplicates that choice is meaningless.
+    if (matching.length > 1) return;
+    let card = matching[0] || null;
     if (!card) return;
     let source = entryOf(card);
     const currentHash = hashString(source);
@@ -8021,7 +8142,10 @@ function CharacterContinuity(hook, incomingText) {
     if (!npc) return;
     const title = stateTitle(character);
     const entry = stateEntry(character, npc);
-    const matching = namedCards(character.name, settings.STATE_LABEL);
+    const matching = stateCardsFor(character);
+    // Conflicting duplicates: writing to either copy would pick one arbitrarily,
+    // and the reason is now reported through stateCardDiagnostics rather than
+    // being silently swallowed here.
     if (matching.length > 1) return null;
     const card = matching[0] || null;
     const saved = card ? saveCard(card, entry) : addCard(title, entry);
@@ -8284,7 +8408,7 @@ function CharacterContinuity(hook, incomingText) {
       return experiencesStore;
     }
     const writesAtStart = session ? session.writes : 0;
-    const store = { owners: {}, diagnostics: [], pageStats: [] };
+    const store = { owners: Object.create(null), diagnostics: [], pageStats: [] };
     characters.filter(character => !character.onboardingPending).forEach(character => {
       store.owners[character.key] = { character, pages: [], records: [], contextRecords: [] };
     });
@@ -8295,7 +8419,7 @@ function CharacterContinuity(hook, incomingText) {
     });
     Object.values(store.owners).forEach(ownerData => {
       ownerData.pages.sort((left, right) => left.page - right.page || cardIndex(left.card) - cardIndex(right.card));
-      const counts = {};
+      const counts = Object.create(null);
       ownerData.pages.forEach(page => { counts[page.page] = (counts[page.page] || 0) + 1; });
       const seen = new Set();
       ownerData.pages.forEach(page => {
@@ -8342,9 +8466,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function experiencesForOwner(ownerKey) {
-    return experiencesStore && experiencesStore.owners
-      ? experiencesStore.owners[ownerKey] || null
-      : null;
+    return experiencesStore ? ownedEntry(experiencesStore.owners, ownerKey) : null;
   }
 
   function managedExperienceRecords(ownerKeys) {
@@ -8396,7 +8518,11 @@ function CharacterContinuity(hook, incomingText) {
     let remaining = source;
     while (remaining.length > maximum) {
       const minimum = Math.floor(maximum * 0.45);
-      let cut = remaining.lastIndexOf(" ", maximum + 1);
+      // lastIndexOf returns the last space at an index <= fromIndex, so a fromIndex
+      // of maximum + 1 can cut at maximum + 1 and emit a chunk one character over
+      // the cap. The re-parse then marks it oversize and every later migration
+      // commit fails and rolls back, permanently.
+      let cut = remaining.lastIndexOf(" ", maximum);
       if (cut < minimum) {
         return {
           ok: false,
@@ -8418,6 +8544,11 @@ function CharacterContinuity(hook, incomingText) {
     chunks.push(remaining);
     if (chunks.join(" ") !== source) {
       return { ok: false, error: "An oversized Experience could not be divided losslessly." };
+    }
+    // Refuse the migration rather than writing a chunk the re-parse will reject:
+    // a boundary bug here degrades to a reported refusal, not a write/rollback loop.
+    if (chunks.some(chunk => chunk.length > maximum)) {
+      return { ok: false, error: "An oversized Experience could not be divided within the stored length limit." };
     }
     const records = chunks.map((chunk, index) => ({
       ...record,
@@ -8716,7 +8847,7 @@ function CharacterContinuity(hook, incomingText) {
       .sort((left, right) => left.confirmation - right.confirmation
         || left.createdClock - right.createdClock
         || left.id.localeCompare(right.id));
-    const selectedByConfirmation = {};
+    const selectedByConfirmation = Object.create(null);
     matching.forEach(record => {
       if (!selectedByConfirmation[record.confirmation]) selectedByConfirmation[record.confirmation] = record;
     });
@@ -9052,7 +9183,7 @@ function CharacterContinuity(hook, incomingText) {
     const excerpt = evidenceExcerpt(value);
     if (!excerpt.text) return null;
     const number = CC.nextEvidenceNumber++;
-    const ownerBirth = {};
+    const ownerBirth = Object.create(null);
     characters.forEach(character => {
       ownerBirth[character.key] = Math.max(0, Number(CC.ownerOpportunities[character.key]) || 0);
     });
@@ -10174,6 +10305,22 @@ function CharacterContinuity(hook, incomingText) {
 
   function beginContinueIfNeeded(contextValue) {
     const observedActionCount = platformActionCount();
+    // AI Dungeon fires no hook on undo, so the script only learns about one when the
+    // platform's action count comes back LOWER than the high-water mark that
+    // markActionCompleted maintains. Without this, an N-action undo left the count N
+    // below the mark, clearlyNewAction stayed false for N turns, and every one of
+    // them was misread as a retry of an action the player had already erased --
+    // replaying a stale snapshot and going inert. Resync instead.
+    if (observedActionCount !== null && observedActionCount < CC.lastCompletedActionCount - 1) {
+      const undone = CC.lastCompletedActionCount - observedActionCount;
+      CC.lastCompletedActionCount = observedActionCount;
+      CC.preGenerationSnapshot = null;
+      CC.lastVisibleOutputAnchor = "";
+      CC.currentPlan = null;
+      cancelPendingOperationRetry(null);
+      CC.last.warning = "Detected " + undone + " undone action"
+        + (undone === 1 ? "" : "s") + "; continuity resynchronised to the current action.";
+    }
     let discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     if (CC.currentPlan && !CC.currentPlan.completed) {
       const currentActionCount = Number.isFinite(Number(CC.currentPlan.actionCount))
@@ -10636,8 +10783,8 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function relevantRecoveredBlocks(owner, activeSelections, buriedSelections) {
-    const activeByTarget = {};
-    const buriedByTarget = {};
+    const activeByTarget = Object.create(null);
+    const buriedByTarget = Object.create(null);
     activeSelections.forEach(item => { activeByTarget[item.record.targetKey] = item.record; });
     buriedSelections.forEach(item => { buriedByTarget[item.record.targetKey] = item.record; });
     return Object.keys(CC.recoveringViews).map(key => {
@@ -10788,11 +10935,11 @@ function CharacterContinuity(hook, incomingText) {
         result.push(target);
       }
     };
-    const activeByTarget = {};
+    const activeByTarget = Object.create(null);
     activeSelections.forEach(item => { activeByTarget[item.record.targetKey] = item.record; });
-    const buriedByTarget = {};
+    const buriedByTarget = Object.create(null);
     buriedSelections.forEach(item => { buriedByTarget[item.record.targetKey] = item.record; });
-    const relationshipByTarget = {};
+    const relationshipByTarget = Object.create(null);
     (Array.isArray(relationshipSelections) ? relationshipSelections : []).forEach(item => {
       relationshipByTarget[item.record.targetKey] = item.record;
     });
@@ -11090,28 +11237,52 @@ function CharacterContinuity(hook, incomingText) {
       if (positive === negative) return "";
       return positive ? positiveDestination : negativeDestination;
     };
+    // The polarity tests below are bare keyword scans over narrative prose, so
+    // "she no longer trusts him" scored as a Trust GAIN -- the exact opposite of
+    // what the story said -- because the negative list is a disjoint set of words
+    // that a sentence phrased with "trust" itself never hits. keyOf has already
+    // flattened punctuation to spaces, so cues and keywords sit in one word stream
+    // and a cue plus the next few words can simply be blanked out. Note the
+    // apostrophe forms below are post-keyOf ("can t", not "can't"); the original
+    // "can't rely" spelling could never match.
+    const negationCue = "(?:no longer|never|not|cannot|can t|could not|couldn t|"
+      + "does not|doesn t|did not|didn t|do not|don t|stopped|refused|refuses|"
+      + "without|lost|losing|lack|lacks|lacked|failed to|far from|less)";
+    let negationPresent = false;
+    const affirmed = source.replace(
+      new RegExp("\\b" + negationCue + "\\b(?:\\s+\\S+){0,3}", "g"),
+      () => { negationPresent = true; return " "; }
+    );
+    // Affirmed: the keyword survives outside every negated span.
+    const affirms = pattern => pattern.test(affirmed);
+    // Negated: the keyword appears, but only inside a negated span.
+    const negates = pattern => negationPresent && pattern.test(source) && !pattern.test(affirmed);
     if (field === "Trust") {
       const severe = hasTrigger(["betrayal"]) || /\b(?:betray\w*|treacher\w*)\b/.test(source);
+      const trustGain = /\b(?:trust\w*|reliab\w*|dependab\w*|can rely|could rely|kept (?:a|the|his|her|their) promise)\b/;
       const negative = severe || hasTrigger(["trust_loss"])
-        || /\b(?:distrust\w*|dishonest\w*|unreliab\w*|cannot rely|can't rely|could not rely|deceiv\w*|lied|lying|broken promise)\b/.test(source);
-      const positive = hasTrigger(["trust_gain", "repair"])
-        || /\b(?:trust\w*|reliab\w*|dependab\w*|can rely|could rely|kept (?:a|the|his|her|their) promise)\b/.test(source);
+        || /\b(?:distrust\w*|dishonest\w*|unreliab\w*|cannot rely|can t rely|could not rely|deceiv\w*|lied|lying|broken promise)\b/.test(source)
+        || negates(trustGain);
+      const positive = hasTrigger(["trust_gain", "repair"]) || affirms(trustGain);
       return choose(positive, negative, "Trust", severe ? "Severe distrust" : "Distrust");
     }
     if (field === "Closeness") {
+      const closenessGain = /\b(?:close|closeness|bond\w*|affection\w*|reconnect\w*|intimacy|intimate)\b/;
       const negative = hasTrigger(["closeness_loss", "withdraw"])
-        || /\b(?:distant|distance|disconnect\w*|withdraw\w*|pull\w* away)\b/.test(source);
+        || /\b(?:distant|distance|disconnect\w*|withdraw\w*|pull\w* away)\b/.test(source)
+        || negates(closenessGain);
       const positive = hasTrigger(["closeness_gain", "affection", "reconnect"])
-        || /\b(?:close|closeness|bond\w*|affection\w*|reconnect\w*|intimacy|intimate)\b/.test(source);
+        || affirms(closenessGain);
       return choose(positive, negative, "Close", "Distant");
     }
     if (field === "Conflict") {
-      const repaired = hasTrigger(["repair"])
-        || /\b(?:resolved|made peace|reconcil\w*|repair\w*)\b/.test(source);
+      const repair = /\b(?:resolved|made peace|reconcil\w*|repair\w*)\b/;
+      const repaired = hasTrigger(["repair"]) || affirms(repair);
       const ruptured = hasTrigger(["betrayal"])
         || /\b(?:rupture\w*|severed ties|cut ties|irreparable|betray\w*)\b/.test(source);
       const conflict = ruptured || hasTrigger(["conflict", "anger", "boundary_crossed"])
-        || /\b(?:conflict\w*|fight\w*|argument\w*|anger|angry|hostil\w*|friction|strain)\b/.test(source);
+        || /\b(?:conflict\w*|fight\w*|argument\w*|anger|angry|hostil\w*|friction|strain)\b/.test(source)
+        || negates(repair);
       return choose(repaired, conflict, "Clear", ruptured ? "Rupture" : "Open conflict");
     }
     if (field === "Boundaries") {
@@ -11159,7 +11330,7 @@ function CharacterContinuity(hook, incomingText) {
     const currentOpportunity = opportunityOverride === null
       ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0)
       : Math.max(0, Number(opportunityOverride) || 0);
-    const frozenById = {};
+    const frozenById = Object.create(null);
     const frozenOrder = [];
     (Array.isArray(frozenPacket) ? frozenPacket : []).forEach(source => {
       const id = provenanceId(source && source.id);
@@ -11208,7 +11379,7 @@ function CharacterContinuity(hook, incomingText) {
         ? frozen.allowedFields.filter(field => RELATIONSHIP_FIELDS.includes(field))
         : null;
       const allowedFields = (frozenFields || grounded).filter(field => grounded.includes(field));
-      const fieldUseSignatures = {};
+      const fieldUseSignatures = Object.create(null);
       allowedFields.forEach(field => {
         const recomputed = relationshipUseSignatureForRecord(record, owner.key, record.targetKey, field);
         const frozenSignature = frozen && frozen.useSignatures && frozen.useSignatures[field];
@@ -11417,7 +11588,7 @@ function CharacterContinuity(hook, incomingText) {
     const currentOpportunity = opportunityOverride === null
       ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0)
       : Math.max(0, Number(opportunityOverride) || 0);
-    const frozenById = {};
+    const frozenById = Object.create(null);
     const frozenOrder = [];
     (Array.isArray(frozenPacket) ? frozenPacket : []).forEach(source => {
       const id = provenanceId(source && source.id);
@@ -11476,7 +11647,7 @@ function CharacterContinuity(hook, incomingText) {
           && current.operationMode === item.operationMode && current.targetMode === item.targetMode)
       );
       const rawLineage = storyLineageForSources(record.sourceIds.concat(record.storyEvidenceIds || []));
-      const useSignatures = {};
+      const useSignatures = Object.create(null);
       const unusedInterpretations = [];
       allowedInterpretations.forEach(item => {
         const key = [item.destination, item.operationMode, item.targetMode || ""].join("|");
@@ -12274,7 +12445,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function operationCandidateGroups(owner, signals, currentInputId, recent, scoringOpportunity) {
-    const groups = {};
+    const groups = Object.create(null);
     (Array.isArray(signals) ? signals : []).forEach(entry => {
       const signal = entry && entry.signal;
       const sourceCandidate = entry && (entry.sourceCandidate || (entry.item ? { item: entry.item } : null));
@@ -12336,7 +12507,7 @@ function CharacterContinuity(hook, incomingText) {
       }
       const evidenceItems = contributing.map(entry => entry.item);
       const sourceCandidates = contributing.map(entry => entry.sourceCandidate);
-      const sourceMetadata = {};
+      const sourceMetadata = Object.create(null);
       sourceCandidates.forEach(source => {
         if (!source || !source.item) return;
         sourceMetadata[source.item.id] = {
@@ -12786,7 +12957,7 @@ function CharacterContinuity(hook, incomingText) {
           ? id.charAt(0) === "E"
           : ["S", "X"].includes(id.charAt(0));
       });
-    const byId = {};
+    const byId = Object.create(null);
     eligible.forEach(candidate => { byId[candidate.item.id] = candidate; });
     const requested = operationPacketSourceIds(kind, selectedCandidate, frozenIds);
     const ordered = [];
@@ -13219,7 +13390,9 @@ function CharacterContinuity(hook, incomingText) {
         targetMap,
         evidenceChoice,
         evidenceAuthority,
-        "Alias, Transition, and Use are fixed. Replace Explanation with one short clause describing why the scheduled transition applies; natural paraphrase is allowed.",
+        "Alias, Transition, and Use are fixed. Replace Explanation with one short clause of at most "
+          + settings.MAX_OPERATION_EXPLANATION_CHARS
+          + " characters describing why the scheduled transition applies; natural paraphrase is allowed.",
         ...commonEnding
       ];
     } else if (normalized === "relationship") {
@@ -13237,7 +13410,9 @@ function CharacterContinuity(hook, incomingText) {
         evidenceChoice,
         evidenceAuthority,
         "Target, field, " + (direct ? "direct" : "accumulated") + " event class, and destination "
-          + destinationField + " are fixed. Replace Explanation with one short clause describing the scheduled relationship movement; natural paraphrase is allowed.",
+          + destinationField + " are fixed. Replace Explanation with one short clause of at most "
+          + settings.MAX_RELATIONSHIP_EXPLANATION_CHARS
+          + " characters describing the scheduled relationship movement; natural paraphrase is allowed.",
         "Frozen " + pace.name + " pace: " + (direct ? "D " + pace.direct : "A " + pace.accumulated)
           + " per event, maximum " + pace.maxStages + " stage" + (pace.maxStages === 1 ? "" : "s") + ".",
         relationshipFieldMeaning(field),
@@ -13257,7 +13432,9 @@ function CharacterContinuity(hook, incomingText) {
         evidenceChoice,
         evidenceAuthority,
         "Target, destination " + destinationField + ", and mode " + modeField
-          + " are fixed. Replace Explanation with one short clause describing the scheduled View movement; natural paraphrase is allowed.",
+          + " are fixed. Replace Explanation with one short clause of at most "
+          + settings.MAX_OPERATION_EXPLANATION_CHARS
+          + " characters describing the scheduled View movement; natural paraphrase is allowed.",
         ...commonEnding
       ];
     } else if (normalized === "turning") {
@@ -13276,7 +13453,7 @@ function CharacterContinuity(hook, incomingText) {
         "The first six record fields are complete supplied data: CCO|T|" + target.code + "|"
           + evidenceField + "|" + id + "|" + mode
           + ". Fill the seventh field, Explanation, with one complete clause of at most "
-          + settings.MODEL_OPERATION_EXPLANATION_CHARS
+          + settings.MAX_OPERATION_EXPLANATION_CHARS
           + " characters describing the scheduled Turning Point movement; natural paraphrase is allowed.",
         mode === "Support"
           ? "Support records a completed, durable step toward the comparison stage while progress remains below Achieved."
@@ -14621,8 +14798,21 @@ function CharacterContinuity(hook, incomingText) {
           }
         }
       }
+      // An unbalanced record must not swallow the rest of the reply. A genuinely
+      // truncated record is the last thing in the output -- that is the case
+      // terminalProtocolCutoff models. If real content follows the opener's own
+      // line, the record is merely malformed, so bound the damage to that line
+      // and keep scanning; otherwise one stray "(" blanks the player's whole turn.
+      let bounded = false;
+      if (!complete) {
+        const lineEnd = source.indexOf("\n", start);
+        if (lineEnd !== -1 && source.slice(lineEnd + 1).trim()) {
+          end = lineEnd;
+          bounded = true;
+        }
+      }
       spans.push({ start, end, complete, text: source.slice(start, end) });
-      if (!complete) break;
+      if (!complete && !bounded) break;
       opener.lastIndex = end;
       match = opener.exec(source);
     }
@@ -14652,7 +14842,11 @@ function CharacterContinuity(hook, incomingText) {
       const bareIndex = bareCcoIndex(result);
       if (bareIndex >= 0) result = result.slice(0, bareIndex);
       if (labelOnly.test(controlPresentationText(result))) result = "";
-      return result.replace(/[ \t]{2,}/g, " ").trimEnd();
+      // Collapse runs of whitespace only where a removal actually left a gap.
+      // Applying it to every line reformats the player's prose -- indented verse,
+      // letters and lists are left-flushed on turns where nothing was stripped.
+      if (result !== rawLine) result = result.replace(/[ \t]{2,}/g, " ");
+      return result.trimEnd();
     }).join("\n").replace(/\n{3,}/g, "\n\n").trim();
   }
 
@@ -14875,10 +15069,23 @@ function CharacterContinuity(hook, incomingText) {
       removed.push(line(block, 220));
       return "";
     });
-    const unmatched = source.search(new RegExp(openTag, "i"));
-    if (unmatched >= 0) {
-      removed.push(line(source.slice(unmatched), 220));
-      source = source.slice(0, unmatched);
+    // An unmatched opener is usually the model echoing a bare tag mid-reply, not a
+    // truncated block -- that is why the echo table below exists. Truncating to
+    // end-of-text there deletes the rest of the story. Only truncate when nothing
+    // after the tag reads as finished prose (the genuine cut-off case); otherwise
+    // drop the tag alone and keep the reply.
+    for (let guard = 0; guard < 8; guard += 1) {
+      const unmatched = new RegExp(openTag, "i").exec(source);
+      if (!unmatched) break;
+      const after = source.slice(unmatched.index + unmatched[0].length);
+      if (hasTerminallyPunctuatedStory(after)) {
+        removed.push(line(unmatched[0], 220));
+        source = source.slice(0, unmatched.index) + after;
+      } else {
+        removed.push(line(source.slice(unmatched.index), 220));
+        source = source.slice(0, unmatched.index);
+        break;
+      }
     }
     source = source.replace(new RegExp(closeTag, "gi"), tag => {
       removed.push(line(tag, 220));
@@ -14952,8 +15159,14 @@ function CharacterContinuity(hook, incomingText) {
       source = source.replace(/(^|\n)[ \t]*(?:>\s*|[-+*]\s*)(?=\n|$)/g, "$1");
       source = source.replace(/(^|\n)[ \t]*(?:\*{2,}|_{2,}|`+)(?:[ \t]+(?:\*{2,}|_{2,}|`+))?[ \t]*(?=\n|$)/g, "$1");
     }
+    // Only normalise whitespace when something was actually removed. This runs on
+    // every output turn and its result is the base for every later stage, so
+    // applying it unconditionally strips the leading indentation of all prose --
+    // verse, letters and lists arrive left-flushed even when nothing was stripped.
     return {
-      text: source.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n"),
+      text: count > 0
+        ? source.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n").replace(/\n[ \t]+/g, "\n")
+        : source.replace(/[ \t]+\n/g, "\n"),
       count,
       sample
     };
@@ -15294,7 +15507,7 @@ function CharacterContinuity(hook, incomingText) {
   }
 
   function frozenOperationEvidenceIds(plan, kind) {
-    const supplied = {};
+    const supplied = Object.create(null);
     (Array.isArray(plan && plan.sourcePacket) ? plan.sourcePacket : []).forEach(sourceItem => {
       const id = continuitySourceId(sourceItem && sourceItem.id);
       if (id) supplied[id] = sourceItem;
@@ -16548,7 +16761,7 @@ function CharacterContinuity(hook, incomingText) {
       const replacedAlias = line(replacedAliasSource, 160);
       const useField = wholeLine(parts[6], 0);
       const explanationField = exactStateFieldValue(parts[7], "Explanation");
-      const explanation = wholeLine(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
       if (!subjectCode || !alias || alias !== aliasSource || replacedAlias !== replacedAliasSource
         || !transition || !useField || !explanation
         || /[{}\[\]|()\r\n]/.test(alias + useField + explanation + replacedAlias)) {
@@ -16575,7 +16788,7 @@ function CharacterContinuity(hook, incomingText) {
       const destinationSource = textOf(parts[6]).trim();
       const destination = field ? relationshipDestination(field, destinationSource) : null;
       const explanationField = exactStateFieldValue(parts[7], "Explanation");
-      const explanation = wholeLine(explanationField.value, settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
+      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
       if (!targetCode || !field || !["A", "D"].includes(eventKind) || !destination) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship CCO record used an invalid target, field, A/D flag, or destination.", raw: line(raw, 300) };
       }
@@ -16608,7 +16821,7 @@ function CharacterContinuity(hook, incomingText) {
           : "");
       const severity = textOf(parts[5]).trim().toUpperCase();
       const explanationField = exactStateFieldValue(parts[6], "Explanation");
-      const explanation = wholeLine(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
+      const explanation = compactLineAtBoundary(explanationField.value, settings.MAX_OPERATION_EXPLANATION_CHARS);
       if (!targetField || !destination || !["O", "M"].includes(severity)) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The View CCO record used an invalid target, destination, or O/M flag.", raw: line(raw, 300) };
       }
@@ -17108,7 +17321,7 @@ function CharacterContinuity(hook, incomingText) {
     const operationKind = keyOf(candidate && candidate.kind);
     const normalizedTarget = normalizedTargetKey(targetKey);
     const suppliedPacket = Array.isArray(plan.sourcePacket) ? plan.sourcePacket : [];
-    const suppliedById = {};
+    const suppliedById = Object.create(null);
     suppliedPacket.forEach(source => {
       const id = continuitySourceId(source && source.id);
       if (id) suppliedById[id] = source;
@@ -18661,6 +18874,17 @@ function CharacterContinuity(hook, incomingText) {
         : result;
     }
 
+    // Every sibling path guards this; only the create branch did not, so a buried
+    // View plus a fresh active one could coexist for the same owner and target.
+    // That pair permanently blocks future burial and makes Recovered reconcile
+    // against a memory that was supposed to be put away.
+    if (buriedRecord) {
+      return {
+        ok: false,
+        error: "A buried View of " + target.name + " already exists, so a second active View cannot be created."
+      };
+    }
+
     const result = transactViews(owner, ({ activePages }) => {
       const record = baseViewRecord(target, candidate.destination, candidate.explanation, false);
       const placed = placePlannedRecord(owner, false, activePages, record, 0);
@@ -19356,10 +19580,17 @@ function CharacterContinuity(hook, incomingText) {
         }
       }
 
-      CC.last.output = "No terminally punctuated story prose survived; no operation was applied and prose-only recovery remains pending.";
+      // Withholding the continuity bookkeeping here is right: an unfinished reply
+      // is not safe to derive state from. Deleting the prose is not. AI Dungeon
+      // truncates generations at the token limit routinely, so returning " " blanks
+      // the turn the player waited for and loses text no other copy of exists.
+      // Hand the prose back and leave recovery pending.
+      CC.last.output = story
+        ? "The response did not finish terminally punctuated prose, so it was delivered unchanged but no operation was applied and prose-only recovery remains pending."
+        : "No story prose survived; no operation was applied and prose-only recovery remains pending.";
       CC.last.error = "The response did not finish terminally punctuated story prose.";
       recordGenuineOutputResolution(plan);
-      return " ";
+      return story ? story : " ";
     }
 
     const nextGeneration = CC.visibleGenerationCount + 1;
@@ -19837,7 +20068,7 @@ function CharacterContinuity(hook, incomingText) {
 
   function provenanceStatusSnapshot(validate = true) {
     if (validate) refreshProvenanceActivity();
-    const counts = {};
+    const counts = Object.create(null);
     Object.keys(PROVENANCE_KINDS).forEach(prefix => {
       const records = CC.provenance.records.filter(record => record.id.charAt(0) === prefix);
       counts[prefix] = {
@@ -20265,6 +20496,7 @@ function CharacterContinuity(hook, incomingText) {
       ...wrapperMigrationDiagnostics,
       ...activeRosterDiagnostics,
       ...characterDiscoveryDiagnostics,
+      ...stateCardDiagnostics,
       ...storeSessionWarnings(),
       CC.last.warning,
       CC.last.error
@@ -20378,6 +20610,7 @@ function CharacterContinuity(hook, incomingText) {
       "Card title migration: " + (titleMigrationDiagnostics.join("; ") || "None"),
       "Card wrapper migration: " + (wrapperMigrationDiagnostics.join("; ") || "None"),
       "Identity discovery: " + (characterDiscoveryDiagnostics.join("; ") || "None"),
+      "State cards: " + (stateCardDiagnostics.join("; ") || "None"),
       "Outer: " + (characters.map(outerStatus).join("; ") || "None"),
       "Names: " + (nameIdentities.map(namesStatus).join("; ") || "None"),
       "Names pages: " + ((namesStore && namesStore.pageStats || []).join("; ") || "None"),
@@ -20490,35 +20723,69 @@ function CharacterContinuity(hook, incomingText) {
     )));
   }
 
+  // The platform supplies no safety net: an uncaught throw in any hook breaks the
+  // player's turn outright. Every branch below degrades to passing the platform's
+  // own text through untouched, which is always a valid result for every hook --
+  // for contextAppend it is trivially append-only, so the cache contract holds.
+  function hookFailure(error) {
+    const detail = textOf(error && error.message ? error.message : error);
+    try {
+      CC.last.error = "The " + hook + " hook failed and its continuity work was withheld: "
+        + line(detail, 300);
+      writeStatusCard();
+    } catch (ignored) {
+      // State may be too damaged to report through; passing the text through still matters.
+    }
+    return finish(originalText);
+  }
+
   if (hook === "input") {
-    clearOwnedFrontMemoryState();
-    beginInput(originalText);
-    writeAllStateCards();
-    writeStatusCard();
+    try {
+      clearOwnedFrontMemoryState();
+      beginInput(originalText);
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
+    }
     return finish(originalText);
   }
 
   if (hook === "context" || hook === "contextAppend") {
-    let result = buildContext();
-    if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))
-      && !frontMemoryContextVerified) {
-      CC.last.context = "Cache-compatible append guard preserved the original platform context.";
-      CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
-      result = originalText;
+    let result;
+    try {
+      result = buildContext();
+      if (appendOnlyContext && !textOf(result).startsWith(textOf(originalText))
+        && !frontMemoryContextVerified) {
+        CC.last.context = "Cache-compatible append guard preserved the original platform context.";
+        CC.last.error = "The context result was not append-only, so its continuity addition was withheld.";
+        result = originalText;
+      }
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
     }
-    writeAllStateCards();
-    writeStatusCard();
     return finish(result);
   }
 
   if (hook === "output") {
-    clearOwnedFrontMemoryState();
-    const result = processOutput(originalText);
-    writeAllStateCards();
-    writeStatusCard();
+    let result;
+    try {
+      clearOwnedFrontMemoryState();
+      result = processOutput(originalText);
+      writeAllStateCards();
+      writeStatusCard();
+    } catch (error) {
+      return hookFailure(error);
+    }
     return finish(result);
   }
 
-  writeStatusCard();
+  try {
+    writeStatusCard();
+  } catch (error) {
+    return hookFailure(error);
+  }
   return finish(originalText);
 }

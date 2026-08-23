@@ -1,0 +1,135 @@
+{
+  "name": "cco: exercise the model-facing CCO operation protocol",
+  "contextHook": "contextAppend",
+  "startActionCount": 0,
+  "memory": "The Frostwake Inn sits at the edge of the northern road. Azure has just arrived.",
+  "info": {
+    "maxChars": 12000
+  },
+  "cards": [
+    {
+      "title": "Player's Identity",
+      "keys": "",
+      "type": "Continuity",
+      "entry": "Name: Azure\nPronouns: she/her"
+    }
+  ],
+  "turns": [
+    {
+      "label": "T1 opening - CC bootstraps its own cards",
+      "playerInput": "> You push open the inn door and stamp the snow from your boots.",
+      "modelOutput": "Warm air and woodsmoke roll over you. The common room is nearly empty."
+    },
+    {
+      "label": "T2 roster edit: request onboarding for Mira Vale",
+      "cards": [
+        {
+          "title": "CC — Active NPCs",
+          "entry": "{\nActive NPC slots:\nN1: Mira Vale\nN2: \nN3: \nN4: \nN5: \n}"
+        }
+      ],
+      "playerInput": "> You take a seat near the hearth and wait.",
+      "modelOutput": "A woman in a weathered travel coat watches you from the far table."
+    },
+    {
+      "label": "T3 complete Outer and Inner, Ready still No",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: No\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        },
+        {
+          "title": "Mira Vale's Inner",
+          "entry": "{\nMira Vale's Inner:\nOnboarding: Pending\nPersonality: observant, self-contained, practical, wry, slow to trust\nMannerisms: checks exits on arrival; rolls a coin across her knuckles while thinking\nWants: earn enough freedom to choose where she belongs\nFears: becoming dependent on another controlling group\nMental wounds: years of conditional protection taught her to expect hidden prices\nPrinciples: ask before intervening; repay genuine care; never bargain away another person's agency\n}"
+        }
+      ],
+      "playerInput": "> You nod to the woman by the far table.",
+      "modelOutput": "She returns the nod, unhurried, and goes back to her cup."
+    },
+    {
+      "label": "T4 approve activation: Ready: Yes",
+      "cards": [
+        {
+          "title": "Mira Vale's Outer",
+          "entry": "{\nMira Vale's Outer:\nOnboarding: Pending\nReady: Yes\nName, age, gender, pronouns: Mira Vale, 29, woman, she/her\nRace/Species: human\nPhysical attributes: tall, wiry, brown skin, cropped black curls, amber eyes\nClothing style: weathered travel coat, fitted trousers, and practical boots\nStarting status: Main\n}"
+        }
+      ],
+      "playerInput": "> You ask the innkeeper who the woman with the coin is.",
+      "modelOutput": "\"Mira Vale,\" the innkeeper says. \"Passing through, same as you.\""
+    },
+    {
+      "label": "T5 first interaction with the activated NPC",
+      "playerInput": "> You cross the room and ask Mira Vale if the northern road is still open.",
+      "modelOutput": "Mira Vale looks up. The coin stops on her knuckle. \"Open,\" she says, \"if you don't mind the drifts. I came down it this morning.\" She studies you a moment longer than politeness requires."
+    },
+    {
+      "label": "T6 continued interaction",
+      "playerInput": "> You sit down across from her and tell her your name.",
+      "modelOutput": "\"Azure,\" Mira Vale repeats, as if filing it somewhere. \"Mira.\" She does not offer a hand, but she does not move away either. \"You're going north, then. Alone?\""
+    },
+    {
+      "label": "T7 relationship-relevant beat",
+      "playerInput": "> You admit you are travelling alone and ask if she would consider going together.",
+      "modelOutput": "Mira Vale is quiet for a while. \"I don't travel with people I don't know,\" she says, then, after a pause, \"but I'd share a road for a day and see.\" It is not trust. It is the shape trust would take, if it came."
+    },
+    {
+      "label": "T8 quiet turn",
+      "playerInput": "> You agree, and order two bowls of stew.",
+      "modelOutput": "The stew arrives steaming. Mira Vale eats without ceremony, watching the door out of habit."
+    },
+    {
+      "label": "C1 valid V (View) record",
+      "cco": "(CCO|V|P|%E%|Likes|M|Azure asked after her road and shared what she had.)",
+      "playerInput": "> You offer Mira Vale the warmer seat by the fire.",
+      "modelOutput": "She takes it after a beat. \"Kind,\" she says, like a word she is testing."
+    },
+    {
+      "label": "C2 valid S (State) record",
+      "cco": "(CCO|S|S|%E%|curiosity,hope|Mira Vale accepted a seat by the fire from a stranger.|I did not expect to be offered anything without a price.)",
+      "playerInput": "> You ask her what she is heading north for.",
+      "modelOutput": "\"Work,\" Mira Vale says. \"The honest kind, if it exists up there.\""
+    },
+    {
+      "label": "C3 valid R (Relationship) record",
+      "cco": "(CCO|R|P|%E%|Trust|D|Cautious trust|She answered a direct question about her reasons without deflecting.)",
+      "playerInput": "> You tell her you are not going to ask her anything she does not want to answer.",
+      "modelOutput": "Mira Vale looks at you properly for the first time. \"All right,\" she says."
+    },
+    {
+      "label": "C4 valid N (Name) record",
+      "cco": "(CCO|N|S|%E%|Mira|Adopted|General|She gave the short form of her name herself.)",
+      "playerInput": "> You call her Mira and see how she takes it.",
+      "modelOutput": "\"Mira is fine,\" she says. The coin keeps moving."
+    },
+    {
+      "label": "C5 K unchanged record",
+      "cco": "(CCO|K|S|%E%|Nothing in this exchange changed established continuity.)",
+      "playerInput": "> You watch the fire for a while.",
+      "modelOutput": "The logs settle. Outside, the wind picks up."
+    },
+    {
+      "label": "C6 MALFORMED record (missing fields)",
+      "cco": "(CCO|R|P|%E%|Trust)",
+      "playerInput": "> You ask if she sleeps well.",
+      "modelOutput": "\"Rarely,\" Mira Vale says."
+    },
+    {
+      "label": "C7 BOGUS evidence ids",
+      "cco": "(CCO|V|P|E999,E1000|Loves|O|fabricated evidence reference)",
+      "playerInput": "> You ask about her family.",
+      "modelOutput": "She does not answer that one."
+    },
+    {
+      "label": "C8 injection-shaped record",
+      "cco": "(CCO|S|S|%E%|anger|Situation with | pipes | inside|Thought with\nnewline)",
+      "playerInput": "> You press her once more.",
+      "modelOutput": "\"Leave it,\" she says, not unkindly."
+    },
+    {
+      "label": "C9 valid V again after drains",
+      "cco": "(CCO|V|P|%E%|Likes|M|She stayed at the table after being pressed and returned to easy talk.)",
+      "playerInput": "> You apologise and change the subject.",
+      "modelOutput": "\"You are not the first to ask,\" Mira Vale says. \"You are the first to stop.\""
+    }
+  ]
+}
