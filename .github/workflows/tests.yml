@@ -20,9 +20,9 @@ jobs:
         node: ['18', '20', '22']
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node }}
 
@@ -43,8 +43,8 @@ jobs:
     # regression is visible in the log. Never fails the build on timing.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: '22'
       - name: Benchmark a 68-turn scenario with a 100-card deck

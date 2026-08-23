@@ -62,12 +62,27 @@ function check(label, overrides, predicate, describe) {
   console.log('        ' + describe(r.text));
 }
 
-function shown(text) {
-  const flat = text.replace(/\n/g, '\\n');
-  return 'player saw: ' + JSON.stringify(flat.length > 90 ? flat.slice(0, 90) + '...' : flat);
+// Control text that must never reach the player, whatever else happens. Checking
+// only that the prose survived was the gap that let a malformed multiline record
+// leave its tail, and an echoed <SYSTEM> tag leave the instructions it wrapped.
+const LEAK = /\(\s*CCO\b|\bCCO\s*\||PROTOCOL TAIL|<\s*\/?\s*SYSTEM\s*>|CC CURRENT|operation is mandatory|Follow the final CC|Do not omit or refuse/i;
+
+function leaked(text) {
+  const found = LEAK.exec(String(text));
+  return found ? found[0] : '';
 }
 
-const keepsProse = function (text) { return text.indexOf(PROSE) !== -1; };
+function shown(text) {
+  const flat = text.replace(/\n/g, '\\n');
+  const bad = leaked(text);
+  return 'player saw: ' + JSON.stringify(flat.length > 90 ? flat.slice(0, 90) + '...' : flat)
+    + (bad ? '   <-- LEAKED CONTROL TEXT: ' + JSON.stringify(bad) : '');
+}
+
+// Prose survives AND nothing from the control protocol is left behind.
+const keepsProse = function (text) {
+  return text.indexOf(PROSE) !== -1 && !leaked(text);
+};
 
 console.log('--- unbalanced parentheses must not swallow the story ---');
 check('balanced record (control)',
@@ -83,10 +98,38 @@ check('stray ( in the prose before the record',
     cco: '(CCO|K|S|%E%|Nothing in this exchange changed established continuity.)' },
   function (text) { return text.indexOf('finally looks up at you') !== -1; }, shown);
 
+console.log('\n--- an UNFINISHED MULTILINE record must go entirely ---');
+check('unbalanced ( with the tail on the next line',
+  { modelOutput: PROSE, cco: '(CCO|S|S|%E%|situation (here\nPROTOCOL TAIL)' },
+  keepsProse, shown);
+
+check('no closing paren anywhere',
+  { modelOutput: PROSE, cco: '(CCO|S|S|%E%|situation here\nPROTOCOL TAIL' },
+  keepsProse, shown);
+
+check('three-line unfinished record',
+  { modelOutput: PROSE, cco: '(CCO|S|S|%E%|situation (here\nSECOND LINE\nPROTOCOL TAIL)' },
+  function (text) { return keepsProse(text) && text.indexOf('SECOND LINE') === -1; }, shown);
+
 console.log('\n--- an echoed control tag must not truncate the story ---');
 check('unmatched <SYSTEM> echoed mid-reply',
   { modelOutput: '<SYSTEM> ' + PROSE,
     cco: '(CCO|K|S|%E%|Nothing in this exchange changed established continuity.)' },
+  keepsProse, shown);
+
+check('unmatched <SYSTEM> wrapping one instruction line',
+  { modelOutput: '<SYSTEM>\nA Character Continuity operation is mandatory this response.\n' + PROSE,
+    cco: '' },
+  keepsProse, shown);
+
+check('unmatched <SYSTEM> wrapping the whole front-memory block',
+  { modelOutput: ['<SYSTEM>',
+    'A Character Continuity operation is mandatory this response.',
+    'Follow the final CC CURRENT ASSESSMENT/OPERATION block in Context.',
+    'Output exactly one completed CCO record as the first nonblank line, then story prose.',
+    'If the Context block offers K and no change is supported, use K.',
+    'Do not omit or refuse the record.',
+    PROSE].join('\n'), cco: '' },
   keepsProse, shown);
 
 console.log('\n--- formatting must survive an untouched turn ---');

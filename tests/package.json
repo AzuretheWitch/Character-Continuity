@@ -4,11 +4,11 @@
   "private": true,
   "description": "Character Continuity — an AI Dungeon scripting library, with an execution harness for its test suite.",
   "scripts": {
-    "test": "node tests/verify.js",
-    "test:smoke": "node tests/run-scenario.js tests/scenarios/smoke.json",
-    "test:cco": "node tests/run-scenario.js tests/scenarios/cco.json",
-    "bench": "node tests/bench.js",
-    "syntax": "node --check Library"
+    "test": "node verify.js",
+    "test:smoke": "node run-scenario.js scenarios/smoke.json",
+    "test:cco": "node run-scenario.js scenarios/cco.json",
+    "bench": "node bench.js",
+    "syntax": "node --check ../Library"
   },
   "engines": {
     "node": ">=18"

@@ -203,6 +203,14 @@ applyCardEdits(scenario.cards);
     return m;
   });
   turnReport.evidenceIds = evidenceIds;
+
+  // How the script classified this turn. "retry" means it believes the player
+  // re-rolled the previous action rather than taking a new one, which is the
+  // misclassification an undo used to cause.
+  const ccState = sb.sandbox.state && sb.sandbox.state.characterContinuityStableV1;
+  turnReport.planKind = (ccState && ccState.currentPlan && ccState.currentPlan.kind) || '';
+  turnReport.lastCompletedActionCount = ccState ? ccState.lastCompletedActionCount : null;
+  turnReport.actionCount = actionCount;
   turnReport.assessmentOffered = /CC CURRENT ASSESSMENT/.test(ctxText);
 
   // ---- 3. output ----------------------------------------------------------

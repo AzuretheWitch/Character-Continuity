@@ -30,7 +30,13 @@ const PLAYER_CARDS = [
   { title: "Tomas's Inner", keys: 'Tomas, inner', type: 'character',
     entry: 'Tomas keeps his own counsel and answers to no script.' },
   { title: 'The Old Bridge', keys: 'bridge, crossing', type: 'location',
-    entry: 'A stone span over the river, half collapsed.' }
+    entry: 'A stone span over the river, half collapsed.' },
+  // The card TYPE is free text a player can set to anything, including CC's own
+  // "Continuity". It must not count as proof of ownership.
+  { title: "Elena's Views", keys: 'Elena, views, opinions', type: 'Continuity',
+    entry: 'Elena keeps a ledger of who owes her what. Authored by the player.' },
+  { title: "Rook's Relationships", keys: 'Rook, ties', type: 'continuity',
+    entry: 'Rook answers to the harbourmaster and to nobody else.' }
 ];
 
 function run() {
