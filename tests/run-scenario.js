@@ -145,6 +145,17 @@ applyCardEdits(scenario.cards);
   const n = i + 1;
   applyCardEdits(turn.cards);
 
+  // `undo: N` simulates the player pressing undo N times before this turn.
+  // AID fires no hook for it: history shrinks and the action count drops, and the
+  // script has to notice on its own the next time it runs.
+  if (turn.undo) {
+    const steps = Math.max(0, Math.floor(Number(turn.undo)));
+    actionCount = Math.max(0, actionCount - steps);
+    sb.sandbox.history.splice(Math.max(0, sb.sandbox.history.length - steps * 2));
+    out('  (player undid ' + steps + ' action' + (steps === 1 ? '' : 's')
+      + '; action count now ' + actionCount + ')');
+  }
+
   sb.sandbox.info.actionCount = actionCount;
   sb.context.info = sb.sandbox.info;
 

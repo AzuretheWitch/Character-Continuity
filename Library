@@ -3295,6 +3295,16 @@ function characterContinuityRun(hook, incomingText) {
     return RELATIONSHIP_FIELDS.find(field => keyOf(field) === keyOf(value)) || "";
   }
 
+  // A use signature must survive JSON.parse or the exactly-once guard it backs is
+  // dead. Cap generously -- the parts are individually bounded, so this only rejects
+  // a genuinely pathological payload -- and return "" rather than a truncated string.
+  const MAX_USE_SIGNATURE_CHARS = 2000;
+
+  function boundedUseSignature(value) {
+    const source = textOf(value);
+    return source.length > MAX_USE_SIGNATURE_CHARS ? "" : source;
+  }
+
   function canonicalRelationshipUseSignature(ownerKey, targetKey, sourceId, sourceIdentity, field) {
     const canonicalField = canonicalRelationshipFieldName(field);
     const canonicalSourceId = provenanceId(sourceId);
@@ -3303,14 +3313,19 @@ function characterContinuityRun(hook, incomingText) {
     const normalizedIdentity = line(sourceIdentity, 500);
     if (!normalizedOwner || !normalizedTarget || !/^[SX]\d+$/.test(canonicalSourceId)
       || !normalizedIdentity || !canonicalField) return "";
-    return line(JSON.stringify([
+    // Never truncate the serialized form: the inverse reads it with JSON.parse, and
+    // normalizedIdentity alone may be 500 characters before JSON escaping, so a
+    // 500-char cap routinely cut the array mid-string and produced a signature that
+    // could never be parsed back -- deadlocking the exactly-once guard it exists to
+    // provide. Refuse outright past a generous bound instead of emitting a corrupt one.
+    return boundedUseSignature(JSON.stringify([
       "relationship",
       normalizedOwner,
       normalizedTarget,
       canonicalSourceId,
       normalizedIdentity,
       canonicalField
-    ]), 500);
+    ]));
   }
 
   function parseRelationshipUseSignature(value) {
@@ -3360,7 +3375,7 @@ function characterContinuityRun(hook, incomingText) {
     const canonicalMode = canonicalViewOperationMode(operationMode);
     if (!normalizedOwner || !normalizedTarget || !/^[RX]\d+$/.test(canonicalSourceId)
       || !normalizedIdentity || !canonicalDestination) return "";
-    return line(JSON.stringify([
+    return boundedUseSignature(JSON.stringify([
       "view",
       normalizedOwner,
       normalizedTarget,
@@ -3368,7 +3383,7 @@ function characterContinuityRun(hook, incomingText) {
       normalizedIdentity,
       canonicalDestination,
       canonicalMode
-    ]), 500);
+    ]));
   }
 
   function parseViewUseSignature(value) {
@@ -10143,6 +10158,22 @@ function characterContinuityRun(hook, incomingText) {
 
   function beginContinueIfNeeded(contextValue) {
     const observedActionCount = platformActionCount();
+    // AI Dungeon fires no hook on undo, so the script only learns about one when the
+    // platform's action count comes back LOWER than the high-water mark that
+    // markActionCompleted maintains. Without this, an N-action undo left the count N
+    // below the mark, clearlyNewAction stayed false for N turns, and every one of
+    // them was misread as a retry of an action the player had already erased --
+    // replaying a stale snapshot and going inert. Resync instead.
+    if (observedActionCount !== null && observedActionCount < CC.lastCompletedActionCount - 1) {
+      const undone = CC.lastCompletedActionCount - observedActionCount;
+      CC.lastCompletedActionCount = observedActionCount;
+      CC.preGenerationSnapshot = null;
+      CC.lastVisibleOutputAnchor = "";
+      CC.currentPlan = null;
+      cancelPendingOperationRetry(null);
+      CC.last.warning = "Detected " + undone + " undone action"
+        + (undone === 1 ? "" : "s") + "; continuity resynchronised to the current action.";
+    }
     let discardedPlan = CC.currentPlan && typeof CC.currentPlan === "object" ? clone(CC.currentPlan) : null;
     if (CC.currentPlan && !CC.currentPlan.completed) {
       const currentActionCount = Number.isFinite(Number(CC.currentPlan.actionCount))
