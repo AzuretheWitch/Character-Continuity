@@ -132,6 +132,50 @@ check('unmatched <SYSTEM> wrapping the whole front-memory block',
     PROSE].join('\n'), cco: '' },
   keepsProse, shown);
 
+// The two failure modes have to be tested TOGETHER, not just separately. Punctuation
+// alone cannot mark where a malformed record ends: the record's own continuation can
+// read as a sentence, and the story after one can be cut off mid-word.
+console.log('\n--- malformed control AND prose, in combination ---');
+
+check('punctuated continuation belongs to the record',
+  { modelOutput: "She's really here.\nMira sets down the cup...",
+    cco: '(CCO|S|S|%E%|reconnect|Azure returns (unexpectedly' },
+  function (text) {
+    return text.indexOf('Mira sets down the cup') !== -1
+      && text.indexOf("She's really here.") === -1 && !leaked(text);
+  },
+  function (text) {
+    return shown(text) + (text.indexOf("She's really here.") !== -1
+      ? '   <-- record continuation left visible' : '');
+  });
+
+check('story truncated mid-word after a malformed record',
+  { modelOutput: 'Mira sets down the cup and then she',
+    cco: '(CCO|S|S|%E%|reconnect|Azure returns (unexpectedly' },
+  function (text) { return text.indexOf('Mira sets down the cup and then she') !== -1; },
+  function (text) {
+    return shown(text) + (text.trim() ? '' : '   <-- STORY DESTROYED');
+  });
+
+check('story truncated mid-word after an unmatched <SYSTEM>',
+  { modelOutput: '<SYSTEM>\nA Character Continuity operation is mandatory this response.\n'
+      + 'Mira sets down the cup and then she', cco: '' },
+  function (text) {
+    return text.indexOf('Mira sets down the cup and then she') !== -1 && !leaked(text);
+  },
+  function (text) {
+    return shown(text) + (text.trim() ? '' : '   <-- STORY DESTROYED');
+  });
+
+check('a multi-paragraph reply is never eaten past the record',
+  { modelOutput: 'Line one of the story.\nLine two of the story.\nLine three of the story.',
+    cco: '' },
+  function (text) {
+    return ['Line one', 'Line two', 'Line three'].every(function (part) {
+      return text.indexOf(part) !== -1;
+    });
+  }, shown);
+
 console.log('\n--- formatting must survive an untouched turn ---');
 check('indented prose keeps its indentation',
   { modelOutput: 'She reads it aloud:\n\n    Come home when the river is low.\n    I will wait.',

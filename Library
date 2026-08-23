@@ -54,6 +54,14 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   MAX_OPERATION_DRAIN_RECORDS: 160,
   OPERATION_DRAIN_CAP: 12,
   MAX_OPERATION_TASK_TOKENS: 1200,
+  // Model-facing request limits, deliberately below the MAX_* limits enforced on
+  // the reply. The gap is headroom: the model is asked for less than will fit, so
+  // ordinary overshoot still lands inside the stored limit and is kept verbatim
+  // rather than compacted. Documented in CONFIGURATION.md as "requested from the
+  // model" against "stored ... after safe word-boundary compaction".
+  MODEL_STATE_VALUE_CHARS: 100,
+  MODEL_OPERATION_EXPLANATION_CHARS: 150,
+  MODEL_RELATIONSHIP_EXPLANATION_CHARS: 90,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   MAX_OPERATION_EXPLANATION_CHARS: 180,
@@ -13378,7 +13386,7 @@ function characterContinuityRun(hook, incomingText) {
         ...stateContinuityRules,
         frozenConfirmation
           ? "KEEP is fixed. Replace Thought with concise direct first-person inner speech consistent with the scheduled evidence."
-          : "Replace Situation with a character-voiced clause of at most 100 characters and Thought with direct first-person inner speech. Keep both consistent with the scheduled evidence; natural paraphrase is allowed.",
+          : "Replace Situation with a character-voiced clause of at most " + settings.MODEL_STATE_VALUE_CHARS + " characters and Thought with direct first-person inner speech. Keep both consistent with the scheduled evidence; natural paraphrase is allowed.",
         ...(selectedCandidate && selectedCandidate.pendingRetry === true
           ? ["This is the one carried retry of the earlier frozen evidence; the completed record remains unchanged."]
           : []),
@@ -13398,7 +13406,7 @@ function characterContinuityRun(hook, incomingText) {
         evidenceChoice,
         evidenceAuthority,
         "Alias, Transition, and Use are fixed. Replace Explanation with one short clause of at most "
-          + settings.MAX_OPERATION_EXPLANATION_CHARS
+          + settings.MODEL_OPERATION_EXPLANATION_CHARS
           + " characters describing why the scheduled transition applies; natural paraphrase is allowed.",
         ...commonEnding
       ];
@@ -13418,7 +13426,7 @@ function characterContinuityRun(hook, incomingText) {
         evidenceAuthority,
         "Target, field, " + (direct ? "direct" : "accumulated") + " event class, and destination "
           + destinationField + " are fixed. Replace Explanation with one short clause of at most "
-          + settings.MAX_RELATIONSHIP_EXPLANATION_CHARS
+          + settings.MODEL_RELATIONSHIP_EXPLANATION_CHARS
           + " characters describing the scheduled relationship movement; natural paraphrase is allowed.",
         "Frozen " + pace.name + " pace: " + (direct ? "D " + pace.direct : "A " + pace.accumulated)
           + " per event, maximum " + pace.maxStages + " stage" + (pace.maxStages === 1 ? "" : "s") + ".",
@@ -13440,7 +13448,7 @@ function characterContinuityRun(hook, incomingText) {
         evidenceAuthority,
         "Target, destination " + destinationField + ", and mode " + modeField
           + " are fixed. Replace Explanation with one short clause of at most "
-          + settings.MAX_OPERATION_EXPLANATION_CHARS
+          + settings.MODEL_OPERATION_EXPLANATION_CHARS
           + " characters describing the scheduled View movement; natural paraphrase is allowed.",
         ...commonEnding
       ];
@@ -13460,7 +13468,7 @@ function characterContinuityRun(hook, incomingText) {
         "The first six record fields are complete supplied data: CCO|T|" + target.code + "|"
           + evidenceField + "|" + id + "|" + mode
           + ". Fill the seventh field, Explanation, with one complete clause of at most "
-          + settings.MAX_OPERATION_EXPLANATION_CHARS
+          + settings.MODEL_OPERATION_EXPLANATION_CHARS
           + " characters describing the scheduled Turning Point movement; natural paraphrase is allowed.",
         mode === "Support"
           ? "Support records a completed, durable step toward the comparison stage while progress remains below Achieved."
@@ -14815,14 +14823,32 @@ function characterContinuityRun(hook, incomingText) {
       if (!complete) {
         const lineEnd = source.indexOf("\n", start);
         if (lineEnd !== -1 && source.slice(lineEnd + 1).trim()) {
+          // Punctuation alone cannot mark the end of a malformed record: a record's
+          // own continuation can read as a sentence, and the story after one can be
+          // cut off mid-word. Use the record's field structure instead -- a K record
+          // carries 5 fields, the rest 7 -- and enforce one absolute rule: never
+          // consume the last remaining content. Leaving a fragment of a broken
+          // record visible is bad; deleting the player's turn is worse.
+          const openerLine = source.slice(start, lineEnd);
+          const kindMatch = /^\(\s*(?:CCO\s*\|\s*)?([SNRVTK])\b/i.exec(openerLine);
+          const expectedFields = kindMatch && kindMatch[1].toUpperCase() === "K" ? 5 : 7;
           let cursor = lineEnd;
+          let prosePulled = 0;
           for (let guard = 0; guard < 16; guard += 1) {
             const nextBreak = source.indexOf("\n", cursor + 1);
             const nextLine = source.slice(cursor + 1, nextBreak === -1 ? source.length : nextBreak);
             if (!nextLine.trim()) break;
-            if (hasTerminallyPunctuatedStory(nextLine)) break;
-            cursor = nextBreak === -1 ? source.length : nextBreak;
-            if (nextBreak === -1) break;
+            // Anything after this line. If there is none, this line is the last
+            // content in the reply and is kept, whatever it looks like.
+            if (nextBreak === -1 || !source.slice(nextBreak + 1).trim()) break;
+            if (hasTerminallyPunctuatedStory(nextLine)) {
+              // Reads as prose. Only pull it in if the record is still missing
+              // fields, and only once, so a multi-paragraph reply stays intact.
+              const fieldsSoFar = source.slice(start, cursor).split("|").length;
+              if (fieldsSoFar >= expectedFields || prosePulled >= 1) break;
+              prosePulled += 1;
+            }
+            cursor = nextBreak;
           }
           end = cursor;
           bounded = true;
@@ -15110,28 +15136,24 @@ function characterContinuityRun(hook, incomingText) {
     // end-of-text there deletes the rest of the story. Only truncate when nothing
     // after the tag reads as finished prose (the genuine cut-off case); otherwise
     // drop the tag alone and keep the reply.
+    // Remove the tag and the instructions it was wrapping, never anything else.
+    // Deciding on terminal punctuation was wrong in both directions: it left CC's
+    // own instructions visible when they read as sentences, and it deleted the
+    // player's story when the story was cut off mid-word. The wrapped lines are
+    // CC's own text, so matching them exactly is both sufficient and safe -- story
+    // prose cannot match. Whatever is left afterwards is the player's, and is kept.
     for (let guard = 0; guard < 8; guard += 1) {
       const unmatched = new RegExp(openTag, "i").exec(source);
       if (!unmatched) break;
-      const after = source.slice(unmatched.index + unmatched[0].length);
-      if (hasTerminallyPunctuatedStory(after)) {
-        removed.push(line(unmatched[0], 220));
-        // Dropping the tag alone leaves the instructions it was wrapping visible.
-        // Those lines are CC's own text, so an exact match against what CC emits is
-        // safe: story prose cannot match, and only the wrapped block is removed.
-        const rest = after.split("\n");
-        let head = 0;
-        if (rest.length && !rest[0].trim()) head = 1;
-        while (head < rest.length && rest[head].trim() && ccAuthoredSystemLine(rest[head])) {
-          removed.push(line(rest[head], 220));
-          head += 1;
-        }
-        source = source.slice(0, unmatched.index) + rest.slice(head).join("\n");
-      } else {
-        removed.push(line(source.slice(unmatched.index), 220));
-        source = source.slice(0, unmatched.index);
-        break;
+      removed.push(line(unmatched[0], 220));
+      const rest = source.slice(unmatched.index + unmatched[0].length).split("\n");
+      let head = 0;
+      if (rest.length && !rest[0].trim()) head = 1;
+      while (head < rest.length && rest[head].trim() && ccAuthoredSystemLine(rest[head])) {
+        removed.push(line(rest[head], 220));
+        head += 1;
       }
+      source = source.slice(0, unmatched.index) + rest.slice(head).join("\n");
     }
     source = source.replace(new RegExp(closeTag, "gi"), tag => {
       removed.push(line(tag, 220));
