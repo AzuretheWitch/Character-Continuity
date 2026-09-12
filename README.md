@@ -1,18 +1,26 @@
-# Character Continuity Stable
+# Character Continuity v3.0
 
 Character Continuity, or **CC**, is an AI Dungeon companion script for keeping predetermined NPCs recognizable, emotionally continuous, and capable of gradual change.
 
-CC gives each registered NPC a stable creator-authored foundation, a temporary private State, directional Relationships and Views, usable Names, persistent Experiences, and optional creator-authored Turning Points. It supplies only scene-relevant continuity to the model and validates every automatic update before saving it.
+CC gives each registered NPC a stable creator- or player-authored foundation, a temporary private State, directional Relationships and Views, usable Names, persistent Experiences, and optional creator-authored Turning Points. It supplies only scene-relevant continuity to the model and validates every automatic update before saving it.
 
-The current package is **v2.02**.
+The current package is **v3.0**.
 
-The maintained release is **cache-compatible only**. Install the four canonical files named `Library`, `Input`, `Context`, and `Output`; the Context connector must begin with `// @cache-compatible` and use the `contextAppend` hook. Legacy non-cache Context installations are no longer supported.
+Install the four canonical files named `Library`, `Input`, `Context`, and `Output`. The included Context connector is the recommended cache-compatible version: it begins with `// @cache-compatible` and uses the `contextAppend` hook. A slower replaceable-Context fallback is also supported and documented in the installation guide.
+
+CC places its current instructions in the Context hook's returned text. It does not read or write Plot Essentials, Author's Note, or Front Memory.
+
+## Quick template setup
+
+Add the script to your Scenario, begin an Adventure, add active NPC names to the roster, and take one action. CC creates six blank character templates for every name added.
+
+The creator or player can fill the templates themselves after that, using each card's Notes as instructions. When all six are complete, change `Ready: No` to `Ready: Yes` in the NPC's Outer card and take another action. CC validates the cards and activates the character. If anything still needs attention, `CC — Status` identifies the first field to correct.
 
 ## Documentation
 
 - [Installation](INSTALLATION.md) — install the Library code, add the correct Input/Context/Output connectors, create starting cards, and verify the script.
 - [Configuration](CONFIGURATION.md) — every `CC — Settings` option, relationship pace presets, and fixed safety limits.
-- [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md) — recommended workflows, complete six-card onboarding instructions, card formats, and troubleshooting.
+- [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md) — recommended workflows, complete six-card Template Builder instructions, card formats, and troubleshooting.
 
 ## What CC tracks
 
@@ -32,8 +40,8 @@ CC separates stable character foundations from continuity that should change dur
 | `Name's Turning Points` | Creator definition, then CC progress | Tracks optional durable change through a stable ID, Direction, Progress, active stage card, private stage key, and optional definitive Breakthrough condition. |
 | `Stage-card prefix — Stage` | Creator | Defines portrayal for one of the five Turning Point stages: Dormant, Emerging, Near Breakthrough, Achieved, or Integrating. CC preserves its creator-assigned Story Card type. |
 | `CC — Settings` | Creator or player | Controls CC's editable runtime settings. |
-| `CC — Active NPCs` | Creator or player | Holds the five stable `N1`–`N5` active-roster slots and starts onboarding. |
-| `CC — Status` | CC | Separates the current hook/pass from the last input-turn action operation, and summarizes the roster, State, warnings, and version. |
+| `CC — Active NPCs` | Creator or player | Holds the five stable `N1`–`N5` active-roster slots and asks Template Builder to create a new NPC's six cards. |
+| `CC — Status` | CC | Separates the current hook/pass from the last input-turn action operation, and summarizes the roster, template validation, State, warnings, and version. |
 | `CC — Debug` | CC | Provides detailed diagnostics when `Debug: true`. |
 
 `Outer` and `Inner` remain the NPC's creator-authored foundation. CC may shorten an overlong copy when building model context, but story events do not rewrite those cards.
@@ -115,7 +123,7 @@ This prevents a passing moment from becoming permanent memory while allowing gen
 
 ## Optional Turning Points
 
-Turning Points let a creator define durable stages of an NPC's change without asking CC to invent the arc. They are optional and are not part of the six-card onboarding pack.
+Turning Points let a creator define durable stages of an NPC's change without asking CC to invent the arc. They are optional and are not part of the six-card template pack.
 
 For each Turning Point, the creator writes one record in `Name's Turning Points` and five matching Story Cards:
 
@@ -125,7 +133,7 @@ For each Turning Point, the creator writes one record in `Name's Turning Points`
 - **Achieved:** progress 30–39
 - **Integrating:** progress 40–49
 
-The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in v2.02.
+The stage cards use the record's `Stage cards` prefix followed by `— Dormant`, `— Emerging`, `— Near Breakthrough`, `— Achieved`, or `— Integrating`. The router may end with an optional, creator-owned `Breakthrough:` field defining the completed event required to establish Achieved; this is the recommended location in the current release.
 
 The creator owns the Turning Point's meaning, Direction, stable ID, optional Breakthrough condition, and all five stage-card entries. CC updates only `Progress`, `Active card`, and `Stage trigger`. Keep the router Story Card's own trigger/key blank so the platform does not natively expose its private Entry; the managed `Stage trigger:` line inside that Entry is a separate data field. CC validates the exact private key on the current stage card, then directly supplies that card's Entry in a tagged model-facing block; it does not expose the whole router or rely on native trigger chaining. The assessment task lists currently available Turning Point IDs, their matching portrayal handles, movements, relevant comparison-stage text, and any definitive condition so the model can choose a grounded update. A matching `TP-…` portrayal handle in a returned record is normalized to the corresponding stable ID.
 

@@ -2,9 +2,9 @@
 
 [Introduction](README.md) · [Installation](INSTALLATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-The maintained cache-compatible build of Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
+Character Continuity creates `CC — Settings` automatically. Edit the value after a setting's colon, save the card, and continue once for the change to take effect.
 
-This reference describes **v2.02**.
+This reference describes **v3.0**. The included optimized Context connector is recommended; the same settings also apply when using the slower replaceable-Context fallback.
 
 Keep every setting on its own line. `true` and `false` are recommended for Boolean options, although common forms such as `yes/no` and `on/off` are also recognized.
 
@@ -85,7 +85,7 @@ When enabled, qualifying interaction counts can promote Side NPCs to Main, and p
 
 ## Fixed safety limits
 
-These limits in the current cache-compatible build are not editable through `CC — Settings`:
+These v3.0 limits are not editable through `CC — Settings`:
 
 | Limit | Value |
 | --- | ---: |

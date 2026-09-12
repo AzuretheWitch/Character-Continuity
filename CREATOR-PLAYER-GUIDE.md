@@ -4,13 +4,13 @@
 
 Character Continuity is designed to run during normal play without chat commands. Creators define stable foundations and optional starting continuity; players act naturally in the story; the model interprets bounded fresh evidence and supplies any narrow continuity change, while CC validates its structure and current managed-card mechanics before saving it.
 
-The current package is **v2.02**. The maintained release is cache-compatible only: install the canonical files named `Library`, `Input`, `Context`, and `Output`. The Context connector must begin with `// @cache-compatible` and use `CharacterContinuity("contextAppend", text)`. Legacy non-cache Context installations are no longer supported.
+The current package is **v3.0**. Install the canonical files named `Library`, `Input`, `Context`, and `Output`. The included optimized Context connector is recommended: it begins with `// @cache-compatible` and uses `CharacterContinuity("contextAppend", text)`. A slower replaceable `context` fallback is also supported. Neither mode reads or writes Plot Essentials, Author's Note, or Front Memory.
 
 ## Before you begin
 
 Two expectations prevent most confusion:
 
-1. **An onboarding pack is a set of forms, not AI-completed character creation.** CC creates the six cards and their field titles. A creator or player completes Outer and Inner, may add optional baselines, and explicitly approves activation.
+1. **A Template Builder pack is a set of forms, not AI-completed character creation.** CC creates all six cards with field placeholders in Entry and card-specific instructions in Notes. A creator or player completes Outer and Inner, may add optional baselines, and explicitly approves activation.
 2. **A State card does not need to fill immediately.** CC creates it only after activation and fills it only when an eligible turn produces a valid, evidence-grounded State operation.
 
 Do not manually write State or raw `(CCO|...)` control records.
@@ -23,7 +23,7 @@ Do not manually write State or raw `(CCO|...)` control records.
 | Set the Player identity | Often, with a Scenario default or placeholder | Yes, when Adventure editing is available |
 | Change CC settings | Yes | Yes |
 | Add or reconnect an NPC through the roster | Yes | Yes |
-| Complete an onboarding pack | Yes | Yes |
+| Complete a six-card template pack | Yes | Yes |
 | Deliberately revise Outer or Inner | Yes | Yes, for their own Adventure |
 | Author an optional Turning Point tracker and its five stage cards | Yes | Yes, for their own Adventure |
 | Manually write State or hidden CCO records | No | No |
@@ -36,20 +36,20 @@ Outer and Inner are the creator-owned foundation. State is managed by CC. Names,
 For a Scenario intended for other players:
 
 1. Follow the complete [installation guide](INSTALLATION.md), including all three exact connectors.
-2. Add `Player's Identity`, using a suitable default or placeholder.
+2. Decide whether to pre-author `Player's Identity` with a suitable default or Scenario placeholder. If it is absent, CC creates it and uses recognizable stored setup answers when available.
 3. Decide how each starting NPC will be created:
    - directly author completed Outer and Inner cards in the Scenario, or
-   - use onboarding in a private test Adventure.
+   - use Template Builder in a private test Adventure.
 4. Add any desired starting Names, Views, Relationships, or Experiences.
 5. Optionally author each NPC's Turning Point tracker and five matching stage Story Cards. Turning Points are separate from onboarding.
 6. Start a fresh test Adventure.
 7. Confirm the roster, context budget, Turning Point mode, and version in `CC — Status`.
 8. Test at least one supported State update.
 9. Test each configured Turning Point's active-stage injection and, when practical, one supported progress update.
-10. Test onboarding if players will be allowed to add NPCs.
+10. Test Template Builder if players will be allowed to add NPCs.
 11. Confirm that no raw `(CCO|...)` record appears in visible story history.
 
-Changes made inside a test Adventure do not rewrite the parent Scenario. If you use onboarding to design an NPC who should exist for every future player, copy or export that NPC's finalized six setup cards back into the Scenario before publishing. Copy any optional Turning Point tracker and stage cards separately; CC does not add them to the onboarding pack.
+Changes made inside a test Adventure do not rewrite the parent Scenario. If you use Template Builder to design an NPC who should exist for every future player, copy or export that NPC's finalized six setup cards back into the Scenario before publishing. Do not include the generated `CC — Status` card. Copy any optional Turning Point tracker and stage cards separately; CC does not add them to the six-card template pack.
 
 ### Directly authored starting NPCs
 
@@ -70,9 +70,9 @@ During ordinary play:
 
 The Player character remains player-owned. CC does not establish the Player's private thoughts, feelings, consent, commitments, memories, boundaries, or relationship decisions. `Player's Names` can record an alias the Player explicitly supplies or accepts; repeated NPC usage alone cannot establish one.
 
-## Confirmed onboarding
+## Template Builder onboarding
 
-Confirmed onboarding prevents an unfamiliar roster name from becoming active before its creator-owned foundation is ready.
+Template Builder lets a creator or player add an unfamiliar roster name, receive the six required forms, fill them manually, and activate the NPC only after the whole foundation is ready.
 
 ### 1. Request the NPC
 
@@ -96,7 +96,7 @@ Rules:
 - Keep each name in only one slot.
 - Do not renumber other NPCs to close a gap.
 
-Save the card and continue once.
+Save the card and take one action. CC creates all six templates during that script hook.
 
 `N1` through `N5` are stable active-routing slots, not permanent character IDs. A gap is valid and should remain a gap until another NPC is deliberately assigned to it.
 
@@ -106,14 +106,16 @@ For a genuinely new name, CC creates:
 
 | Card | Required content before activation | What to do |
 | --- | --- | --- |
-| `Mira Vale's Outer` | Every listed character field | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing. |
-| `Mira Vale's Inner` | Every listed character field | Complete it. Keep `Onboarding: Pending` while editing. |
+| `Mira Vale's Outer` | Every required `[replace]` field | Complete it. Keep `Onboarding: Pending` and `Ready: No` while editing. |
+| `Mira Vale's Inner` | Every required `[replace]` field | Complete it. Keep `Onboarding: Pending` while editing. |
 | `Mira Vale's Names` | No alias records required | Add starting aliases, or leave the blank five-field Alias record untouched. |
 | `Mira Vale's Views` | No View records required | Add baseline Views, or leave all five category headings empty. |
 | `Mira Vale's Relationships` | No Relationship records required | Add baselines, or leave the blank six-field record untouched. |
 | `Mira Vale's Experiences` | No Experience records required | Add prior Experiences, or leave the blank About/Experience pair untouched. |
 
-All six cards are validated together. Outer and Inner must be complete. The other four may contain no baseline records, but their wrappers, headings, and blank field titles must remain intact until activation.
+All six cards are validated together. Outer and Inner must be complete. The other four may contain no baseline records; leave an optional blank record untouched or delete the whole record block. Keep the card wrapper, owner header, and required category headings.
+
+Each generated card has a Notes field explaining how to fill that card. Notes are instructions only, are not supplied as character data, and remain attached after activation.
 
 CC does **not** create `Mira Vale's State` while onboarding is pending.
 
@@ -130,11 +132,14 @@ Generated form:
 Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
-Name, age, gender, pronouns:
-Race/Species:
-Physical attributes:
-Clothing style:
-Starting status:
+Canonical name: Mira Vale
+Age: [replace]
+Gender: [replace]
+Pronouns: [replace]
+Race/Species: [replace]
+Physical attributes: [replace]
+Clothing style: [replace]
+Starting status: [Main or Side]
 }
 ```
 
@@ -145,7 +150,10 @@ Completed example:
 Mira Vale's Outer:
 Onboarding: Pending
 Ready: No
-Name, age, gender, pronouns: Mira Vale, 29, woman, she/her
+Canonical name: Mira Vale
+Age: 29
+Gender: woman
+Pronouns: she/her
 Race/Species: human
 Physical attributes: tall, wiry, brown skin, cropped black curls, amber eyes
 Clothing style: weathered travel coat, fitted trousers, and practical boots
@@ -155,8 +163,8 @@ Starting status: Side
 
 Requirements:
 
-- The first identity value must exactly match the canonical roster name.
-- The identity line needs name, age, gender, and pronouns.
+- `Canonical name` is filled from the roster and must remain exactly the same.
+- `Age`, `Gender`, and `Pronouns` must each be filled.
 - `Race/Species`, `Physical attributes`, and `Clothing style` must be filled.
 - `Starting status` must be `Main` or `Side`.
 - Outer must contain exactly one `Ready` line.
@@ -170,12 +178,12 @@ Generated form:
 {
 Mira Vale's Inner:
 Onboarding: Pending
-Personality:
-Mannerisms:
-Wants:
-Fears:
-Mental wounds:
-Principles:
+Personality: [replace]
+Mannerisms: [replace]
+Wants: [replace]
+Fears: [replace]
+Mental wounds: [replace]
+Principles: [replace]
 }
 ```
 
@@ -268,7 +276,7 @@ If there are no baseline Views, leave the five headings empty.
 
 ### 7. Optionally add Relationships
 
-One Relationship record contains exactly six fields:
+One Relationship record contains exactly six labeled fields:
 
 ```text
 {
@@ -288,13 +296,13 @@ Supported stage labels:
 
 | Field | Stages |
 | --- | --- |
-| Role | Emerging, Established |
+| Role | Emerging, Established, Former |
 | Trust | Severe distrust, Distrust, Guarded, Unproven, Cautious trust, Trust, Deep trust |
 | Closeness | Disconnected, Distant, Acquainted, Familiar, Close, Deeply close, Intimate |
 | Boundaries | Implied, Explicit, Reinforced |
 | Conflict | Clear, Friction, Strain, Open conflict, Rupture |
 
-You may provide a stage by itself or add a short explanation after `—`. During activation, CC converts a stage-only baseline to that stage's canonical midpoint score.
+You may provide a stage by itself or add a short explanation after `—`. During activation, CC converts a stage-only baseline to that stage's canonical midpoint score. `About` is required when using a record, but any individual relationship axis without a starting baseline may remain blank. Keep all six labeled lines in order.
 
 To add another Relationship, repeat the complete About, Role, Trust, Closeness, Boundaries, and Conflict group. If there are no baseline Relationships, leave the generated blank six-field group in place.
 
@@ -310,7 +318,7 @@ Experience: the Player gave her shelter without demanding anything in return
 }
 ```
 
-About and Experience must either both be filled or both remain blank. Describe a completed event rather than a personality trait. A stored Experience may contain up to 650 characters; CC supplies at most 320 characters from an individual Experience to the model and can safely split a longer imported field at word boundaries.
+About and Experience must either both be filled or both remain blank. The blank pair may also be deleted. Describe a completed event rather than a personality trait. A stored Experience may contain up to 650 characters; CC supplies at most 320 characters from an individual Experience to the model and can safely split a longer imported field at word boundaries.
 
 To add another Experience, repeat the About and Experience pair.
 
@@ -328,20 +336,20 @@ to:
 Ready: Yes
 ```
 
-Then continue once.
+Then take one action.
 
 CC validates all six cards as one transaction:
 
 - If every card is valid, CC removes the onboarding controls, activates the NPC in the same stable slot, and creates the managed State card.
 - If any card is invalid, the whole pack remains pending and no partial activation is committed.
 
-Read `CC — Status` for the first validation problem. If more detail is needed, set `Debug: true`, continue once, and inspect `CC — Debug`.
+Read `CC — Status` for the first validation problem. Status refreshes after a script hook, so take an action before checking it after any edit. If more detail is needed, set `Debug: true`, take one action, and inspect `CC — Debug`.
 
-After correcting an error, leave `Ready: Yes` in place and continue again.
+After correcting an error, leave `Ready: Yes` in place and take another action.
 
 ## Reconnecting or removing an NPC
 
-If a roster name already has completed Outer and Inner cards, entering its exact canonical name reconnects that existing identity instead of creating a new onboarding pack.
+If a roster name already has a completed valid foundation, entering its exact canonical name reconnects that existing identity instead of creating new templates.
 
 If the supplied name is an established alias for another NPC, CC rejects it and asks for the canonical identity.
 
@@ -358,7 +366,7 @@ Removing a roster name does not delete the NPC's continuity cards. Re-enter the 
 - Edit **Outer** or **Inner** only when deliberately revising the stable character foundation.
 - Edit **Player's Identity** when the Player character's name or pronouns need correction.
 - Edit **CC — Settings** for runtime behavior.
-- Edit **CC — Active NPCs** for onboarding, removal, or reconnection.
+- Edit **CC — Active NPCs** for template creation, removal, or reconnection.
 - In an optional **Turning Points** tracker, treat `Turning Point`, `ID`, `Direction`, `Stage cards`, and the optional final `Breakthrough` as creator-owned definition fields. Let CC manage `Progress`, `Active card`, and `Stage trigger` after setup.
 - Let CC manage **State**, **Names**, **Relationships**, **Views**, **Experiences**, and Turning Point progress fields during ordinary play.
 
@@ -366,7 +374,7 @@ If you intentionally edit a managed continuity card, preserve its exact wrapper,
 
 ## Turning Points
 
-Turning Points are optional creator-authored arcs for durable character change. They are separate from the six-card onboarding pack: CC neither creates nor fills a Turning Point tracker or its stage cards. Add them only after the NPC has a completed Outer and Inner foundation.
+Turning Points are optional creator-authored arcs for durable character change. They are separate from the six-card template pack: CC neither creates nor fills a Turning Point tracker or its stage cards. Add them only after the NPC has a completed Outer and Inner foundation.
 
 Each Turning Point needs:
 
@@ -454,7 +462,7 @@ __CC_TP_<CANONICAL_NPC_NAME>_<STABLE_ID>_<STAGE>__
 
 Convert each part to uppercase ASCII words separated by underscores. Punctuation and spaces become separators. For example, owner `Mira Vale`, ID `choosing_trust`, and stage `Near Breakthrough` produce `__CC_TP_MIRA_VALE_CHOOSING_TRUST_NEAR_BREAKTHROUGH__`.
 
-Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v2.02 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
+Use the corresponding private key as that Story Card's only trigger/key, appearing exactly once. Do not replace it with—or add—an ordinary scene trigger, which could let the platform independently activate an old or wrong stage. In v3.0 the private key is a deterministic identity and validation key: CC validates it, then directly supplies the current stage Entry through the Context script instead of injecting the key for native platform routing. Each stage card must have one nonempty Entry and stay at or below 1,000 characters. Its creator-assigned Story Card type is preserved; CC does not require either Lore or Continuity type.
 
 Write each `Entry` as a durable portrayal baseline, not a required action for the next response. Describe what is now established, what remains difficult, and how uneven expression or setbacks can appear without erasing the stage. For example:
 
@@ -635,7 +643,7 @@ Read `Current task`, `Last action task`, `Last action selection`, `Last action r
 
 The model chooses `T`, target code `S`, a unique subset of the supplied evidence IDs, one listed stable ID such as `chosen_not_kept`, and one movement currently listed for that ID. Those values must remain in their exact field positions. A matching current `TP-…` portrayal handle is also accepted and normalized to its stable ID. Character names, Turning Point display names, and stage labels such as `Achieved` remain descriptive context rather than movement codes. When several evidence IDs are supplied, an operation may choose one or more while preserving their supplied order; only `K` copies the complete supplied list.
 
-The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v2.02 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
+The model supplies `Explanation` as one complete clause using ordinary text without the reserved record characters `|`, `{`, `}`, `[`, `]`, `(`, or `)`. v3.0 safely compacts a longer complete Turning Point explanation to 180 characters at a word boundary.
 
 A record citing unavailable or reordered evidence is reported as `stale contract stripped`, adds no drain, and carries the current assessment once. A structurally broken current record is `malformed stripped`; a well-formed record that uses an unavailable target, field, card identity, movement, reused source, or unsafe write is `rejected`. In every case, CC strips the assessment material and preserves complete punctuated story prose.
 
@@ -652,16 +660,16 @@ A record citing unavailable or reordered evidence is reported as `stale contract
 
 One blank automatic response immediately after the Scenario opening is expected. Enter the Player's first real action.
 
-### An onboarding NPC stays pending
+### A template NPC stays pending
 
-- Remember that CC creates blank onboarding forms; it does not invent or fill the character foundation.
+- Remember that CC creates blank templates and explanatory Notes; it does not invent or fill the character foundation.
 - Keep exactly one `Onboarding: Pending` line in Outer and Inner.
 - Keep exactly one `Ready: Yes` line in Outer when attempting activation.
 - Fill every required Outer and Inner field.
-- Keep the optional blank-card structures and their field titles intact.
+- Leave an unused optional record completely blank or delete the whole record block.
 - Use canonical names in the roster and About fields.
 - Remove conflicting duplicate cards.
-- Read the onboarding diagnostic in `CC — Status`.
+- Take one action, then read the template diagnostic in `CC — Status`.
 
 ### An NPC is registered but not model-facing
 
@@ -670,7 +678,7 @@ CC activates only scene-relevant roster NPCs. Mention or interact with the NPC, 
 - the NPC is still present in `CC — Active NPCs`
 - `Maximum active NPCs` is high enough
 - Outer and Inner are complete
-- the NPC is not still onboarding
+- the NPC is not still pending in Template Builder
 
 ### A card has an internal-looking trigger
 

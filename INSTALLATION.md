@@ -2,9 +2,9 @@
 
 [Introduction](README.md) · [Configuration](CONFIGURATION.md) · [Creator and Player Guide](CREATOR-PLAYER-GUIDE.md)
 
-This guide installs the cache-compatible release of Character Continuity in an AI Dungeon Scenario. The current package is **v2.02**. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
+This guide installs Character Continuity **v3.0** in an AI Dungeon Scenario. For the cleanest first setup, use a new or otherwise clean Scenario and start a fresh Adventure after saving it.
 
-CC is maintained as **cache-compatible only**. Use the four canonical files named `Library`, `Input`, `Context`, and `Output`; do not substitute an older non-cache Context connector.
+Use the four canonical files named `Library`, `Input`, `Context`, and `Output`. The included cache-compatible Context connector is the recommended and faster installation. v3.0 also supports a slower replaceable-Context fallback for troubleshooting or platform compatibility.
 
 ## What you need
 
@@ -86,18 +86,37 @@ On an eligible focused turn, the newest appended context ends with `CC CURRENT A
 
 Optimized context may still display older assessment packets. The final current-response block is authoritative. If a cached record cites evidence outside the current supplied set or changes its supplied order, CC strips it as stale transport, preserves completed story prose, and carries the current assessment once. On a story-only or recovery turn, the newest block instead begins `CC CURRENT RESPONSE` and asks for ordinary story prose.
 
+### Slower replaceable-Context fallback
+
+If Optimized Context is unavailable or needs to be ruled out during troubleshooting, replace the complete Context tab with this version and remove the `// @cache-compatible` directive:
+
+```js
+const modifier = (text) => ({
+  text: CharacterContinuity("context", text)
+});
+
+modifier(text);
+```
+
+This fallback lets CC remove an older tagged CC suffix before adding the current one, but gives up Optimized Context's prompt-cache reuse and is expected to run more slowly. Neither Context mode reads or writes Plot Essentials, Author's Note, or Front Memory.
+
 Save all four script areas.
 
-## 4. Add the Player identity
+## 4. Set up the Player cards
 
-Create a Custom Story Card:
+During the first input/context cycle, CC ensures that `Player's Identity` and `Player's Names` exist. If AI Dungeon has stored common Scenario setup answers for the Player's name and pronouns, CC uses them. Otherwise it creates fill-in fields with instructions in Notes.
+
+You may also author `Player's Identity` in the Scenario before play:
 
 - **Name:** `Player's Identity`
 - **Entry:**
 
 ```text
+{
+Player's Identity:
 Name: Azure
 Pronouns: she/her
+}
 ```
 
 Replace the example values with the Player character's details.
@@ -114,9 +133,9 @@ Example:
 Pronouns: ze/zir/zir/zirs/zirself
 ```
 
-If the Player card is absent or unreadable, CC falls back to `the player` and `they/them`.
+For a published Scenario, AI Dungeon setup placeholders may be placed in the `Name` and `Pronouns` lines in Entry. Keep placeholder syntax out of the Notes field, because Notes are instructions rather than setup questions.
 
-CC creates `Player's Names` automatically. That card can record aliases the Player explicitly supplies or accepts; repeated NPC usage alone cannot establish a Player alias.
+`Player's Names` copies the resolved canonical name. Separately answered first-name and family-name questions can also seed Active, General aliases. Repeated NPC usage alone cannot establish a Player alias.
 
 ## 5. Choose how to add starting NPCs
 
@@ -176,11 +195,11 @@ The current build still reads legacy combined openings such as `{ Snow's Outer:`
 
 When no `CC — Active NPCs` card exists yet, CC seeds its roster from completed Outer cards, up to the five-slot limit.
 
-### Option B: use confirmed onboarding
+### Option B: use Template Builder
 
 Start with no cards for the new NPC. After the Adventure initializes, enter the NPC's canonical name in an empty `N#` line inside `CC — Active NPCs`.
 
-CC creates a six-card setup pack and keeps the NPC pending until the whole pack passes validation. See [Confirmed onboarding](CREATOR-PLAYER-GUIDE.md#confirmed-onboarding) for the complete walkthrough and card templates.
+Take one action. CC creates six templates with fill-in fields in Entry and card-specific instructions in Notes, then keeps the NPC pending until the whole pack passes validation. See [Template Builder onboarding](CREATOR-PLAYER-GUIDE.md#template-builder-onboarding) for the complete walkthrough.
 
 ## 6. Leave managed triggers alone
 
@@ -188,7 +207,7 @@ You do not need to create ordinary scene triggers for CC-managed cards. CC's scr
 
 After activation, CC may place an internal-looking value in a managed card's trigger or key field so the script can preserve that card's identity across hooks. Leave that value in place.
 
-Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v2.02 validates that key and directly supplies the current stage Entry through the Context script. Keeping ordinary triggers off every stage card also prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
+Turning Point stage cards are a special creator-authored case. Use the exact `__CC_TP_...__` private key required by the Turning Point guide as the stage card's only trigger/key; do not add an ordinary scene trigger. v3.0 validates that key and directly supplies the current stage Entry through the Context script. Keeping ordinary triggers off every stage card also prevents the platform from independently activating an old or wrong stage. The stage card's creator-assigned type is preserved.
 
 The separate `Name's Turning Points` router should have no card-level scene trigger/key. CC discovers it by its exact title and preserves its creator-assigned keys and type. Its managed `Stage trigger:` Entry line does not require the router itself to enter native context; leaving the router non-activating keeps the whole router out of ordinary native portrayal context. When movement is currently legal, the assessment can list a compact Turning Point ID, progress, movement, comparison-stage, and condition reference for the model.
 
@@ -212,10 +231,10 @@ Look for:
 `CC — Status` should end with the version declared near the top of the installed `Library` file. For the current package, that line is:
 
 ```text
-Version: v2.02
+Version: v3.0
 ```
 
-For later releases, verify that the Status value exactly matches the `VERSION` value in the installed Library rather than expecting the v2.02 text permanently.
+`CC — Status` refreshes after a script hook. Immediately after editing a card it may still describe the prior state, so take one action before checking it. The Status card is a generated diagnostic; do not import it into the parent Scenario with completed NPC cards.
 
 An initial State card may be empty. Mere scene participation does not seed State; it fills only after CC accepts a supported, evidence-grounded State change or confirmation.
 
@@ -254,10 +273,10 @@ Use the integration order recommended by the other script. Test the combined set
 
 - [ ] The complete current `Library` file is in the Library script tab.
 - [ ] Input calls and returns `CharacterContinuity("input", text)`.
-- [ ] Context begins with `// @cache-compatible` and calls and returns `CharacterContinuity("contextAppend", text)`.
+- [ ] Context uses the supplied optimized `contextAppend` connector, or the documented replaceable `context` fallback exactly.
 - [ ] Output calls and returns `CharacterContinuity("output", text)`.
 - [ ] Scripts are enabled in the Scenario and account Gameplay settings.
-- [ ] `Player's Identity` exists, or the generic fallback is acceptable.
+- [ ] `Player's Identity` is resolved from Scenario answers, manually authored, or ready to be filled from its generated template.
 - [ ] Every directly authored starting NPC has completed Outer and Inner cards.
 - [ ] No State cards were created manually.
 - [ ] A fresh Adventure was started after saving.
