@@ -1,5 +1,5 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v3.0",
+  VERSION: "v3.0.2",
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -70,12 +70,14 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   // model" against "stored ... after safe word-boundary compaction".
   MODEL_STATE_VALUE_CHARS: 100,
   MODEL_OPERATION_EXPLANATION_CHARS: 150,
+  // A writing target only: complete Relationship text is stored whenever its own page fits.
   MODEL_RELATIONSHIP_EXPLANATION_CHARS: 90,
   MAX_ASSESSMENT_EVIDENCE_ITEMS: 2,
+  // v3.0.1 Relationship repair: keep fresh evidence and one accepted source together.
+  MAX_ASSESSMENT_RELATIONSHIP_SOURCES: 1,
+  MAX_ASSESSMENT_RELATIONSHIP_TARGETS: 2,
   MAX_OPERATION_EVIDENCE_CHARS: 300,
   MAX_OPERATION_EXPLANATION_CHARS: 180,
-  MAX_RELATIONSHIP_EXPLANATION_CHARS: 120,
-  MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS: 120,
   OPERATION_POINTS: {
     EXPLICIT_DIRECT_GAIN: 12,
     STRONG_STATE_GAIN: 10,
@@ -94,7 +96,7 @@ const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
   },
   MAX_EVIDENCE_ITEM_CHARS: 1000,
   MAX_EVIDENCE_ITEMS: 48,
-  MAINTENANCE_SCHEMA_VERSION: 3,
+  MAINTENANCE_SCHEMA_VERSION: 4,
   VIEW_EVIDENCE_OPPORTUNITIES: 12,
   RELATIONSHIP_EVIDENCE_OPPORTUNITIES: 12,
   TURNING_POINT_EVIDENCE_OPPORTUNITIES: 12,
@@ -3228,20 +3230,19 @@ function characterContinuityRun(hook, incomingText) {
       });
       records.push({ target, fields });
     });
-    const entryRows = ["{", name + "'s Relationships:"];
-    records.forEach((record, index) => {
-      if (index > 0) entryRows.push("");
-      entryRows.push("About: " + record.target);
-      ONBOARDING_RELATIONSHIP_FIELDS.forEach(field => {
-        entryRows.push(field + ": " + record.fields[field]);
-      });
+    const entries = records.map(record => [
+      "{", name + "'s Relationships:", "About: " + record.target,
+      ...ONBOARDING_RELATIONSHIP_FIELDS.map(field => field + ": " + record.fields[field]),
+      "}"
+    ].join("\n"));
+    if (!entries.length) entries.push(["{", name + "'s Relationships:", "}"].join("\n"));
+    entries.forEach((entry, index) => {
+      if (entry.length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+        errors.push("Relationships record " + (index + 1)
+          + " exceeds a complete 1,000-character page; its text was preserved");
+      }
     });
-    entryRows.push("}");
-    const entry = entryRows.join("\n");
-    if (entry.length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
-      errors.push("Relationships exceeds its 1,000-character limit");
-    }
-    return { entry, errors };
+    return { entry: entries[0], entries, errors };
   }
 
   function onboardingCanonicalExperiences(name, source) {
@@ -3344,14 +3345,24 @@ function characterContinuityRun(hook, incomingText) {
       errors.unshift("Outer Ready must be Yes before activation");
     }
     if (errors.length) return { ok: false, error: errors[0] };
+    const relationshipChanges = [{
+      card: pack.relationships,
+      title: namedTitle(name, settings.RELATIONSHIPS_LABEL),
+      entry: relationships.entries[0]
+    }];
+    let nextRelationshipPage = Math.max(1, ...catalogPagedCards(name, settings.RELATIONSHIPS_LABEL)
+      .map(ref => ref.page)) + 1;
+    relationships.entries.slice(1).forEach(entry => {
+      relationshipChanges.push({
+        card: null,
+        title: namedTitle(name, settings.RELATIONSHIPS_LABEL) + " " + nextRelationshipPage++,
+        entry
+      });
+    });
     const changes = [
       { card: pack.names, title: namedTitle(name, settings.NAMES_LABEL), entry: names.entry },
       { card: pack.views, title: namedTitle(name, settings.VIEWS_LABEL), entry: views.entry },
-      {
-        card: pack.relationships,
-        title: namedTitle(name, settings.RELATIONSHIPS_LABEL),
-        entry: relationships.entry
-      },
+      ...relationshipChanges,
       {
         card: pack.experiences,
         title: onboardingExperiencesTitle(name),
@@ -3371,7 +3382,9 @@ function characterContinuityRun(hook, incomingText) {
     const priorDeck = capturePhysicalCardDeck();
     try {
       changes.forEach(change => {
-        const saved = saveCard(change.card, change.entry, change.title);
+        const saved = change.card
+          ? saveCard(change.card, change.entry, change.title)
+          : addCard(change.title, change.entry);
         if (!saved || entryOf(saved) !== change.entry
           || !managedCardIdentityMatches(saved, change.title)) {
           throw new Error("could not verify " + change.title);
@@ -8721,11 +8734,11 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function parseRelationshipField(field, value) {
-    const raw = line(value, 4000);
+    const raw = wholeLine(value, 0);
     if (!raw) return { blank: true, safe: true, raw: "", normalized: "", corrected: false };
     const special = raw.match(/^(Former)(?:\s+(?:—|–|-)\s+(.+))?$/i);
     if (field === "Role" && special) {
-      const description = line(special[2], 2000);
+      const description = wholeLine(special[2], 0);
       if (/[{}\[\]]/.test(description)) {
         return {
           blank: false, safe: false, raw, normalized: raw, corrected: false,
@@ -8738,9 +8751,31 @@ function characterContinuityRun(hook, incomingText) {
         raw, normalized, corrected: raw !== normalized
       };
     }
+    const stages = RELATIONSHIP_STAGES[field] || [];
     const match = raw.match(/^(-?\d+)\s*\(([^)]+)\)(?:\s+(?:—|–|-)\s+(.+))?$/);
     if (!match) {
-      return { blank: false, safe: false, raw, normalized: raw, corrected: false, reason: "missing numeric score/stage form" };
+      const stageOnly = raw.match(/^(.+?)(?:\s+(?:—|–|-)\s+(.+))?$/);
+      const stage = stageOnly && stages.find(item => sameNameForm(item.label, stageOnly[1]));
+      const description = wholeLine(stageOnly && stageOnly[2], 0);
+      if (!stage) {
+        return {
+          blank: false, safe: false, raw, normalized: raw, corrected: false,
+          reason: "unsupported stage or missing numeric score/stage form"
+        };
+      }
+      if (/[{}\[\]]/.test(description)) {
+        return {
+          blank: false, safe: false, raw, normalized: raw, corrected: false,
+          reason: "reserved wrapper character in description"
+        };
+      }
+      const score = stage.midpoint;
+      const normalized = score + " (" + stage.label + ")" + (description ? " — " + description : "");
+      return {
+        blank: false, safe: true, score, stage: stage.label, description,
+        raw, normalized, corrected: true, clamped: false,
+        suppliedStage: line(stageOnly[1], 120)
+      };
     }
     const suppliedScore = Number(match[1]);
     if (!Number.isSafeInteger(suppliedScore)) {
@@ -8752,7 +8787,7 @@ function characterContinuityRun(hook, incomingText) {
     if (!stage) {
       return { blank: false, safe: false, raw, normalized: raw, corrected: false, reason: "unsupported score" };
     }
-    const description = line(match[3], 2000);
+    const description = wholeLine(match[3], 0);
     if (/[{}\[\]]/.test(description)) {
       return {
         blank: false, safe: false, raw, normalized: raw, corrected: false,
@@ -8844,7 +8879,7 @@ function characterContinuityRun(hook, incomingText) {
       if (!match) {
         return { kind: "raw", raw, page, card, line: startLine, reason: "missing or reordered " + labels[index] + " field", oversize: false };
       }
-      values[labels[index]] = line(match[1], 4000);
+      values[labels[index]] = wholeLine(match[1], 0);
     }
     const target = canonicalRelationshipTarget(character, values.About);
     if (!target) {
@@ -9190,74 +9225,6 @@ function characterContinuityRun(hook, incomingText) {
     return record;
   }
 
-  function compactLegacyRelationshipRecord(character, record) {
-    if (!record || record.kind !== "record" || record.conflict
-      || Object.keys(record.fieldUnsafe || {}).length) {
-      return { ok: false, error: "The oversized Relationship record was not structurally safe." };
-    }
-    const originalValues = { ...record.values };
-    const changedFields = new Set();
-    const restore = error => {
-      record.values = originalValues;
-      reparsePlannedRelationshipRecord(record);
-      return { ok: false, error };
-    };
-    RELATIONSHIP_FIELDS.forEach(field => {
-      const parsed = record.parsedFields[field];
-      if (!parsed || !parsed.safe || parsed.blank || !parsed.description
-        || parsed.description.length <= settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS) return;
-      const description = compactLineAtBoundary(
-        parsed.description,
-        settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS
-      );
-      record.values[field] = relationshipStoredValue(
-        field,
-        parsed.special || parsed.stage,
-        parsed.score,
-        description
-      );
-      changedFields.add(field);
-      reparsePlannedRelationshipRecord(record);
-    });
-    let guard = 0;
-    while (renderRelationshipsPage(character, 1, [record]).length
-      > settings.MAX_RELATIONSHIPS_CARD_CHARS && guard < 100) {
-      guard += 1;
-      const excess = renderRelationshipsPage(character, 1, [record]).length
-        - settings.MAX_RELATIONSHIPS_CARD_CHARS;
-      const choices = RELATIONSHIP_FIELDS.map(field => ({
-        field,
-        parsed: record.parsedFields[field]
-      })).filter(item => item.parsed && item.parsed.safe && item.parsed.description)
-        .sort((left, right) => right.parsed.description.length - left.parsed.description.length);
-      if (!choices.length) return restore("Its fixed fields alone exceeded the 1,000-character page limit.");
-      const selected = choices[0];
-      const priorDescription = selected.parsed.description;
-      const targetLength = Math.max(0, priorDescription.length - Math.max(1, excess));
-      const nextDescription = compactLineAtBoundary(priorDescription, targetLength);
-      if (nextDescription.length >= priorDescription.length) {
-        return restore("Its longest description could not be compacted safely.");
-      }
-      record.values[selected.field] = relationshipStoredValue(
-        selected.field,
-        selected.parsed.special || selected.parsed.stage,
-        selected.parsed.score,
-        nextDescription
-      );
-      changedFields.add(selected.field);
-      reparsePlannedRelationshipRecord(record);
-      if (Object.keys(record.fieldUnsafe).length) {
-        return restore("Compaction made a Relationship field structurally unsafe.");
-      }
-    }
-    const finalChars = renderRelationshipsPage(character, 1, [record]).length;
-    if (finalChars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
-      return restore("It remained " + finalChars + "/" + settings.MAX_RELATIONSHIPS_CARD_CHARS + " characters.");
-    }
-    record.oversize = false;
-    return { ok: true, changedFields: Array.from(changedFields), finalChars };
-  }
-
   function plannedRelationshipTarget(pages, targetKey) {
     const matches = pages.flatMap(page => page.items
       .filter(item => item.kind === "record" && item.targetKey === targetKey)
@@ -9284,32 +9251,39 @@ function characterContinuityRun(hook, incomingText) {
   function repackPlannedRelationships(character, pages) {
     const movablePages = pages.filter(page => page.movable && !page.remove)
       .sort((left, right) => left.page - right.page);
-    const items = movablePages.flatMap(page => page.items.map(item => ({
-      item,
-      order: page.page * 100000 + Math.max(0, Number(item.line) || 0)
-    }))).sort((left, right) => left.order - right.order).map(item => item.item);
+    // Validate every whole record before changing the plan. Never shorten stored
+    // descriptions to make a record fit, or merge separately authored targets.
+    for (const page of movablePages) {
+      for (const item of page.items) {
+        if (!plannedRelationshipsPageFits(character, page, [item])) {
+          return { ok: false, error: "A complete Relationship record exceeded the 1,000-character page limit; its text was preserved without truncation." };
+        }
+      }
+    }
+    const priorEntries = new Map(movablePages.map(page => [
+      page, renderRelationshipsPage(character, page.page, page.items)
+    ]));
+    const overflow = [];
     movablePages.forEach(page => {
-      if (page.items.length) page.dirty = true;
-      page.items = [];
+      // Keep a page's first record in place; move only additional targets.
+      overflow.push(...page.items.slice(1));
+      page.items = page.items.slice(0, 1);
     });
-    for (const item of items) {
-      let destination = movablePages.find(page => plannedRelationshipsPageFits(character, page, page.items.concat(item)));
+    for (const item of overflow) {
+      let destination = movablePages.find(page => page.items.length === 0);
       if (!destination) {
         destination = createPlannedRelationshipsPage(character, pages);
         movablePages.push(destination);
-        movablePages.sort((left, right) => left.page - right.page);
       }
-      if (!plannedRelationshipsPageFits(character, destination, destination.items.concat(item))) {
-        return { ok: false, error: "A complete Relationship record could not fit an empty 1,000-character page." };
-      }
-      item.page = destination.page;
-      item.card = destination.card;
       destination.items.push(item);
-      destination.dirty = true;
     }
-    pages.forEach(page => {
-      page.remove = false;
-      if (page.page > 1 && page.movable && page.items.length === 0) page.dirty = true;
+    movablePages.forEach(page => {
+      page.items.forEach(item => {
+        item.page = page.page;
+        item.card = page.card;
+      });
+      if (page.created || priorEntries.get(page)
+        !== renderRelationshipsPage(character, page.page, page.items)) page.dirty = true;
     });
     return { ok: true };
   }
@@ -9450,17 +9424,9 @@ function characterContinuityRun(hook, incomingText) {
           reparsePlannedRelationshipRecord(item);
           if (item.oversize || renderRelationshipsPage(character, 1, [item]).length
             > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
-            const compacted = compactLegacyRelationshipRecord(character, item);
-            if (!compacted.ok) {
-              pageFailure = character.name + "→" + item.targetName
-                + " could not be compacted safely: " + compacted.error;
-              return;
-            }
-            if (compacted.changedFields.length) {
-              pageMessages.push("Compacted " + character.name + "→" + item.targetName
-                + " legacy Relationship descriptions to restore a complete writable record.");
-              pageChanged = true;
-            }
+            pageFailure = character.name + "→" + item.targetName
+              + " exceeds the 1,000-character limit as one complete Relationship record; its text was not shortened";
+            return;
           }
           reparsePlannedRelationshipRecord(item);
           RELATIONSHIP_FIELDS.forEach(field => {
@@ -9499,6 +9465,10 @@ function characterContinuityRun(hook, incomingText) {
           page.movable = false;
           repairMessages.push("Preserved " + page.title + " unchanged because " + pageFailure);
           return;
+        }
+        if (page.items.length > 1) {
+          pageMessages.push("Separated " + page.title + " into one complete Relationship record per page.");
+          pageChanged = true;
         }
         if (page.items.length && renderRelationshipsPage(character, page.page, page.items).length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
           pageChanged = true;
@@ -12091,6 +12061,8 @@ function characterContinuityRun(hook, incomingText) {
       selectedOperationKind: line(source.selectedOperationKind, 40),
       selectedCandidate: clone(source.selectedCandidate),
       experienceChoices: clone(Array.isArray(source.experienceChoices) ? source.experienceChoices : []),
+      assessmentRelationshipBaselines: clone(Array.isArray(source.assessmentRelationshipBaselines)
+        ? source.assessmentRelationshipBaselines : []),
       operationCandidates: clone(Array.isArray(source.operationCandidates) ? source.operationCandidates : []),
       selectedEvidenceSignature: line(source.selectedEvidenceSignature, 500),
       selectedGain: Math.max(0, Math.floor(Number(source.selectedGain) || 0)),
@@ -12205,9 +12177,13 @@ function characterContinuityRun(hook, incomingText) {
       const frozen = plan.retryEvidenceEligibility && typeof plan.retryEvidenceEligibility === "object"
         ? plan.retryEvidenceEligibility
         : {};
+      const derived = relationshipDerivedEvidenceCandidates(owner, plan.retryTargets, null, plan.retrySourcePacket);
       return ids.every(id => {
-        const item = evidenceForId(id);
         const eligibility = frozen[id];
+        if (/^[SX]\d+$/.test(id)) {
+          return !!(eligibility && eligibility.relationship && derived.some(source => source.item.id === id));
+        }
+        const item = evidenceForId(id);
         return !!(item && /^E\d+$/.test(id) && eligibility
           && ["name", "state", "relationship", "view", "turning"].some(field => eligibility[field] === true)
           && !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]));
@@ -12248,7 +12224,8 @@ function characterContinuityRun(hook, incomingText) {
   function updatePendingOperationRetry(plan, outcome) {
     if (!plan || plan.taskDelivered !== true || plan.task !== "operation") return;
     const normalizedOutcome = keyOf(outcome);
-    if (["cutoff", "omitted", "stale"].includes(normalizedOutcome)
+    if ((["cutoff", "omitted", "stale"].includes(normalizedOutcome)
+      || (normalizedOutcome === "malformed" && plan.semanticAssessment === true))
       && plan.pendingOperationRetry !== true) {
       CC.pendingOperationRetry = pendingOperationRetryFromPlan(plan);
       return;
@@ -12865,10 +12842,12 @@ function characterContinuityRun(hook, incomingText) {
       .filter(item => !(item.assessedNoChangeBy && item.assessedNoChangeBy[owner.key]))
       .map(item => ({
         item,
-        // Raw E# rows carry no scripted semantic classification. Every direct
-        // operation form may cite them; the model supplies the meaning.
+        // Raw E# rows carry no scripted semantic classification; the model
+        // supplies their meaning. Mechanical eligibility still applies. State
+        // evidence is owner-scoped, so a consumed or expired item must not be
+        // offered for another State assessment.
         nameEligible: true,
-        stateEligible: true,
+        stateEligible: stateEvidenceEligible(item, owner, recent),
         relationshipEligible: true,
         viewEligible: true,
         turningEligible: true,
@@ -12885,6 +12864,75 @@ function characterContinuityRun(hook, incomingText) {
         if (rightRecent !== leftRecent) return rightRecent - leftRecent;
         return right.item.number - left.item.number;
       });
+  }
+
+  function assessmentSourceLimit() {
+    return Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1)
+      + Math.max(0, Number(settings.MAX_ASSESSMENT_RELATIONSHIP_SOURCES) || 0);
+  }
+
+  function semanticAssessmentSources(owner, targets, recent, currentInputId = "", frozenIds = [], opportunityOverride = null, frozenPacket = null) {
+    const raw = semanticAssessmentEvidence(owner, recent, currentInputId, frozenIds, opportunityOverride);
+    const derived = relationshipDerivedEvidenceCandidates(owner, targets, opportunityOverride, frozenPacket);
+    if (Array.isArray(frozenIds) && frozenIds.length) {
+      const byId = new Map(raw.concat(derived).map(candidate => [candidate.item.id, candidate]));
+      return frozenIds.map(id => byId.get(id)).filter(Boolean);
+    }
+    const rawLimit = Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1);
+    const derivedLimit = Math.max(0, Number(settings.MAX_ASSESSMENT_RELATIONSHIP_SOURCES) || 0);
+    // Rotate eligible accepted sources; an unchanged assessment never consumes a
+    // successful-use signature or prevents another field from being considered.
+    const opportunity = opportunityOverride === null
+      ? Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0)
+      : Math.max(0, Number(opportunityOverride) || 0);
+    const offset = derived.length ? opportunity % derived.length : 0;
+    const ordered = derived.slice(offset).concat(derived.slice(0, offset));
+    return raw.slice(0, rawLimit).concat(ordered.slice(0, derivedLimit));
+  }
+
+  function assessmentRelationshipBaselines(owner, targets, evidence) {
+    refreshRelationshipsStore();
+    const ownerData = relationshipsForOwner(owner.key);
+    const records = ownerData ? ownerData.contextRecords : [];
+    const derivedKeys = new Set(evidence.filter(candidate => candidate.derived)
+      .map(candidate => candidate.targetKey));
+    const text = evidence.filter(candidate => !candidate.derived).map(candidate => candidate.item.text).join("\n");
+    const ranked = operationTargetsForKind("relationship", targets).map(target => ({
+      target,
+      score: (derivedKeys.has(target.key) ? 100 : 0)
+        + (operationTargetMentioned(owner, target, text) ? 20 : 0)
+        + (target.key === "player" ? 1 : 0)
+    })).sort((left, right) => right.score - left.score);
+    return ranked.slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_RELATIONSHIP_TARGETS) || 1))
+      .map(({ target }) => {
+        const record = records.find(item => item.targetKey === target.key);
+        return {
+          code: target.code, key: target.key, name: target.name,
+          absent: !record,
+          fields: RELATIONSHIP_FIELDS.map(field => {
+            const parsed = record && record.parsedFields && record.parsedFields[field];
+            return { field,
+              stage: !parsed || parsed.blank ? "Unspecified"
+                : (parsed.safe ? (parsed.special || parsed.stage || "Unspecified") : "Unavailable"),
+              description: parsed && parsed.safe ? safeModelViewText(parsed.description) : ""
+            };
+          })
+        };
+      });
+  }
+
+  function assessmentEvidenceRow(owner, targets, candidate) {
+    const codes = assessmentEvidenceCodes(candidate);
+    if (candidate.derived) {
+      const target = targets.find(item => item.key === candidate.targetKey);
+      const record = provenanceRecordById(candidate.item.id);
+      const choices = (candidate.allowedFields || []).map(field => field + "="
+        + relationshipDerivedDestinationForRecord(record, field)).join("/");
+      return candidate.item.id + "[R,A," + (target ? target.code : "?") + "," + choices + "]: "
+        + shortenProfileValue(record && (record.value || record.explanation) || candidate.item.text, 200);
+    }
+    return candidate.item.id + "[" + codes.join("") + "]: "
+      + operationEvidenceSnippet(owner, null, "", candidate.item.text, null);
   }
 
   function targetReferenceMentioned(record, owner, source) {
@@ -15015,10 +15063,10 @@ function characterContinuityRun(hook, incomingText) {
       reasons: ["Semantic detection is delegated to the model-authored assessment."]
     }));
     const reviewable = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
-      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
+      .filter(candidate => candidate && candidate.item && /^[ESX]\d+$/.test(candidate.item.id))
       .filter(candidate => !(candidate.item.assessedNoChangeBy
         && candidate.item.assessedNoChangeBy[owner.key]))
-      .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+      .slice(0, assessmentSourceLimit());
     const sourceIds = reviewable.map(candidate => candidate.item.id);
     const selected = sourceIds.length ? {
       kind: ASSESSMENT_OPERATION_KIND,
@@ -15027,7 +15075,8 @@ function characterContinuityRun(hook, incomingText) {
       field: "",
       destination: "",
       sourceIds,
-      storyEvidenceIds: sourceIds.slice(),
+      storyEvidenceIds: unique(reviewable.flatMap(candidate => candidate.derived
+        ? candidate.rawLineage || [] : [candidate.item.id]), 100),
       sourceMetadata: {},
       evidenceSignature: "",
       gain: 0,
@@ -15048,7 +15097,7 @@ function characterContinuityRun(hook, incomingText) {
       allowedDestinations: [],
       allowedModes: [],
       managedSignature: "",
-      reasons: ["Fresh completed evidence is ready for model-authored semantic assessment."]
+      reasons: ["Completed evidence and eligible accepted Relationship sources are ready for model assessment."]
     } : null;
     if (selected) selected.evidenceSignature = operationEvidenceSignature(
       selected,
@@ -15065,7 +15114,7 @@ function characterContinuityRun(hook, incomingText) {
     plan.selectedNet = 0;
     plan.routingTargets = selected ? clone(Array.isArray(targets) ? targets : []) : [];
     plan.selectionReasons = selected
-      ? ["A bounded model-authored semantic assessment was scheduled over fresh completed evidence."]
+      ? ["A bounded model assessment was scheduled over completed evidence and eligible accepted Relationship sources."]
       : ["No unreviewed completed evidence remained eligible for semantic assessment."];
     plan.operationTieBreak = "The model selects semantic meaning; JavaScript supplies structure and legal mechanics only.";
   }
@@ -15097,7 +15146,7 @@ function characterContinuityRun(hook, incomingText) {
   function operationEvidenceLimit(kind, selectedCandidate) {
     const normalized = keyOf(kind);
     if (normalized === ASSESSMENT_OPERATION_KIND) {
-      return Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1);
+      return assessmentSourceLimit();
     }
     const direct = selectedCandidate && selectedCandidate.direct === true;
     if (normalized === "name") return direct ? 1 : 3;
@@ -15115,7 +15164,7 @@ function characterContinuityRun(hook, incomingText) {
       .filter(value => {
         const id = continuitySourceId(value);
         if (!id) return false;
-        if (normalized === ASSESSMENT_OPERATION_KIND) return /^E\d+$/.test(id);
+        if (normalized === ASSESSMENT_OPERATION_KIND) return /^[ESX]\d+$/.test(id);
         if (normalized === "relationship") {
           return selectedCandidate && selectedCandidate.direct === true
             ? /^E\d+$/.test(id)
@@ -15594,9 +15643,9 @@ function characterContinuityRun(hook, incomingText) {
         evidenceChoice,
         evidenceAuthority,
         "Target, field, " + (direct ? "direct" : "accumulated") + " event class, and destination "
-          + destinationField + " are fixed. Replace Explanation with one short clause of at most "
+          + destinationField + " are fixed. Replace Explanation with one complete, concise sentence, aiming for "
           + settings.MODEL_RELATIONSHIP_EXPLANATION_CHARS
-          + " characters describing the scheduled relationship movement; natural paraphrase is allowed.",
+          + " characters, describing the scheduled relationship movement; finish the sentence and never cut it off or add an ellipsis to meet the target.",
         "Frozen " + pace.name + " pace: " + (direct ? "D " + pace.direct : "A " + pace.accumulated)
           + " per event, maximum " + pace.maxStages + " stage" + (pace.maxStages === 1 ? "" : "s") + ".",
         relationshipFieldMeaning(field),
@@ -15651,7 +15700,14 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function assessmentEvidenceCodes(candidate) {
-    return candidate && candidate.item ? ["S", "N", "R", "V", "T"] : [];
+    if (!candidate || !candidate.item) return [];
+    return [
+      candidate.stateEligible === true ? "S" : "",
+      candidate.nameEligible === true ? "N" : "",
+      candidate.relationshipEligible === true ? "R" : "",
+      candidate.viewEligible === true ? "V" : "",
+      candidate.turningEligible === true ? "T" : ""
+    ].filter(Boolean);
   }
 
   function assessmentTurningPointChoices(owner) {
@@ -15702,97 +15758,91 @@ function characterContinuityRun(hook, incomingText) {
 
   function semanticAssessmentTask(owner, targets, evidenceCandidates, plan) {
     const evidence = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
-      .filter(candidate => candidate && candidate.item && /^E\d+$/.test(candidate.item.id))
-      .slice(0, Math.max(1, Number(settings.MAX_ASSESSMENT_EVIDENCE_ITEMS) || 1));
+      .filter(candidate => candidate && candidate.item && /^[ESX]\d+$/.test(candidate.item.id))
+      .slice(0, assessmentSourceLimit());
     if (!owner || !evidence.length) return "";
-    const evidenceIds = evidence.map(candidate => candidate.item.id);
-    const evidenceField = evidenceIds.join(",");
-    const rows = evidence.map(candidate => {
-      const codes = assessmentEvidenceCodes(candidate);
-      const snippet = operationEvidenceSnippet(owner, null, "", candidate.item.text, null);
-      return candidate.item.id + "[" + codes.join("") + "]: " + snippet;
-    });
+    const evidenceField = evidence.map(candidate => candidate.item.id).join(",");
+    const rawEvidence = evidence.filter(candidate => !candidate.derived);
+    const baselines = assessmentRelationshipBaselines(owner, targets, evidence);
+    const relationshipTargets = operationTargetsForKind("relationship", targets)
+      .filter(target => baselines.some(baseline => baseline.key === target.key));
     const stateTargets = operationTargetsForKind("state", targets);
     const nameTargets = operationTargetsForKind("name", targets);
-    const relationshipTargets = operationTargetsForKind("relationship", targets);
     const viewTargets = operationTargetsForKind("view", targets);
-    const turningChoices = evidence.some(candidate => candidate.turningEligible === true)
-      ? assessmentTurningPointChoices(owner)
-      : [];
-    const eventChoices = experienceEventChoices(owner, stateTargets, evidence);
-    const eventRows = eventChoices.map(event => "Event " + event.id + " | About "
-      + stateTargets.find(target => target.key === event.targetKey).code
-      + " | " + event.confirmations + "/" + settings.SITUATION_EXPERIENCE_CONFIRMATIONS
-      + (event.current ? " | current" : "") + " | " + event.value);
-    const forms = [
-      "K unchanged: (CCO|K|S|" + evidenceField + "|Explanation)"
-    ];
-    if (stateTargets.length && evidence.some(candidate => candidate.stateEligible === true)) {
-      forms.push("S State: (CCO|S|AboutCode|EvidenceIDs|TriggerList|Situation|Thought)");
+    const hasState = stateTargets.length && rawEvidence.some(candidate => candidate.stateEligible);
+    const hasName = nameTargets.length && rawEvidence.some(candidate => candidate.nameEligible);
+    const hasView = viewTargets.length && rawEvidence.some(candidate => candidate.viewEligible);
+    const hasRelationship = relationshipTargets.length && evidence.some(candidate => candidate.relationshipEligible);
+    const turningChoices = rawEvidence.some(candidate => candidate.turningEligible)
+      ? assessmentTurningPointChoices(owner) : [];
+    const eventChoices = hasState ? experienceEventChoices(owner, stateTargets, rawEvidence) : [];
+    const forms = ["K unchanged: (CCO|K|S|" + evidenceField + "|Explanation)"];
+    if (hasState) forms.push("S State: (CCO|S|AboutCode|EvidenceIDs|TriggerList|Situation|Thought)");
+    if (hasName) forms.push("N Name: (CCO|N|SubjectCode|EvidenceIDs|Alias|Transition|Use|Explanation)");
+    if (hasRelationship) {
+      if (rawEvidence.some(candidate => candidate.relationshipEligible)) {
+        forms.push("R direct: (CCO|R|TargetCode|EvidenceIDs|Field|D|Destination|Explanation)");
+      }
+      if (evidence.some(candidate => candidate.derived && candidate.relationshipEligible)) {
+        forms.push("R accumulated: (CCO|R|TargetCode|EvidenceIDs|Field|A|Destination|Explanation)");
+      }
     }
-    if (nameTargets.length && evidence.some(candidate => candidate.nameEligible === true)) {
-      forms.push("N Name: (CCO|N|SubjectCode|EvidenceIDs|Alias|Transition|Use|Explanation)");
-    }
-    if (relationshipTargets.length && evidence.some(candidate => candidate.relationshipEligible === true)) {
-      forms.push("R Relationship: (CCO|R|TargetCode|EvidenceIDs|Field|D|Destination|Explanation)");
-    }
-    if (viewTargets.length && evidence.some(candidate => candidate.viewEligible === true)) {
-      forms.push("V View: (CCO|V|TargetCode|EvidenceIDs|Destination|Mode|Explanation)");
-    }
-    if (turningChoices.length) {
-      forms.push("T Turning Point: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
-    }
-    const targetRows = [
-      stateTargets.length ? "State About codes: " + stateTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      nameTargets.length ? "Name Subject and Use codes: " + nameTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      relationshipTargets.length ? "Relationship targets: " + relationshipTargets.map(target => target.code + "=" + target.name).join(", ") : "",
-      viewTargets.length ? "View targets: " + viewTargets.map(target => target.code + "=" + target.name
-        + (target.mode === "buried" ? "[buried]" : (target.mode === "recovering" ? "[recovering]" : ""))).join(", ") : ""
-    ].filter(Boolean);
+    if (hasView) forms.push("V View: (CCO|V|TargetCode|EvidenceIDs|Destination|Mode|Explanation)");
+    if (turningChoices.length) forms.push("T Turning Point: (CCO|T|S|EvidenceIDs|StableID|Movement|Explanation)");
     const relationshipDestinations = RELATIONSHIP_FIELDS.map(field => field + "="
       + relationshipOperationDestinations(field, null).join("/")).join("; ");
-    const turningRows = turningChoices.map(choice => "TP " + choice.id
-      + (choice.handle ? " [portrayal handle " + choice.handle + "]" : "") + " " + choice.title
-      + " | current " + choice.progress + " | movements " + choice.modes.join("/")
-      + " | " + choice.references.join("; "));
-    const rules = [
+    const build = detailLimit => [
+      "<SYSTEM>",
       "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
       "CC OUTPUT CONTRACT — RECORD FIRST",
-      "Choose one available record form for " + owner.name + " that best represents the supplied evidence. Complete every field with the supplied codes, evidence, and meanings.",
-      "Use one or more Evidence IDs in supplied order. The K form copies the complete supplied list and records continuity as unchanged.",
-      "Evidence:",
-      ...rows,
-      ...targetRows,
-      "State TriggerList selects 1-3 codes: " + TRIGGER_CODES.join(",") + ". Situation is a concise completed event; Thought is direct first-person inner speech.",
-      ...eventRows,
-      eventRows.length ? "When fresh evidence continues or reaffirms a listed event, choose S and set Situation to CONFIRM=XP followed by that event's number, using its About code. This preserves event identity across paraphrases. KEEP confirms the listed current event. Each confirmation uses fresh evidence; Event rows supply identity. A separate occurrence receives its own concise event clause." : "",
-      "Name Transition: Observed, Adopted, Retired, Rejected, Reactivated, or Replace=OldAlias. Use: General, None, or comma-separated Name codes.",
-      "Relationship fields and destinations: " + relationshipDestinations + ". D records a completed direct event.",
-      "View destinations: " + VIEW_CATEGORIES.join("/") + ", plus Buried for an active known view or Recovered for a buried view. Mode O records a directly established durable judgment; M records bounded movement toward the destination.",
-      ...turningRows,
-      turningRows.length
-        ? "Turning Point StableID is the ID immediately after TP; its bracketed portrayal handle resolves to the same listed development."
-        : "",
-      "Write Explanation as one concise plain-text clause grounded in the cited evidence. Use plain text in descriptive fields and preserve each | separator.",
-      "Available record forms:",
-      ...forms,
+      "Assess " + owner.name + ". Choose ONE supported update, or K only when none is warranted. Keep story choices independent.",
+      "Replace every placeholder, including Explanation. Use supplied codes and evidence IDs in their listed order; K copies ALL IDs. Never output the word Explanation as its value.",
+      "Evidence labels show allowed operations; E is a completed event. S/X is accepted continuity, usable only for R with A. Never mix E with S/X in one update.",
+      ...evidence.map(candidate => assessmentEvidenceRow(owner, targets, candidate)),
+      "Codes: " + targets.map(target => target.code + "=" + target.name
+        + (target.mode === "buried" || target.mode === "recovering" ? "[" + target.mode + "]" : "")).join(", "),
+      hasRelationship ? "R targets: " + relationshipTargets.map(target => target.code).join(", ") + ". Current directional baselines:" : "",
+      ...(hasRelationship ? baselines.map(baseline => baseline.code + ": " + (baseline.absent
+        ? "No Relationship record; initialize only supported fields."
+        : baseline.fields.map(item => item.field + "=" + item.stage
+          + (detailLimit && item.description ? " — " + shortenProfileValue(item.description, detailLimit) : "")).join("; "))) : []),
+      hasRelationship ? "R compares evidence with this baseline: trust, closeness, role, boundaries or conflict may change without romance. Use D with E only; A with S/X only, using that row's target and field=destination choices. A source is not itself a required change." : "",
+      hasRelationship ? "R destinations: " + relationshipDestinations : "",
+      hasState ? "S About: " + stateTargets.map(target => target.code).join(",")
+        + ". TriggerList: 1-3 of " + TRIGGER_CODES.join(",") + ". Situation is the completed event; Thought is first-person inner speech." : "",
+      ...eventChoices.map(event => "Event " + event.id + " About "
+        + stateTargets.find(target => target.key === event.targetKey).code + " " + event.confirmations
+        + "/" + settings.SITUATION_EXPERIENCE_CONFIRMATIONS + (event.current ? " current" : "") + ": " + event.value),
+      eventChoices.length ? "For fresh evidence reaffirming the SAME event, S Situation=CONFIRM=XPnumber or KEEP for the current event. Separate events need new clauses." : "",
+      hasName ? "N Subject/Use codes: " + nameTargets.map(target => target.code).join(",")
+        + ". Transition: Observed/Adopted/Retired/Rejected/Reactivated/Replace=OldAlias. Use: General/None/or comma-separated codes." : "",
+      hasView ? "V destinations: " + VIEW_CATEGORIES.join("/")
+        + "; Buried for an active known view; Recovered for a buried view. O=durable judgment; M=bounded movement." : "",
+      ...turningChoices.map(choice => "T " + choice.id + " " + choice.title + " current " + choice.progress
+        + " movements " + choice.modes.join("/") + ": " + choice.references.join("; ")),
+      "Explanation: one brief evidence-based clause. Descriptive fields must not contain |, brackets, braces or parentheses. Preserve record separators.",
+      "Available record forms:", ...forms,
       "Output order:",
       "1. Complete exactly one available CCO record as the first nonblank output line.",
-      "2. Continue with complete story prose from the next line."
-    ];
-    let task = ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
-    while (eventRows.length && estimateTokens(task) > settings.MAX_OPERATION_TASK_TOKENS) {
-      const removed = eventRows.pop();
-      eventChoices.pop();
-      const index = rules.indexOf(removed);
-      if (index >= 0) rules.splice(index, 1);
-      if (!eventRows.length) {
-        const instruction = rules.findIndex(row => textOf(row).startsWith("When fresh evidence continues or reaffirms a listed event,"));
-        if (instruction >= 0) rules.splice(instruction, 1);
-      }
-      task = ["<SYSTEM>", ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
+      "2. Continue with complete story prose from the next line.",
+      "</SYSTEM>"
+    ].filter(Boolean).join("\n");
+    // Baseline stages and source choices are mandatory. Compact descriptions and
+    // optional confirmation hints first; a task that still cannot fit is deferred.
+    let detailLimit = 60;
+    let task = build(detailLimit);
+    if (estimateTokens(task) > settings.MAX_OPERATION_TASK_TOKENS) {
+      detailLimit = 0;
+      task = build(detailLimit);
     }
-    if (plan) plan.experienceChoices = clone(eventChoices);
+    while (eventChoices.length && estimateTokens(task) > settings.MAX_OPERATION_TASK_TOKENS) {
+      eventChoices.pop();
+      task = build(detailLimit);
+    }
+    if (plan) {
+      plan.experienceChoices = clone(eventChoices);
+      plan.assessmentRelationshipBaselines = clone(hasRelationship ? baselines : []);
+    }
     return task;
   }
 
@@ -16387,12 +16437,14 @@ function characterContinuityRun(hook, incomingText) {
       ? viewDerivedEvidenceCandidates(focus, targets, frozenOpportunity, frozenDerivedPacket)
       : [];
     const assessmentSources = selectedOperationKind === ASSESSMENT_OPERATION_KIND
-      ? semanticAssessmentEvidence(
+      ? semanticAssessmentSources(
         focus,
+        targets,
         recent,
         plan.inputEvidenceId || "",
         frozenEvidenceIds,
-        frozenOpportunity
+        frozenOpportunity,
+        frozenDerivedPacket
       )
       : [];
     const operationSources = selectedOperationKind === ASSESSMENT_OPERATION_KIND
@@ -16573,7 +16625,10 @@ function characterContinuityRun(hook, incomingText) {
         }
       }
 
-      if (appendOnlyContext) {
+      // A protected assessment baseline can exceed the ordinary compact tier at
+      // the default budget. Keep the complete task and use the existing minimal
+      // portrayal core in either context mode before deferring the operation.
+      if (appendOnlyContext || selectedOperationKind === ASSESSMENT_OPERATION_KIND) {
         const emergencyPair = [
           { text: emergencyPortrayalOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
           { text: emergencyPortrayalInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
@@ -16858,9 +16913,7 @@ function characterContinuityRun(hook, incomingText) {
       experiencesTokens: byType("experiences"),
       evidenceTokens: taskDelivered ? estimateTokens(
         selectedOperationKind === ASSESSMENT_OPERATION_KIND
-          ? selectedEvidence.map(candidate => candidate.item.id + "["
-            + assessmentEvidenceCodes(candidate).join("") + "]: "
-            + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
+          ? selectedEvidence.map(candidate => assessmentEvidenceRow(focus, targets, candidate)).join("\n")
           : evidencePacketForKind(
             focus, selectedOperationKind, selectedEvidence, plan.inputEvidenceId || "", recent,
             targets[0] || null, plan.selectedCandidate
@@ -18934,7 +18987,9 @@ function characterContinuityRun(hook, incomingText) {
       if (!explanationSource || explanationReserved || keyOf(explanationSource) === "explanation") {
         return {
           story, candidate: null, malformed: true, hadProtocol: true,
-          reason: "The K assessment explanation was incomplete or used reserved record characters.",
+          reason: keyOf(explanationSource) === "explanation"
+            ? "The K no-change response copied the unfilled Explanation placeholder; no assessment was accepted."
+            : "The K assessment explanation was incomplete or used reserved record characters.",
           raw: line(raw, 300)
         };
       }
@@ -19114,8 +19169,10 @@ function characterContinuityRun(hook, incomingText) {
       const destinationSource = textOf(parts[6]).trim();
       const destination = field ? relationshipDestination(field, destinationSource) : null;
       const explanationField = exactStateFieldValue(parts[7], "Explanation");
-      const explanationResult = compactedExplanation(explanationField.value, settings.MAX_RELATIONSHIP_EXPLANATION_CHARS);
-      const explanation = explanationResult.value;
+      const explanation = wholeLine(explanationField.value, 0);
+      if (explanation.length > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+        return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The complete Relationship explanation exceeds a 1,000-character page; it was not shortened or written.", raw: line(raw, 300) };
+      }
       if (!targetCode || !field || !["A", "D"].includes(eventKind) || !destination) {
         return { story, candidate: null, malformed: true, hadProtocol: true, reason: "The Relationship CCO record used an invalid target, field, A/D flag, or destination.", raw: line(raw, 300) };
       }
@@ -19128,8 +19185,7 @@ function characterContinuityRun(hook, incomingText) {
       return {
         story, malformed: false, hadProtocol: true,
         reason: parsedCcoReason("CCO Relationship record parsed.", routing) + protocolPresentationNote
-          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : "")
-          + (explanationResult.shortened ? explanationResult.note : ""),
+          + (explanationField.changed ? " The exact position-matched Explanation label was normalized." : ""),
         raw: reportedRaw,
         candidate: {
           kind: "relationship", targetCode, evidenceIds, field, eventKind,
@@ -19237,7 +19293,15 @@ function characterContinuityRun(hook, incomingText) {
       return { ok: false, error: "The model-authored operation had no current semantic assessment authority." };
     }
     const kind = keyOf(candidate.kind);
-    const items = unique(candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
+    const supplied = new Map((plan.sourcePacket || []).map(source => [source.id, source]));
+    const items = unique(candidate.evidenceIds || [], 20).map(id => {
+      if (/^E\d+$/.test(id)) return evidenceForId(id);
+      const source = supplied.get(id);
+      const record = provenanceRecordById(id);
+      if (kind !== "relationship" || !/^[SX]\d+$/.test(id) || !source || !record) return null;
+      return { id, number: 1000000 + record.createdClock * 1000 + Number(id.slice(1)),
+        source: "provenance", text: source.text, sourceMetadata: source };
+    }).filter(Boolean);
     if (!items.length || items.length !== unique(candidate.evidenceIds || [], 20).length) {
       return { ok: false, error: "The model-authored operation did not resolve every cited evidence ID." };
     }
@@ -19305,20 +19369,45 @@ function characterContinuityRun(hook, incomingText) {
       if (!target || target.relationship !== true || target.key === "self") {
         return { ok: false, error: "Relationship used a Target code outside the supplied directional map." };
       }
-      if (candidate.eventKind !== "D") {
-        return { ok: false, error: "The raw evidence assessment authorizes completed direct Relationship movement with D." };
+      if (Array.isArray(plan.assessmentRelationshipBaselines)
+        && !plan.assessmentRelationshipBaselines.some(baseline => baseline.key === target.key)) {
+        return { ok: false, error: "Relationship target had no supplied assessment baseline." };
+      }
+      const derivedItems = items.filter(item => item.source === "provenance");
+      const accumulated = derivedItems.length > 0;
+      if (accumulated && derivedItems.length !== items.length) {
+        return { ok: false, error: "Relationship assessment mixed raw and accumulated evidence." };
+      }
+      if (candidate.eventKind !== (accumulated ? "A" : "D")) {
+        return { ok: false, error: "Relationship assessment requires D for E evidence and A for accepted S/X evidence." };
       }
       const destination = relationshipDestination(candidate.field, candidate.destination);
       if (!destination) {
         return { ok: false, error: "Relationship supplied a destination outside its field's legal stages." };
+      }
+      if (accumulated && derivedItems.some(item => {
+        const source = item.sourceMetadata;
+        const record = provenanceRecordById(item.id);
+        return source.ownerKey !== owner.key || source.targetKey !== target.key
+          || !(source.allowedFields || []).includes(candidate.field)
+          || relationshipDerivedDestinationForRecord(record, candidate.field) !== destination.label;
+      })) {
+        return { ok: false, error: "Accepted Relationship evidence did not authorize this owner, target, field and destination." };
       }
       selected = {
         ...selected,
         targetKey: target.key,
         field: candidate.field,
         destination: destination.label,
-        direct: true,
-        gain: settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN
+        direct: !accumulated,
+        derived: accumulated,
+        storyEvidenceIds: unique(items.flatMap(item => item.sourceMetadata
+          ? item.sourceMetadata.rawLineage || [] : [item.id]), 100),
+        sourceMetadata: Object.fromEntries(derivedItems.map(item => [item.id, clone(item.sourceMetadata)])),
+        allowedFields: accumulated ? [candidate.field] : [],
+        allowedDestinations: accumulated ? [destination.label] : [],
+        gain: accumulated ? derivedItems.reduce((sum, item) => sum + (Number(item.sourceMetadata.gain) || 0), 0)
+          : settings.OPERATION_POINTS.EXPLICIT_DIRECT_GAIN
       };
     } else if (kind === "view") {
       const target = targetForCode(plan, textOf(candidate.targetField).trim().toUpperCase());
@@ -19959,7 +20048,7 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function correctedRelationshipExplanation(value, actualStage) {
-    let result = line(value, 2000);
+    let result = wholeLine(value, 0);
     const actualKey = keyOf(actualStage);
     const stageLabels = relationshipStageLabels();
     const stageAlternation = stageLabels.map(escapeRegExp).join("|");
@@ -20021,7 +20110,7 @@ function characterContinuityRun(hook, incomingText) {
     });
     result = result.split(actualMarker).join(actualStage);
     result = result.replace(/\s{2,}/g, " ").replace(/\s+([,.;:!?])/g, "$1").trim();
-    return line(result || ("The cited completed evidence changed the Relationship within the actual " + actualStage + " stage."), 2000);
+    return wholeLine(result || ("The cited completed evidence changed the Relationship within the actual " + actualStage + " stage."), 0);
   }
 
   function viewCategoryRegard(category) {
@@ -20385,22 +20474,20 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function fitRelationshipDescription(owner, record, field, destination, score, description) {
+    const complete = wholeLine(description, 0);
     const probe = copyRelationshipItem(record);
-    probe.values[field] = relationshipStoredValue(field, destination, score, "");
+    probe.values[field] = relationshipStoredValue(field, destination, score, complete);
     reparsePlannedRelationshipRecord(probe);
-    const baseChars = renderRelationshipsPage(owner, 1, [probe]).length;
-    if (baseChars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
-      return { ok: false, description: "", error: "The Relationship record's fixed fields exceeded the 1,000-character page limit." };
+    const chars = renderRelationshipsPage(owner, 1, [probe]).length;
+    if (chars > settings.MAX_RELATIONSHIPS_CARD_CHARS) {
+      return {
+        ok: false, description: "",
+        error: "The complete Relationship record would use " + chars + "/"
+          + settings.MAX_RELATIONSHIPS_CARD_CHARS
+          + " characters on its own page; the update was not written and existing text was preserved."
+      };
     }
-    const capacity = Math.min(
-      settings.MAX_STORED_RELATIONSHIP_EXPLANATION_CHARS,
-      Math.max(0, settings.MAX_RELATIONSHIPS_CARD_CHARS - baseChars - 3)
-    );
-    const compacted = compactLineAtBoundary(description, capacity);
-    if (description && !compacted) {
-      return { ok: false, description: "", error: "No complete Relationship Explanation could fit the remaining page capacity." };
-    }
-    return { ok: true, description: compacted };
+    return { ok: true, description: complete };
   }
 
   function relationshipScoreLabel(parsed) {
@@ -20459,7 +20546,7 @@ function characterContinuityRun(hook, incomingText) {
       let record = found ? found.record : null;
       if (!record) {
         record = baseRelationshipRecord(target);
-        let page = pages.find(item => item.movable && !item.remove);
+        let page = pages.find(item => item.movable && !item.remove && item.items.length === 0);
         if (!page) page = createPlannedRelationshipsPage(owner, pages);
         page.items.push(record);
         page.dirty = true;
@@ -20579,7 +20666,7 @@ function characterContinuityRun(hook, incomingText) {
           ok: false,
           error: "The Relationship record remained " + compactRecordChars + "/"
             + settings.MAX_RELATIONSHIPS_CARD_CHARS
-            + " characters after applying the compact Explanation limit; no Relationship change was written."
+            + " characters as one complete record; existing text was preserved and no Relationship change was written."
         };
       }
       found.page.dirty = true;
@@ -21454,24 +21541,20 @@ function characterContinuityRun(hook, incomingText) {
     const scoringFrozenSourcePacket = (plan.retry || plan.pendingOperationRetry) && Array.isArray(plan.retrySourcePacket)
       ? plan.retrySourcePacket
       : (operationOpportunityFrozen(plan) && Array.isArray(plan.sourcePacket) ? plan.sourcePacket : null);
-    const scoringDerivedRelationships = relationshipDerivedEvidenceCandidates(
-      focus,
-      scoringTargets,
-      scoringFrozenOpportunity,
-      scoringFrozenSourcePacket
-    );
     const scoringDerivedViews = viewDerivedEvidenceCandidates(
       focus,
       scoringTargets,
       scoringFrozenOpportunity,
       scoringFrozenSourcePacket
     );
-    const scoringSources = semanticAssessmentEvidence(
+    const scoringSources = semanticAssessmentSources(
       focus,
+      scoringTargets,
       recent,
       plan.inputEvidenceId || "",
       scoringFrozenEvidenceIds,
-      scoringFrozenOpportunity
+      scoringFrozenOpportunity,
+      scoringFrozenSourcePacket
     );
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
     }
@@ -21634,9 +21717,8 @@ function characterContinuityRun(hook, incomingText) {
       ? ((plan.retry || plan.pendingOperationRetry) && textOf(plan.retrySourcePacketText)
         ? textOf(plan.retrySourcePacketText)
         : (attempt.taskKind === ASSESSMENT_OPERATION_KIND
-          ? (attempt.evidenceCandidates || []).map(candidate => candidate.item.id + "["
-            + assessmentEvidenceCodes(candidate).join("") + "]: "
-            + operationEvidenceSnippet(focus, null, "", candidate.item.text, null)).join("\n")
+          ? (attempt.evidenceCandidates || []).map(candidate => assessmentEvidenceRow(
+            focus, attempt.targets || [], candidate)).join("\n")
           : evidencePacketForKind(
             focus,
             attempt.taskKind,
@@ -22134,6 +22216,8 @@ function characterContinuityRun(hook, incomingText) {
     const focus = characters.find(character => character.key === plan.focusKey) || owner || null;
     let result = null;
     let evidenceResult = null;
+    const returnedCode = textOf(parsed.raw).match(/\(CCO\|([KSNRVT])\|/i);
+    CC.last.assessmentReturnedCode = returnedCode ? returnedCode[1].toUpperCase() : "None";
     const modelAuthoredPreparation = parsed.candidate
       && !parsed.candidate.noChange
       && owner
@@ -22162,11 +22246,14 @@ function characterContinuityRun(hook, incomingText) {
         ? "The model omitted the mandatory completed first-line CCO record."
         : "";
     } else if (parsed.candidate.noChange === true) {
-      const assessedItems = unique(parsed.candidate.evidenceIds || [], 20).map(evidenceForId).filter(Boolean);
+      const assessedIds = unique(parsed.candidate.evidenceIds || [], 20);
+      const assessedItems = assessedIds.filter(id => /^E\d+$/.test(id)).map(evidenceForId).filter(Boolean);
+      const assessedDerived = assessedIds.filter(id => /^[SX]\d+$/.test(id)).map(provenanceRecordById).filter(Boolean);
       const suppliedIds = new Set((Array.isArray(plan.sourcePacket) ? plan.sourcePacket : [])
         .map(source => continuitySourceId(source && source.id)).filter(Boolean));
       if (!owner || plan.semanticAssessment !== true
-        || assessedItems.length !== parsed.candidate.evidenceIds.length
+        || assessedItems.length + assessedDerived.length !== parsed.candidate.evidenceIds.length
+        || assessedDerived.some(record => record.ownerKey !== owner.key)
         || parsed.candidate.evidenceIds.some(id => !suppliedIds.has(id))) {
         result = { ok: false, error: "The completed no-change assessment did not resolve to its supplied owner and evidence packet." };
       } else {
@@ -22668,6 +22755,11 @@ function characterContinuityRun(hook, incomingText) {
       "Derived View sources supplied: " + derivedViewSourceSummary(CC.currentPlan),
       "Relationship source diagnostics: " + ((CC.last.relationshipSourceDiagnostics || []).join("; ") || "None"),
       "Relationship use diagnostics: " + ((CC.last.relationshipUseDiagnostics || []).join("; ") || "None"),
+      "Assessment Relationship baselines in task: " + (CC.currentPlan && CC.currentPlan.taskDelivered
+        && Array.isArray(CC.currentPlan.assessmentRelationshipBaselines)
+        ? CC.currentPlan.assessmentRelationshipBaselines.map(item => item.code + "=" + item.name).join(", ") || "None"
+        : "None"),
+      "Last returned CCO code before validation: " + (CC.last.assessmentReturnedCode || "None"),
       "Relationship narrow uses stored: " + snapshot.relationshipUses,
       "View source diagnostics: " + ((CC.last.viewSourceDiagnostics || []).join("; ") || "None"),
       "View use diagnostics: " + ((CC.last.viewUseDiagnostics || []).join("; ") || "None"),
