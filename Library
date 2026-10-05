@@ -15795,6 +15795,9 @@ function characterContinuityRun(hook, incomingText) {
       "<SYSTEM>",
       "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
       "CC OUTPUT CONTRACT — RECORD FIRST",
+      "Situation is a completed event clause of at most " + settings.MODEL_STATE_VALUE_CHARS
+        + " characters. Thought is direct first-person inner speech of at most "
+        + settings.MODEL_STATE_VALUE_CHARS + " characters. Use plain text in both fields; reserve | and parentheses for record delimiters and do not use braces or brackets.",
       "Assess " + owner.name + ". Choose ONE supported update, or K only when none is warranted. Keep story choices independent.",
       "Replace every placeholder, including Explanation. Use supplied codes and evidence IDs in their listed order; K copies ALL IDs. Never output the word Explanation as its value.",
       "Evidence labels show allowed operations; E is a completed event. S/X is accepted continuity, usable only for R with A. Never mix E with S/X in one update.",
@@ -15938,6 +15941,9 @@ function characterContinuityRun(hook, incomingText) {
     return [
       "CC CURRENT OPERATION — FINAL RESPONSE SUFFIX",
       "CC OUTPUT CONTRACT — RECORD FIRST",
+      "Situation is a completed event clause of at most " + settings.MODEL_STATE_VALUE_CHARS
+        + " characters. Thought is direct first-person inner speech of at most "
+        + settings.MODEL_STATE_VALUE_CHARS + " characters. Use plain text in both fields; reserve | and parentheses for record delimiters and do not use braces or brackets.",
       "Complete the Record template from the supplied Evidence rows. Preserve every supplied code and value."
     ];
   }
@@ -17674,9 +17680,14 @@ function characterContinuityRun(hook, incomingText) {
         removed.push(line(rawLine, 220));
         return;
       }
-      if (inlineOperationMetaEchoLine(rawLine)
-        || (plan && plan.task === "operation" && plan.taskDelivered
-          && operationReasoningEchoLine(rawLine))) {
+      if (inlineOperationMetaEchoLine(rawLine)) {
+        const record = controlPresentationText(rawLine).match(/\(CCO\|[\s\S]*$/i);
+        removed.push(line(rawLine, 220));
+        if (record) kept.push(record[0]);
+        return;
+      }
+      if (plan && plan.task === "operation" && plan.taskDelivered
+        && operationReasoningEchoLine(rawLine)) {
         removed.push(line(rawLine, 220));
         return;
       }
