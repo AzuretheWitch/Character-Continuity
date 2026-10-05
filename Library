@@ -1,5 +1,6 @@
 const CHARACTER_CONTINUITY_STABLE_SETTINGS = {
-  VERSION: "v3.0.2",
+  VERSION: "v3.0.5",
+  // Test copy: concise instructions, prefaced-record preservation, bounded diagnostics.
   OUTER_CHARACTER_LABEL: "Outer",
   INNER_CHARACTER_LABEL: "Inner",
   VIEWS_LABEL: "Views",
@@ -5201,9 +5202,14 @@ function characterContinuityRun(hook, incomingText) {
   function clearIncompleteForcedOperationPlan(plan) {
     if (!plan || typeof plan !== "object" || Array.isArray(plan)
       || plan.operationSelectionFrozen !== true
-      || !MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) return false;
-    // v2.x retires JavaScript-frozen semantic operation choices. Any carried
-    // v1.x plan is cleared and rebuilt as a model-authored assessment.
+      || !TASK_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))) return false;
+    // Keep complete plans from this diagnostic scheduler, including carried retries.
+    // Rebuild older assessment/legacy plans when upgrading this separate test copy.
+    if (plan.operationScheduler === "single-operation-1"
+      && MODEL_OPERATION_KINDS.includes(keyOf(plan.selectedOperationKind))
+      && forcedOperationCandidateComplete(plan.selectedCandidate)) return false;
+    plan.operationScheduler = "";
+    plan.semanticAssessment = false;
     plan.operationSelectionFrozen = false;
     plan.selectedOperationKind = "";
     plan.selectedCandidate = null;
@@ -12057,6 +12063,7 @@ function characterContinuityRun(hook, incomingText) {
     if (source.operationSelectionFrozen !== true) return {};
     return {
       operationSelectionFrozen: true,
+      operationScheduler: line(source.operationScheduler, 80),
       semanticAssessment: source.semanticAssessment === true,
       selectedOperationKind: line(source.selectedOperationKind, 40),
       selectedCandidate: clone(source.selectedCandidate),
@@ -12225,7 +12232,8 @@ function characterContinuityRun(hook, incomingText) {
     if (!plan || plan.taskDelivered !== true || plan.task !== "operation") return;
     const normalizedOutcome = keyOf(outcome);
     if ((["cutoff", "omitted", "stale"].includes(normalizedOutcome)
-      || (normalizedOutcome === "malformed" && plan.semanticAssessment === true))
+      || (normalizedOutcome === "malformed" && (plan.semanticAssessment === true
+        || plan.operationScheduler === "single-operation-1")))
       && plan.pendingOperationRetry !== true) {
       CC.pendingOperationRetry = pendingOperationRetryFromPlan(plan);
       return;
@@ -14688,6 +14696,8 @@ function characterContinuityRun(hook, incomingText) {
         signal.targetKey || "",
         signal.field || "",
         signal.destination || "",
+        // A direct event and accumulated continuity have different legal packets.
+        signal.kind === "relationship" ? (signal.direct ? "direct" : "accumulated") : "",
         line(signal.stateMode, 40),
         signal.kind === "state" ? "" : triggerList(signal.stateTriggers || []).join(","),
         line(signal.nameAlias, 160),
@@ -14863,12 +14873,30 @@ function characterContinuityRun(hook, incomingText) {
         const state = stateSignal(owner, legalTargets, evidenceCandidate, currentInputId, recent);
         if (state) signals.push({ signal: state, sourceCandidate: evidenceCandidate });
         legalTargets.filter(target => target.relationship === true).forEach(target => {
+          // Broad ledger eligibility omits the target. Recheck the writer's exact
+          // owner-target consumption rule before this evidence can win again.
+          if (!relationshipEvidenceEligible(item, owner, recent, target.key,
+            Math.max(0, scoringOpportunity - 1))) return;
           const signal = explicitRelationshipSignal(owner, target, evidenceCandidate);
           if (signal) signals.push({ signal, sourceCandidate: evidenceCandidate });
         });
         legalTargets.forEach(target => {
+          if (target.mode === "buried" || !viewEvidenceEligible(item, owner, recent, target.key,
+            Math.max(0, scoringOpportunity - 1))) return;
           const signal = explicitViewSignal(owner, target, evidenceCandidate);
-          if (signal) signals.push({ signal, sourceCandidate: evidenceCandidate });
+          if (!signal) return;
+          refreshViewsStore(false);
+          const ownerData = viewsForOwner(owner.key);
+          const active = ownerData && ownerData.activeRecords.find(record => record.targetKey === target.key);
+          const from = active ? VIEW_CATEGORIES.indexOf(active.category) : -1;
+          const to = VIEW_CATEGORIES.indexOf(signal.destination);
+          // The existing writer permits O to move at most one category. Freeze
+          // that next step rather than sending a predictably illegal large jump.
+          if (from >= 0 && to >= 0 && Math.abs(to - from) > 1) {
+            signal.destination = VIEW_CATEGORIES[from + Math.sign(to - from)];
+            signal.reason += " Ordinary movement is limited to one adjacent category.";
+          }
+          signals.push({ signal, sourceCandidate: evidenceCandidate });
         });
         turningPointSignals(owner, evidenceCandidate, currentInputId, recent).forEach(signal => {
           signals.push({ signal, sourceCandidate: evidenceCandidate });
@@ -15047,8 +15075,27 @@ function characterContinuityRun(hook, incomingText) {
     );
   }
 
+  function operationAlreadyAtDestination(owner, candidate) {
+    // Mirror only mechanically certain no-change cases from the writer. Repeated
+    // high-scoring Trust facts must not starve lower-scoring work after convergence.
+    // Lifecycle operations can revise descriptions, so they remain eligible.
+    if (!owner || !candidate || candidate.kind !== "relationship") return false;
+    refreshRelationshipsStore();
+    const ownerData = relationshipsForOwner(owner.key);
+    const record = ownerData && ownerData.contextRecords.find(item => item.targetKey === candidate.targetKey);
+    const prior = record && record.parsedFields && record.parsedFields[candidate.field];
+    const destination = relationshipDestination(candidate.field, candidate.destination);
+    if (!prior || !prior.safe || !destination) return false;
+    if (candidate.field === "Boundaries" && destination.special === "Released") return prior.blank;
+    if (prior.blank || prior.special || destination.special) return false;
+    if (candidate.direct && (["Role", "Boundaries"].includes(candidate.field)
+      || (candidate.field === "Conflict" && candidate.destination === "Clear"))) return false;
+    return prior.score === destination.midpoint;
+  }
+
   function freezeOperationSelection(plan, owner, targets, evidenceCandidates, currentInputId, recent) {
     if (!plan || !owner) return;
+    clearIncompleteForcedOperationPlan(plan);
     if (plan.operationSelectionFrozen === true) {
       if (!Array.isArray(plan.routingTargets) || !plan.routingTargets.length) {
         plan.routingTargets = clone(Array.isArray(targets) ? targets : []);
@@ -15056,67 +15103,39 @@ function characterContinuityRun(hook, incomingText) {
       return;
     }
     const scoringOpportunity = Math.max(0, Number(CC.ownerOpportunities[owner.key]) || 0) + 1;
-    const diagnosticCandidates = MODEL_OPERATION_KINDS.map(kind => ({
-      ...blankScoringCandidate(kind, owner),
-      diagnosticOnly: true,
-      ownerOpportunity: scoringOpportunity,
-      reasons: ["Semantic detection is delegated to the model-authored assessment."]
-    }));
-    const reviewable = (Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
-      .filter(candidate => candidate && candidate.item && /^[ESX]\d+$/.test(candidate.item.id))
-      .filter(candidate => !(candidate.item.assessedNoChangeBy
-        && candidate.item.assessedNoChangeBy[owner.key]))
-      .slice(0, assessmentSourceLimit());
-    const sourceIds = reviewable.map(candidate => candidate.item.id);
-    const selected = sourceIds.length ? {
-      kind: ASSESSMENT_OPERATION_KIND,
-      ownerKey: owner.key,
-      targetKey: "self",
-      field: "",
-      destination: "",
-      sourceIds,
-      storyEvidenceIds: unique(reviewable.flatMap(candidate => candidate.derived
-        ? candidate.rawLineage || [] : [candidate.item.id]), 100),
-      sourceMetadata: {},
-      evidenceSignature: "",
-      gain: 0,
-      drain: 0,
-      net: 0,
-      currentRelevance: reviewable.length
-        ? Math.max(...reviewable.map(candidate => operationCurrentRelevance(
-          candidate.item, currentInputId, recent
-        )))
-        : 0,
-      lastServedOpportunity: -1,
-      oldestEvidenceOrder: reviewable.length
-        ? Math.min(...reviewable.map(candidate => candidate.item.number))
-        : 0,
-      direct: true,
-      derived: false,
-      allowedFields: [],
-      allowedDestinations: [],
-      allowedModes: [],
-      managedSignature: "",
-      reasons: ["Completed evidence and eligible accepted Relationship sources are ready for model assessment."]
-    } : null;
-    if (selected) selected.evidenceSignature = operationEvidenceSignature(
-      selected,
-      reviewable.map(candidate => candidate.item)
+    const candidates = operationCandidatesForOwner(
+      owner, targets, evidenceCandidates, currentInputId, recent, scoringOpportunity
     );
+    // Do not let an incomplete candidate suppress a deliverable one. Keep every
+    // score and exclusion in diagnostics; only the winner goes into model context.
+    const eligible = candidates.filter(candidate => {
+      if (candidate.net <= 0) return false;
+      if (operationAlreadyAtDestination(owner, candidate)) {
+        candidate.reasons.push("Excluded: the fixed destination already matches the stored value.");
+        return false;
+      }
+      const complete = forcedOperationCandidateComplete(candidate)
+        && !!modelAnswerTaskForCandidate(owner, targets, evidenceCandidates, currentInputId,
+          recent, plan.relationshipPace || runtime.relationshipPace, candidate);
+      if (!complete) candidate.reasons.push("Excluded: no complete legal operation packet.");
+      return complete;
+    });
+    const selection = selectOperationCandidate(eligible);
+    const selected = selection.selected;
+    syncOperationMeters(owner, candidates);
     plan.operationSelectionFrozen = true;
-    plan.semanticAssessment = !!selected;
-    plan.selectedOperationKind = selected ? ASSESSMENT_OPERATION_KIND : "";
+    plan.operationScheduler = "single-operation-1";
+    plan.semanticAssessment = false;
+    plan.selectedOperationKind = selected ? selected.kind : "";
     plan.selectedCandidate = selected ? clone(selected) : null;
-    plan.operationCandidates = clone(diagnosticCandidates);
+    plan.operationCandidates = clone(candidates);
     plan.selectedEvidenceSignature = selected ? selected.evidenceSignature : "";
-    plan.selectedGain = 0;
-    plan.selectedDrain = 0;
-    plan.selectedNet = 0;
+    plan.selectedGain = selected ? selected.gain : 0;
+    plan.selectedDrain = selected ? selected.drain : 0;
+    plan.selectedNet = selected ? selected.net : 0;
     plan.routingTargets = selected ? clone(Array.isArray(targets) ? targets : []) : [];
-    plan.selectionReasons = selected
-      ? ["A bounded model assessment was scheduled over completed evidence and eligible accepted Relationship sources."]
-      : ["No unreviewed completed evidence remained eligible for semantic assessment."];
-    plan.operationTieBreak = "The model selects semantic meaning; JavaScript supplies structure and legal mechanics only.";
+    plan.selectionReasons = selection.reasons;
+    plan.operationTieBreak = selection.tieBreak;
   }
 
   function operationOpportunityFrozen(plan) {
@@ -15544,159 +15563,76 @@ function characterContinuityRun(hook, incomingText) {
     return "";
   }
 
+  function stateOperationFieldLimitInstruction() {
+    return "Situation and Thought: maximum " + settings.MODEL_STATE_VALUE_CHARS + " characters each.";
+  }
+
   function operationTaskForKind(kind, owner, targets, evidenceCandidates, currentInputId, recent, frozenPace, selectedCandidate) {
     const normalized = keyOf(kind);
-    if (!MODEL_OPERATION_KINDS.includes(normalized)) return "";
-    const target = operationTargetsForKind(normalized, targets)[0] || null;
-    const evidenceIds = unique((Array.isArray(evidenceCandidates) ? evidenceCandidates : [])
-      .map(candidate => continuitySourceId(candidate && candidate.item && candidate.item.id))
-      .filter(Boolean), 20);
-    if (!target || !evidenceIds.length) return "";
-    const evidenceField = evidenceIds.join(",");
-    const evidenceChoice = "Copy the Evidence IDs as " + evidenceField + " in that order.";
-    const evidenceAuthority = "Use the labeled Evidence rows and directly relevant scene context to complete the remaining narrative field. Natural paraphrase is welcome.";
-    const evidence = evidencePacketForKind(
-      owner, normalized, evidenceCandidates, currentInputId, recent, target, selectedCandidate
+    if (!MODEL_OPERATION_KINDS.includes(normalized) || !owner || !selectedCandidate) return "";
+    const target = operationTargetsForKind(normalized, targets).find(candidate =>
+      normalizedTargetKey(candidate.key) === normalizedTargetKey(selectedCandidate.targetKey)
     );
-    const targetMap = targetPacketForKind(owner, normalized, targets);
-    const recordTemplate = operationRecordTemplateForKind(
+    if (!target) return "";
+    const template = operationRecordTemplateForKind(
       normalized, owner, target, evidenceCandidates, selectedCandidate
     );
-    if (!recordTemplate) return "";
-    const commonEnding = [
-      selectedCandidate && selectedCandidate.pendingRetry === true
-        ? "Retry output order:"
-        : "Output order:",
-      "1. Complete the CCO record template below as the first nonblank output line. Preserve every supplied code and value. Complete each Situation, Thought, or Explanation placeholder with one concise value.",
-      "2. Continue with complete story prose from the next line.",
-      "Record template:",
-      recordTemplate
-    ];
-    let rules = [];
+    if (!template) return "";
+    // No menu, competing scores, or alternative record kinds reach the model.
+    const evidence = ["Evidence:"].concat(evidenceCandidates.map(candidate =>
+      candidate.item.id + ": " + operationEvidencePacketSnippet(
+        owner, target, normalized, candidate, selectedCandidate
+      )
+    )).join("\n");
+    const details = [];
+    let completion = "Replace Explanation with one short sentence explaining the change from this evidence.";
     if (normalized === "state") {
-      const state = normalizeState(CC.npcs[owner.key] && CC.npcs[owner.key].state, CC.stateClock);
-      const frozenConfirmation = keyOf(selectedCandidate && selectedCandidate.stateMode) === "confirm"
-        && !!line(selectedCandidate && selectedCandidate.confirmSituation, settings.MAX_STATE_VALUE_CHARS)
-        && normalizedTargetKey(selectedCandidate && selectedCandidate.targetKey) === normalizedTargetKey(target.key);
-      const currentSituation = situationPhrase(state.situation.value);
-      const currentSituationMatchesTarget = !!currentSituation
-        && normalizedTargetKey(state.situation.targetKey || state.target.key) === normalizedTargetKey(target.key);
-      const frozenTriggers = triggerList(selectedCandidate && selectedCandidate.stateTriggers || []);
-      if (!frozenTriggers.length) return "";
-      const stateContinuityRules = frozenConfirmation
-        ? [
-          "Current accepted Situation for " + target.code + ": "
-            + line(selectedCandidate.confirmSituation, settings.MAX_STATE_VALUE_CHARS) + ".",
-          "The Situation field is the literal KEEP. KEEP confirms that supplied Current Situation verbatim."
-        ]
-        : (currentSituationMatchesTarget
-          ? [
-            "Current accepted Situation for " + target.code + ": " + currentSituation + ".",
-            "The scheduled operation has already fixed whether the completed record confirms or changes that Situation."
-          ]
-          : []);
-      rules = [
-        "State operation — owner " + owner.name + ".",
-        evidence,
-        targetMap,
-        evidenceChoice,
-        evidenceAuthority,
-        ...stateContinuityRules,
-        frozenConfirmation
-          ? "KEEP is fixed. Replace Thought with concise direct first-person inner speech consistent with the scheduled evidence."
-          : "Replace Situation with a character-voiced clause of at most " + settings.MODEL_STATE_VALUE_CHARS + " characters and Thought with direct first-person inner speech. Keep both consistent with the scheduled evidence; natural paraphrase is allowed.",
-        ...(selectedCandidate && selectedCandidate.pendingRetry === true
-          ? ["This is the one carried retry of the earlier frozen evidence; the completed record remains unchanged."]
-          : []),
-        ...commonEnding
-      ];
-    } else if (normalized === "name") {
-      const alias = line(selectedCandidate && selectedCandidate.nameAlias, 160);
-      const transition = line(selectedCandidate && selectedCandidate.nameTransition, 40);
-      const replacedAlias = line(selectedCandidate && selectedCandidate.nameReplacedAlias, 160);
-      const use = line(selectedCandidate && selectedCandidate.nameUse, 1000);
-      const transitionField = transition === "Replace" ? "Replace=" + replacedAlias : transition;
-      if (!alias || !transitionField || !use) return "";
-      rules = [
-        "Name operation — owner " + owner.name + ".",
-        evidence,
-        targetMap,
-        evidenceChoice,
-        evidenceAuthority,
-        "Alias, Transition, and Use are fixed. Replace Explanation with one short clause of at most "
-          + settings.MODEL_OPERATION_EXPLANATION_CHARS
-          + " characters describing why the scheduled transition applies; natural paraphrase is allowed.",
-        ...commonEnding
-      ];
+      const confirmation = keyOf(selectedCandidate.stateMode) === "confirm";
+      if (confirmation) details.push("Current Situation: "
+        + line(selectedCandidate.confirmSituation, settings.MAX_STATE_VALUE_CHARS));
+      completion = (confirmation
+        ? "Keep KEEP unchanged. "
+        : "Replace Situation with a short factual clause about the completed event.\n")
+        + "Replace Thought with " + owner.name + "'s brief first-person thought.\n"
+        + stateOperationFieldLimitInstruction();
+      if (target.key !== "self") details.push(stateTargetPronounInstruction(owner, target));
     } else if (normalized === "relationship") {
-      const pace = frozenPace && typeof frozenPace === "object" ? frozenPace : runtime.relationshipPace;
-      const field = RELATIONSHIP_FIELDS.includes(selectedCandidate && selectedCandidate.field)
-        ? selectedCandidate.field
-        : RELATIONSHIP_FIELDS[0];
-      const direct = selectedCandidate && selectedCandidate.direct === true;
-      const destinations = relationshipOperationDestinations(field, selectedCandidate);
-      const destinationField = destinations.length === 1 ? destinations[0] : "Destination";
-      rules = [
-        "Relationship operation — owner " + owner.name + ".",
-        evidence,
-        targetMap,
-        evidenceChoice,
-        evidenceAuthority,
-        "Target, field, " + (direct ? "direct" : "accumulated") + " event class, and destination "
-          + destinationField + " are fixed. Replace Explanation with one complete, concise sentence, aiming for "
-          + settings.MODEL_RELATIONSHIP_EXPLANATION_CHARS
-          + " characters, describing the scheduled relationship movement; finish the sentence and never cut it off or add an ellipsis to meet the target.",
-        "Frozen " + pace.name + " pace: " + (direct ? "D " + pace.direct : "A " + pace.accumulated)
-          + " per event, maximum " + pace.maxStages + " stage" + (pace.maxStages === 1 ? "" : "s") + ".",
-        relationshipFieldMeaning(field),
-        "Explanation describes the cited event and relationship meaning; the managed card supplies the resulting score and stage.",
-        ...commonEnding
-      ];
+      const baseline = assessmentRelationshipBaselines(owner, [target], evidenceCandidates)[0];
+      const field = baseline && baseline.fields.find(item => item.field === selectedCandidate.field);
+      details.push(baseline && !baseline.absent && field
+        ? "Current " + field.field + ": " + field.stage
+          + (field.description ? " — " + shortenProfileValue(field.description, 160) : "")
+        : "Current " + selectedCandidate.field + ": not recorded.");
+      details.push("Change: " + selectedCandidate.field + " toward " + selectedCandidate.destination + ".");
+      completion = "Replace Explanation with one short sentence explaining what this evidence means for the relationship.";
     } else if (normalized === "view") {
-      const destinations = viewOperationDestinations(target, selectedCandidate);
-      const modes = unique(selectedCandidate && selectedCandidate.allowedModes || [], 20);
-      const legalModes = modes.length ? modes : ["O", "M"];
-      const destinationField = destinations.length === 1 ? destinations[0] : "Destination";
-      const modeField = legalModes.length === 1 ? legalModes[0] : "Mode";
-      rules = [
-        "View operation — owner " + owner.name + ".",
-        evidence,
-        targetMap,
-        evidenceChoice,
-        evidenceAuthority,
-        "Target, destination " + destinationField + ", and mode " + modeField
-          + " are fixed. Replace Explanation with one short clause of at most "
-          + settings.MODEL_OPERATION_EXPLANATION_CHARS
-          + " characters describing the scheduled View movement; natural paraphrase is allowed.",
-        ...commonEnding
-      ];
+      refreshViewsStore(false);
+      const ownerData = viewsForOwner(owner.key);
+      const current = ownerData && ownerData.activeRecords.find(record => record.targetKey === target.key);
+      if (current) details.push("Current View: " + current.category
+        + " — " + shortenProfileValue(current.explanation, 160));
+      details.push("New View: " + selectedCandidate.destination + ".");
+      completion = "Replace Explanation with one short sentence expressing " + owner.name + "'s judgment of " + target.name + ".";
     } else if (normalized === "turning") {
-      const id = canonicalTurningPointId(selectedCandidate && selectedCandidate.field);
-      const mode = ["Support", "Breakthrough", "Integration"].find(value =>
-        keyOf(value) === keyOf(selectedCandidate && selectedCandidate.destination)
-      ) || "Support";
-      const turningPacket = turningPointOperationPacket(owner, selectedCandidate);
-      if (!id || !turningPacket) return "";
-      rules = [
-        "Turning Point operation — owner " + owner.name + ".",
-        evidence,
-        turningPacket,
-        evidenceChoice,
-        evidenceAuthority,
-        "The first six record fields are complete supplied data: CCO|T|" + target.code + "|"
-          + evidenceField + "|" + id + "|" + mode
-          + ". Fill the seventh field, Explanation, with one complete clause of at most "
-          + settings.MODEL_OPERATION_EXPLANATION_CHARS
-          + " characters describing the scheduled Turning Point movement; natural paraphrase is allowed.",
-        mode === "Support"
-          ? "Support records a completed, durable step toward the comparison stage while progress remains below Achieved."
-          : (mode === "Breakthrough"
-            ? "The scheduled Breakthrough records the cited completed event or connected completed sequence as satisfying the definitive condition and establishing Achieved as the owner's new baseline. Integration later records repetition and ease."
-            : "Integration records completed evidence that the achieved change is sustained, habitual, or part of ordinary life."),
-        ...commonEnding
-      ];
+      const packet = turningPointOperationPacket(owner, selectedCandidate);
+      if (!packet) return "";
+      details.push(packet);
+    } else if (normalized === "name") {
+      // Use may refer to identities other than the subject, but adds no operation choices.
+      details.push(targetPacketForKind(owner, normalized, targets));
     }
-    return ["<SYSTEM>", ...currentOperationAuthorityLines(), ...rules.filter(Boolean), "</SYSTEM>"].join("\n");
+    return [
+      "<SYSTEM>",
+      "CC UPDATE",
+      operationKindLabel(normalized) + " for " + owner.name + "; " + target.code + "="
+        + (target.key === "self" ? owner.name : target.name) + ".",
+      evidence,
+      ...details.filter(Boolean),
+      completion,
+      ...conciseOperationOutputLines(),
+      template,
+      "</SYSTEM>"
+    ].join("\n");
   }
 
   function assessmentEvidenceCodes(candidate) {
@@ -15795,9 +15731,6 @@ function characterContinuityRun(hook, incomingText) {
       "<SYSTEM>",
       "CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX",
       "CC OUTPUT CONTRACT — RECORD FIRST",
-      "Situation is a completed event clause of at most " + settings.MODEL_STATE_VALUE_CHARS
-        + " characters. Thought is direct first-person inner speech of at most "
-        + settings.MODEL_STATE_VALUE_CHARS + " characters. Use plain text in both fields; reserve | and parentheses for record delimiters and do not use braces or brackets.",
       "Assess " + owner.name + ". Choose ONE supported update, or K only when none is warranted. Keep story choices independent.",
       "Replace every placeholder, including Explanation. Use supplied codes and evidence IDs in their listed order; K copies ALL IDs. Never output the word Explanation as its value.",
       "Evidence labels show allowed operations; E is a completed event. S/X is accepted continuity, usable only for R with A. Never mix E with S/X in one update.",
@@ -15849,7 +15782,24 @@ function characterContinuityRun(hook, incomingText) {
     return task;
   }
 
+  function conciseOperationOutputLines() {
+    return [
+      "Keep the other fields unchanged. Inside fields, use plain text without |, parentheses, brackets, braces or line breaks.",
+      "Write the completed record as your first output line, then continue the story from the next line.",
+      "Record template:"
+    ];
+  }
+
+  function operationTaskUsesConciseContract(value) {
+    const source = textOf(value).trim();
+    return source.startsWith("<SYSTEM>\nCC UPDATE\n")
+      && source.includes("\n" + conciseOperationOutputLines().join("\n") + "\n")
+      && /Record template:\s*\n\(CCO\|[SNRVT]\|[^\n]+\|(?:Thought|Explanation)\)\s*\n<\/SYSTEM>$/.test(source)
+      && (source.match(/\(CCO\|/g) || []).length === 1;
+  }
+
   function operationTaskUsesForcedContract(value) {
+    if (operationTaskUsesConciseContract(value)) return true;
     const source = textOf(value);
     const assessmentContract = /(?:^|\n)CC CURRENT ASSESSMENT — FINAL RESPONSE SUFFIX\b/i.test(source)
       && /K unchanged:\s*\(CCO\|K\|S\|[^\n]+\|Explanation\)/i.test(source)
@@ -15871,33 +15821,13 @@ function characterContinuityRun(hook, incomingText) {
   }
 
   function positiveOperationRetryTask(value) {
-    let source = textOf(value).trim();
-    if (!source) return "";
-    if (!/(?:^|\n)CC CURRENT (?:OPERATION|ASSESSMENT)\b/i.test(source)) {
-      source = source.replace(/<SYSTEM>\s*/i, match =>
-        match + currentOperationAuthorityLines().join("\n") + "\n"
-      );
-    }
-    const positiveLines = [
-      "Output order:",
-      "1. Complete the CCO record template below as the first nonblank output line. Preserve every supplied code and value. Complete each Situation, Thought, or Explanation placeholder with one concise value.",
-      "2. Continue with complete story prose from the next line."
-    ].join("\n");
-    const legacyBlocks = [
-      [
-        "Complete this scheduled continuity operation by replacing every capitalized placeholder with a concise completed value; keep supplied values unchanged.",
-        "Put the completed CCO record on the first nonblank output line, then continue with complete story prose."
-      ].join("\n"),
-      [
-        "Complete this scheduled continuity operation by replacing every capitalized placeholder from the labeled Evidence rows; keep supplied values unchanged.",
-        "Put the completed CCO record on the first nonblank output line, then continue with complete story prose."
-      ].join("\n")
-    ];
-    const legacy = legacyBlocks.find(block => source.includes(block));
-    if (legacy) source = source.replace(legacy, positiveLines);
-    return source.replace(/(?:^|\n)Output order:\s*(?=\n)/, match =>
-      (match.startsWith("\n") ? "\n" : "") + "Retry output order:"
-    );
+    const source = textOf(value).trim();
+    // Reuse the same short instruction on Retry. Older prompt text is rebuilt
+    // from the frozen candidate and evidence below, without changing the winner.
+    // A v3.0.4 State retry also needs the newly explicit field-length guidance.
+    if (/\n\(CCO\|S\|/.test(source)
+      && !source.includes("\n" + stateOperationFieldLimitInstruction() + "\n")) return "";
+    return operationTaskUsesConciseContract(source) ? source : "";
   }
 
   function scrubLegacyOperationTaskText(plan) {
@@ -15918,14 +15848,9 @@ function characterContinuityRun(hook, incomingText) {
     ].join("\n");
   }
 
-  function operationContextSuffixInstruction() {
-    return [
-      "<SYSTEM>",
-      "CC RESPONSE FORMAT",
-      "Line 1: copy and complete one record from the final CC OUTPUT CONTRACT. Start with (CCO| and end with ). Use K for unchanged continuity.",
-      "Line 2 onward: continue the story in complete prose.",
-      "</SYSTEM>"
-    ].join("\n");
+  function operationContextSuffixInstruction(value) {
+    const source = textOf(value).trim();
+    return operationTaskUsesForcedContract(source) ? source : "";
   }
 
   function currentStoryResponseTask() {
@@ -15941,9 +15866,6 @@ function characterContinuityRun(hook, incomingText) {
     return [
       "CC CURRENT OPERATION — FINAL RESPONSE SUFFIX",
       "CC OUTPUT CONTRACT — RECORD FIRST",
-      "Situation is a completed event clause of at most " + settings.MODEL_STATE_VALUE_CHARS
-        + " characters. Thought is direct first-person inner speech of at most "
-        + settings.MODEL_STATE_VALUE_CHARS + " characters. Use plain text in both fields; reserve | and parentheses for record delimiters and do not use braces or brackets.",
       "Complete the Record template from the supplied Evidence rows. Preserve every supplied code and value."
     ];
   }
@@ -16081,13 +16003,16 @@ function characterContinuityRun(hook, incomingText) {
       const suffixInstruction = hasOperationContract && hasDevelopmentContract
         ? combinedDevelopmentContextSuffixInstruction(plan && plan.developmentRequest)
         : (hasOperationContract
-          ? operationContextSuffixInstruction()
+          ? operationContextSuffixInstruction(candidateTail)
           : (hasDevelopmentContract ? developmentContextSuffixInstruction(plan && plan.developmentRequest) : ""));
       const contextSuffix = ownedContextSuffixBlock(suffixInstruction);
-      const fittedTail = [candidateTail, contextSuffix].filter(Boolean).join("\n\n");
+      // The operation packet is the final instruction, not a body packet plus
+      // a reminder pointing back to it. Count and deliver it exactly once.
+      const bodyTail = hasOperationContract && !hasDevelopmentContract ? "" : candidateTail;
+      const fittedTail = [bodyTail, contextSuffix].filter(Boolean).join("\n\n");
       const tokens = estimateTokens([
         prefix,
-        candidateTail,
+        bodyTail,
         contextSuffix
       ].filter(Boolean).join("\n"));
       if (tokens > continuityTurnBudget) return { ok: false, reason: "continuity turn budget" };
@@ -16634,7 +16559,8 @@ function characterContinuityRun(hook, incomingText) {
       // A protected assessment baseline can exceed the ordinary compact tier at
       // the default budget. Keep the complete task and use the existing minimal
       // portrayal core in either context mode before deferring the operation.
-      if (appendOnlyContext || selectedOperationKind === ASSESSMENT_OPERATION_KIND) {
+      if (appendOnlyContext || selectedOperationKind === ASSESSMENT_OPERATION_KIND
+        || plan.operationScheduler === "single-operation-1") {
         const emergencyPair = [
           { text: emergencyPortrayalOuterAnchor(focus), type: "outer", ownerKey: focus.key, order: 0 },
           { text: emergencyPortrayalInnerAnchor(focus), type: "inner", ownerKey: focus.key, order: 2 }
@@ -16724,7 +16650,7 @@ function characterContinuityRun(hook, incomingText) {
           ? "No complete semantic assessment contract could be constructed from the supplied mechanics."
           : "The selected candidate no longer matched an explicit scripted operation template.");
     } else if (plan.opportunity && !CC.recoveryPending && !selectedOperationKind) {
-      taskDeferredReason = "No unreviewed completed evidence remained eligible for semantic assessment.";
+      taskDeferredReason = "No complete operation candidate had positive grounded net.";
     } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && !targets.length) {
       taskDeferredReason = "No legal target was available for the frozen operation kind.";
     } else if (plan.opportunity && !CC.recoveryPending && selectedOperationKind && !selectedTargetAvailable) {
@@ -16737,19 +16663,9 @@ function characterContinuityRun(hook, incomingText) {
     }
 
     const operationOnlyTaskText = taskDelivered ? tail : "";
-    if (plan.developmentRequest && taskDelivered && !CC.recoveryPending) {
-      const supplement = developmentSupplementTask(plan.developmentRequest);
-      const combinedTail = supplement ? tail + "\n\n" + supplement : "";
-      const supplementWithinBudget = !!supplement
-        && estimateTokens(supplement) <= settings.MAX_DEVELOPMENT_TASK_TOKENS;
-      const fit = supplementWithinBudget
-        ? fitOperationByEvictingOptionalContext(combinedTail)
-        : { ok: false, reason: "development supplement budget" };
-      if (fit.ok && supplementWithinBudget) {
-        tail = combinedTail;
-        profileTaskDelivered = true;
-      }
-    } else if (plan.developmentRequest && !taskDelivered && !CC.recoveryPending) {
+    // A profile supplement would be a second model task. Defer it while the
+    // winning continuity operation is delivered; retain profile-only turns.
+    if (plan.developmentRequest && !taskDelivered && !CC.recoveryPending) {
       const proposedTail = developmentTask(plan.developmentRequest);
       const taskWithinBudget = !!proposedTail
         && estimateTokens(proposedTail) <= settings.MAX_DEVELOPMENT_TASK_TOKENS;
@@ -16931,7 +16847,7 @@ function characterContinuityRun(hook, incomingText) {
       suffixTaskText: taskDelivered && profileTaskDelivered
         ? combinedDevelopmentContextSuffixInstruction(plan && plan.developmentRequest)
         : (taskDelivered
-          ? operationContextSuffixInstruction()
+          ? operationContextSuffixInstruction(operationOnlyTaskText)
           : (profileTaskDelivered ? developmentContextSuffixInstruction(plan && plan.developmentRequest) : "")),
       taskKind: taskDelivered ? selectedOperationKind : (profileTaskDelivered ? "profile" : ""),
       operationEvidenceSignature: taskDelivered && plan.selectedCandidate
@@ -17412,7 +17328,7 @@ function characterContinuityRun(hook, incomingText) {
     if (!ccAuthoredSystemLineSet) {
       ccAuthoredSystemLineSet = new Set([
         recoveryTask(),
-        operationContextSuffixInstruction(),
+        ["CC UPDATE"].concat(conciseOperationOutputLines()).join("\n"),
         currentStoryResponseTask(),
         currentOperationAuthorityLines().join("\n")
       ].flatMap(block => textOf(block).split("\n"))
@@ -21558,15 +21474,10 @@ function characterContinuityRun(hook, incomingText) {
       scoringFrozenOpportunity,
       scoringFrozenSourcePacket
     );
-    const scoringSources = semanticAssessmentSources(
-      focus,
-      scoringTargets,
-      recent,
-      plan.inputEvidenceId || "",
-      scoringFrozenEvidenceIds,
-      scoringFrozenOpportunity,
-      scoringFrozenSourcePacket
+    const scoringDerivedRelationships = relationshipDerivedEvidenceCandidates(
+      focus, scoringTargets, scoringFrozenOpportunity, scoringFrozenSourcePacket
     );
+    const scoringSources = scoringEvidence.concat(scoringDerivedRelationships, scoringDerivedViews);
     freezeOperationSelection(plan, focus, scoringTargets, scoringSources, plan.inputEvidenceId || "", recent);
     }
 
@@ -21638,8 +21549,13 @@ function characterContinuityRun(hook, incomingText) {
     const returnedBeforeSuffix = committedContext.suffix
       ? committedContext.text.slice(0, committedContext.text.lastIndexOf(committedContext.suffix))
       : committedContext.text;
+    const operationInSuffix = attempt.taskDelivered && !attempt.profileTaskDelivered
+      && requestedSuffixInstruction.trim() === textOf(attempt.taskText).trim();
     const packetVerified = !(attempt.taskDelivered || attempt.profileTaskDelivered)
-      || returnedBeforeSuffix.trimEnd().endsWith(textOf(attempt.taskText).trimEnd());
+      || (operationInSuffix
+        ? committedContext.suffix === ownedContextSuffixBlock(attempt.taskText)
+          && committedContext.text.trimEnd().endsWith(committedContext.suffix.trimEnd())
+        : returnedBeforeSuffix.trimEnd().endsWith(textOf(attempt.taskText).trimEnd()));
     attempt.taskDelivered = attempt.taskDelivered
       && committedContext.delivered
       && packetVerified;
@@ -21654,7 +21570,7 @@ function characterContinuityRun(hook, incomingText) {
       plan.operationTaskText = "";
       plan.operationTaskKind = "";
       plan.operationTaskTokens = 0;
-      CC.last.context = "The continuity task was withheld because its ordinary Context packet and final instruction suffix were not both verified.";
+      CC.last.context = "The continuity task was withheld because its complete final Context instruction was not verified.";
       CC.last.error = "Continuity-task delivery verification failed; no task was marked delivered.";
       recordGenuineContextPlan(plan, "continuity-task delivery verification failed");
       return restored.ok ? restored.text : originalText;
@@ -21662,6 +21578,7 @@ function characterContinuityRun(hook, incomingText) {
 
     plan.task = attempt.taskDelivered ? "operation" : (CC.recoveryPending ? "recovery" : "none");
     plan.taskDelivered = attempt.taskDelivered;
+    plan.operationDeferredReason = line(attempt.taskDeferredReason, 400);
     plan.profileTaskDelivered = attempt.profileTaskDelivered === true;
     plan.ownerKey = focus.key;
     plan.focusKey = focus.key;
@@ -21997,8 +21914,104 @@ function characterContinuityRun(hook, incomingText) {
     return { record, priorValue, base: points, repeated, summary };
   }
 
+  // Diagnostics observe the exact output-hook input and each cleanup stage.
+  // They cannot see model text removed by the platform or an earlier script.
+  // Retain only eight bounded records, independent of turn rollback snapshots.
+  function outputTraceStage(trace, label, value) {
+    if (!trace) return;
+    const source = textOf(value).replace(/\r/g, "");
+    const spans = ccoProtocolSpans(source).filter(span =>
+      /\(\s*CCO\b/i.test(source.slice(span.start, span.end))
+    );
+    const first = spans[0];
+    const previous = trace.stages[trace.stages.length - 1];
+    const stage = {
+      label, chars: source.length,
+      markers: (source.match(/\(\s*CCO\b/gi) || []).length,
+      complete: spans.filter(span => span.complete).length,
+      position: first ? (source.slice(0, first.start).trim() ? "after text" : "first") : "none"
+    };
+    if (first) stage.sample = line(source.slice(first.start, first.end), 240);
+    if (!previous || stage.markers < previous.markers) {
+      stage.head = line(source.slice(0, 160), 160);
+      stage.tail = line(source.slice(-160), 160);
+    }
+    trace.stages.push(stage);
+  }
+
+  function beginOutputTrace(plan, value) {
+    if (!Array.isArray(CC.outputTraceHistory)) CC.outputTraceHistory = [];
+    CC.outputTraceSequence = Math.max(0, Number(CC.outputTraceSequence) || 0) + 1;
+    const trace = {
+      sequence: CC.outputTraceSequence, action: platformActionCount(),
+      input: CC.inputCount, generation: CC.visibleGenerationCount,
+      scheduler: line(plan.operationScheduler, 80) || "none",
+      owner: line(plan.ownerKey, 160), kind: line(plan.selectedOperationKind, 40) || "none",
+      delivered: plan.taskDelivered === true,
+      evidence: unique(plan.evidenceIds || [], 40).slice(0, 8),
+      reasons: (plan.selectionReasons || []).slice(0, 3).map(reason => line(reason, 280)),
+      promptChars: textOf(plan.operationTaskText).length,
+      template: line((textOf(plan.operationTaskText).match(/Record template:\s*\n([^\n]+)/) || [])[1], 450),
+      deferred: line(plan.operationDeferredReason, 300),
+      stages: [], status: "processing"
+    };
+    CC.outputTraceHistory.push(trace);
+    CC.outputTraceHistory = CC.outputTraceHistory.slice(-8);
+    outputTraceStage(trace, "received", value);
+    return trace;
+  }
+
+  function finishOutputTrace(trace, parsed, status) {
+    if (!trace) return;
+    if (parsed) trace.parser = {
+      reason: line(parsed.reason, 500),
+      recognized: line(parsed.candidate && parsed.candidate.kind, 40) || "none",
+      malformed: parsed.malformed === true, stale: parsed.stale === true,
+      cutoff: parsed.cutoff === true, unauthorized: parsed.unauthorized === true,
+      storyFinished: hasTerminallyPunctuatedStory(parsed.story)
+    };
+    trace.status = status || "processed";
+    trace.outcome = line(CC.last.operationOutcome, 160);
+    trace.candidate = line(CC.last.candidate, 200);
+    trace.mutation = line(CC.last.update, 400);
+    trace.error = line(CC.last.error, 500);
+    trace.retry = !!(CC.pendingOperationRetry && CC.pendingOperationRetry.active);
+  }
+
+  function outputTraceDebugRows() {
+    const traces = Array.isArray(CC.outputTraceHistory) ? CC.outputTraceHistory : [];
+    const rows = ["Diagnostic contract: single-operation-1; " + traces.length
+      + "/8 output traces. Received means text entering CC's output hook."];
+    traces.slice().reverse().forEach(trace => {
+      rows.push("Trace #" + trace.sequence + " action " + trace.action + " " + trace.owner
+        + "/" + trace.kind + " delivered=" + trace.delivered + " sources=" + trace.evidence.join(",")
+        + " prompt=" + trace.promptChars + " chars | " + trace.status + " | " + trace.outcome
+        + " | candidate=" + trace.candidate + " | mutation=" + trace.mutation + " | retry=" + trace.retry);
+      rows.push("Trace #" + trace.sequence + " stages: " + trace.stages.map(stage =>
+        stage.label + " " + stage.chars + " chars/" + stage.markers + " markers/"
+        + stage.complete + " complete/" + stage.position
+      ).join(" → "));
+      if (trace.parser) rows.push("Trace #" + trace.sequence + " parser: " + trace.parser.reason
+        + " | recognized=" + trace.parser.recognized + " | story finished=" + trace.parser.storyFinished);
+      if (trace.error) rows.push("Trace #" + trace.sequence + " error: " + trace.error);
+    });
+    const latest = traces[traces.length - 1];
+    if (latest) {
+      rows.push("Latest trace selection: " + latest.reasons.join(" ")
+        + (latest.deferred ? " Deferred: " + latest.deferred : ""));
+      if (latest.template) rows.push("Latest trace requested template: " + latest.template);
+      latest.stages.forEach(stage => {
+        if (stage.sample) rows.push("Latest trace " + stage.label + " record excerpt: " + stage.sample);
+        if (stage.head) rows.push("Latest trace " + stage.label + " head excerpt: " + stage.head);
+        if (stage.tail) rows.push("Latest trace " + stage.label + " tail excerpt: " + stage.tail);
+      });
+    }
+    return rows;
+  }
+
   function processOutput(outputValue) {
     const plan = CC.currentPlan || { task: "none", taskDelivered: false, activeKeys: CC.activeKeys || [] };
+    const outputTrace = beginOutputTrace(plan, outputValue);
     if (plan.opening) {
       const compilerTask = !!(plan.developmentRequest && plan.developmentRequest.kind === "import");
       const developmentParsed = stripDevelopmentRecords(
@@ -22041,6 +22054,7 @@ function characterContinuityRun(hook, incomingText) {
       }
       plan.completed = true;
       markActionCompleted(plan);
+      finishOutputTrace(outputTrace, null, "opening suppressed");
       return " ";
     }
 
@@ -22105,6 +22119,12 @@ function characterContinuityRun(hook, incomingText) {
       ? (operationFallback.text ? operationFallback.text + "\n" : "")
         + operationFallback.recoveredRecord
       : operationFallback.text;
+    outputTraceStage(outputTrace, "development cleanup", developmentParsed.text);
+    outputTraceStage(outputTrace, "turning cleanup", turningPointControl.text);
+    outputTraceStage(outputTrace, "fallback recovery", rawFallback.text);
+    outputTraceStage(outputTrace, "instruction cleanup", instructionEcho.text);
+    outputTraceStage(outputTrace, "residual cleanup", residualFallback.text);
+    outputTraceStage(outputTrace, "parser input", preparedOutput);
     const parsed = parseTerminalCandidate(developmentParsed.text, plan, preparedOutput);
     const outputMetrics = outputProtocolMetrics(outputValue, preparedOutput, parsed.story);
     CC.last.outputRawChars = outputMetrics.rawChars;
@@ -22194,6 +22214,7 @@ function characterContinuityRun(hook, incomingText) {
           + (earlyCompilerApplied ? " The validated compiler card was still committed." : "");
       CC.last.error = "The response did not finish terminally punctuated story prose.";
       recordGenuineOutputResolution(plan);
+      finishOutputTrace(outputTrace, parsed, "unfinished story withheld");
       return story ? story : " ";
     }
 
@@ -22496,6 +22517,7 @@ function characterContinuityRun(hook, incomingText) {
           ? "the mandatory completed first-line CCO record was omitted and no continuity operation was applied."
         : (CC.last.candidate === "not requested" ? "no operation was scheduled." : "no continuity operation was applied."));
     recordGenuineOutputResolution(plan);
+    finishOutputTrace(outputTrace, parsed, "processed");
     return story;
   }
 
@@ -23175,6 +23197,9 @@ function characterContinuityRun(hook, incomingText) {
     ]
       .filter(Boolean).join(" ") || "None";
     const entry = [
+      "Diagnostic: single winning operation; output traces "
+        + (Array.isArray(CC.outputTraceHistory) ? CC.outputTraceHistory.length : 0)
+        + "/8. " + (runtime.debug ? "See CC — Debug." : "Set Debug: true to export traces."),
       "Active NPC slots: " + rosterSlots,
       "Prepared / processed / dormant-skipped: " + preparedProfileCount + " / "
         + characters.length + " / " + rosterSkippedProfileCount,
@@ -23393,6 +23418,7 @@ function characterContinuityRun(hook, incomingText) {
     ];
     const priorityDebugRows = [
       "Error: " + (CC.last.error || "None"),
+      ...outputTraceDebugRows(),
       "CCO parse: " + CC.last.protocol,
       "Current pass: " + currentPassStatus(),
       "Current task / owner: " + CC.last.task + " / " + (CC.last.owner || "None"),
@@ -23423,6 +23449,11 @@ function characterContinuityRun(hook, incomingText) {
     try {
       CC.last.error = "The " + hook + " hook failed and its continuity work was withheld: "
         + line(detail, 300);
+      const traces = Array.isArray(CC.outputTraceHistory) ? CC.outputTraceHistory : [];
+      const latestTrace = traces[traces.length - 1];
+      if (hook === "output" && latestTrace && latestTrace.status === "processing") {
+        finishOutputTrace(latestTrace, null, "output hook exception");
+      }
       writeStatusCard();
     } catch (ignored) {
       // State may be too damaged to report through; passing the text through still matters.
